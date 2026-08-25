@@ -34,3 +34,7 @@ next-env.d.ts
 # local artifacts
 buildwe-main.bundle
 
+
+.git-askpass.sh
+.git-credentials
+
