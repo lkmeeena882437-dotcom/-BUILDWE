@@ -1,0 +1,257 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f8f6f1;
+  --bg-elevated: #fdfcfa;
+  --card: #ffffff;
+  --secondary: #f1eee8;
+  --ink: #1c1c1c;
+  --muted: #737373;
+  --soft: #a3a3a3;
+  --border: #e5e1d8;
+  --accent: #c45c26;
+  --accent-soft: #fbf0e8;
+  --accent-hover: #a84b1c;
+  --code-bg: #1c1c1c;
+  --code-fg: #f5f2eb;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+  --nav-h: 56px;
+}
+
+.dark {
+  --bg: #141311;
+  --bg-elevated: #1a1916;
+  --card: #1e1d1a;
+  --secondary: #252320;
+  --ink: #f3f0e8;
+  --muted: #a09a90;
+  --soft: #6f6a62;
+  --border: #2e2c28;
+  --accent: #e07a3d;
+  --accent-soft: #3a2418;
+  --accent-hover: #f08a4d;
+  --code-bg: #0d0c0b;
+  --code-fg: #f5f2eb;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  height: 100%;
+  height: 100dvh;
+  overscroll-behavior: none;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+input,
+textarea,
+select {
+  font-size: 16px;
+  color: var(--ink);
+}
+
+@media (min-width: 640px) {
+  input,
+  textarea,
+  select {
+    font-size: inherit;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+@media (max-width: 767px) {
+  ::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+}
+
+::selection {
+  background: rgba(196, 92, 38, 0.22);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.prose-buildwe p {
+  margin: 0.35em 0;
+}
+.prose-buildwe p:first-child {
+  margin-top: 0;
+}
+.prose-buildwe p:last-child {
+  margin-bottom: 0;
+}
+.prose-buildwe ul,
+.prose-buildwe ol {
+  margin: 0.4em 0;
+  padding-left: 1.15em;
+}
+.prose-buildwe li {
+  margin: 0.15em 0;
+}
+.prose-buildwe code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.875em;
+  background: var(--secondary);
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+}
+.prose-buildwe pre {
+  margin: 0.65em 0;
+  padding: 0.75em 0.9em;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border-radius: 10px;
+  overflow-x: auto;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  -webkit-overflow-scrolling: touch;
+}
+.prose-buildwe pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+.prose-buildwe strong {
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+.typing-caret::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes wave {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+.wave-bar {
+  transform-origin: center;
+  animation: wave 1s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--secondary) 25%,
+    var(--card) 50%,
+    var(--secondary) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+.pb-mobile-nav {
+  padding-bottom: calc(var(--nav-h) + var(--safe-b));
+}
+@media (min-width: 768px) {
+  .pb-mobile-nav {
+    padding-bottom: 0;
+  }
+}
+
+body.lock-scroll {
+  overflow: hidden;
+  touch-action: none;
+}
+
+/* Theme surface helpers */
+.bw-bg {
+  background: var(--bg);
+}
+.bw-elevated {
+  background: var(--bg-elevated);
+}
+.bw-card {
+  background: var(--card);
+}
+.bw-secondary {
+  background: var(--secondary);
+}
+.bw-border {
+  border-color: var(--border);
+}
+.bw-text {
+  color: var(--ink);
+}
+.bw-muted {
+  color: var(--muted);
+}
+.bw-soft {
+  color: var(--soft);
+}
+.bw-accent {
+  color: var(--accent);
+}
+.bw-accent-bg {
+  background: var(--accent);
+}
+.bw-accent-soft {
+  background: var(--accent-soft);
+}
