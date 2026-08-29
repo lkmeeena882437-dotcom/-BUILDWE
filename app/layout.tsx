@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { PwaRegister } from "@/components/PwaRegister";
 
 export const metadata: Metadata = {
   title: {
@@ -7,9 +8,10 @@ export const metadata: Metadata = {
     template: "%s · BUILDWE",
   },
   description:
-    "Chat, code, create images, and generate audio — one AI workspace. Start free. PRO $5/mo.",
+    "Chat, code, create images, and generate audio — one free AI workspace with web search and vision. Start free. PRO $5/mo.",
   applicationName: "BUILDWE.ONLINE",
-  keywords: ["AI", "chat", "code", "image", "audio", "BUILDWE"],
+  manifest: "/manifest.webmanifest",
+  keywords: ["AI", "chat", "code", "image", "audio", "web search", "vision", "BUILDWE"],
   openGraph: {
     title: "BUILDWE.ONLINE",
     description: "Build anything. Create everything.",
@@ -50,6 +52,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         style={{ fontFamily: "Inter, system-ui, sans-serif" }}
       >
         {children}
+        <PwaRegister />
       </body>
     </html>
   );

@@ -21,6 +21,7 @@ export async function GET(req: NextRequest) {
       updatedAt: c.updatedAt,
       preview: c.messages[c.messages.length - 1]?.content?.slice(0, 100) || "",
       messageCount: c.messages.length,
+      projectId: c.projectId ?? null,
     }));
     const generations = listGenerations(session.userId);
     const res = NextResponse.json({ conversations, generations });

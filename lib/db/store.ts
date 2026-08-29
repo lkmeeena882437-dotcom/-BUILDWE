@@ -36,8 +36,39 @@ export type Conversation = {
   mode: "auto" | "chat" | "code" | "image" | "audio";
   title: string;
   messages: Message[];
+  projectId?: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type Project = {
+  id: string;
+  userId: string;
+  name: string;
+  createdAt: string;
+};
+
+export type Share = {
+  id: string;
+  conversationId: string;
+  userId: string;
+  title: string;
+  mode: Conversation["mode"];
+  messages: Message[];
+  views: number;
+  createdAt: string;
+};
+
+export type Payment = {
+  id: string;
+  userId: string;
+  orderId: string;
+  paymentId?: string;
+  amount: number;
+  currency: string;
+  status: "created" | "paid" | "failed";
+  demo: boolean;
+  createdAt: string;
 };
 
 export type Generation = {
@@ -65,6 +96,9 @@ type DB = {
   conversations: Conversation[];
   generations: Generation[];
   usage: UsageRow[];
+  projects: Project[];
+  shares: Share[];
+  payments: Payment[];
 };
 
 const emptyDb = (): DB => ({
@@ -72,6 +106,9 @@ const emptyDb = (): DB => ({
   conversations: [],
   generations: [],
   usage: [],
+  projects: [],
+  shares: [],
+  payments: [],
 });
 
 /** Process-local fallback when disk is unavailable */
@@ -135,6 +172,9 @@ function read(): DB {
       conversations: parsed.conversations || [],
       generations: parsed.generations || [],
       usage: parsed.usage || [],
+      projects: parsed.projects || [],
+      shares: parsed.shares || [],
+      payments: parsed.payments || [],
     };
     return memoryDb;
   } catch {
@@ -256,6 +296,7 @@ export function createConversation(input: {
   mode: Conversation["mode"];
   title: string;
   messages?: Message[];
+  projectId?: string | null;
 }) {
   const db = read();
   const now = new Date().toISOString();
@@ -265,6 +306,7 @@ export function createConversation(input: {
     mode: input.mode,
     title: input.title.slice(0, 80) || "New chat",
     messages: input.messages || [],
+    projectId: input.projectId || null,
     createdAt: now,
     updatedAt: now,
   };
@@ -314,8 +356,151 @@ export function deleteConversation(id: string, userId: string) {
   db.conversations = db.conversations.filter(
     (c) => !(c.id === id && c.userId === userId)
   );
+  db.shares = db.shares.filter((s) => s.conversationId !== id);
   write(db);
   return db.conversations.length < before;
+}
+
+/* ── Projects ────────────────────────────────────────────── */
+
+export function listProjects(userId: string) {
+  return read()
+    .projects.filter((p) => p.userId === userId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export function createProject(userId: string, name: string) {
+  const db = read();
+  const p: Project = {
+    id: uid("proj"),
+    userId,
+    name: name.trim().slice(0, 40) || "New project",
+    createdAt: new Date().toISOString(),
+  };
+  db.projects.push(p);
+  write(db);
+  return p;
+}
+
+export function renameProject(id: string, userId: string, name: string) {
+  const db = read();
+  const p = db.projects.find((x) => x.id === id && x.userId === userId);
+  if (!p) return null;
+  p.name = name.trim().slice(0, 40) || p.name;
+  write(db);
+  return p;
+}
+
+export function deleteProject(id: string, userId: string) {
+  const db = read();
+  db.projects = db.projects.filter((p) => !(p.id === id && p.userId === userId));
+  // detach conversations from the deleted project
+  for (const c of db.conversations) {
+    if (c.projectId === id) c.projectId = null;
+  }
+  write(db);
+  return true;
+}
+
+export function setConversationProject(
+  conversationId: string,
+  userId: string,
+  projectId: string | null
+) {
+  const db = read();
+  const c = db.conversations.find(
+    (x) => x.id === conversationId && x.userId === userId
+  );
+  if (!c) return null;
+  if (projectId && !db.projects.some((p) => p.id === projectId && p.userId === userId)) {
+    return null;
+  }
+  c.projectId = projectId;
+  c.updatedAt = new Date().toISOString();
+  write(db);
+  return c;
+}
+
+/* ── Shares (public read-only links) ─────────────────────── */
+
+export function createShare(conversationId: string, userId: string) {
+  const db = read();
+  const c = db.conversations.find(
+    (x) => x.id === conversationId && x.userId === userId
+  );
+  if (!c) return null;
+  // reuse an existing share for the same conversation
+  const existing = db.shares.find((s) => s.conversationId === conversationId);
+  if (existing) {
+    existing.messages = c.messages;
+    existing.title = c.title;
+    existing.mode = c.mode;
+    write(db);
+    return existing;
+  }
+  const s: Share = {
+    id: randomBytes(8).toString("base64url"),
+    conversationId,
+    userId,
+    title: c.title,
+    mode: c.mode,
+    messages: c.messages,
+    views: 0,
+    createdAt: new Date().toISOString(),
+  };
+  db.shares.unshift(s);
+  db.shares = db.shares.slice(0, 200);
+  write(db);
+  return s;
+}
+
+export function getShare(id: string) {
+  return read().shares.find((s) => s.id === id) || null;
+}
+
+export function bumpShareViews(id: string) {
+  const db = read();
+  const s = db.shares.find((x) => x.id === id);
+  if (!s) return;
+  s.views += 1;
+  write(db);
+}
+
+export function deleteSharesForConversation(conversationId: string) {
+  const db = read();
+  db.shares = db.shares.filter((s) => s.conversationId !== conversationId);
+  write(db);
+}
+
+/* ── Payments ────────────────────────────────────────────── */
+
+export function addPayment(input: Omit<Payment, "id" | "createdAt">) {
+  const db = read();
+  const row: Payment = {
+    ...input,
+    id: uid("pay"),
+    createdAt: new Date().toISOString(),
+  };
+  db.payments.unshift(row);
+  db.payments = db.payments.slice(0, 300);
+  write(db);
+  return row;
+}
+
+export function findPaymentByOrder(orderId: string) {
+  return read().payments.find((p) => p.orderId === orderId) || null;
+}
+
+export function updatePayment(
+  id: string,
+  patch: Partial<Pick<Payment, "status" | "paymentId">>
+) {
+  const db = read();
+  const i = db.payments.findIndex((p) => p.id === id);
+  if (i < 0) return null;
+  db.payments[i] = { ...db.payments[i], ...patch };
+  write(db);
+  return db.payments[i];
 }
 
 /* ── Generations ─────────────────────────────────────────── */

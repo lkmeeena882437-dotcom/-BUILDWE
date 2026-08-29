@@ -18,30 +18,30 @@
 ## Gaps (needed) — priority order
 
 ### P0 — Quality & intelligence (this sprint)
-1. **Message-faithful replies** — always answer *this* user text (done + mind layer)
-2. **Conversation memory / mind** — remember prefs, language, goals across turns
-3. **User skills / custom instructions** — like Custom GPT instructions
-4. **Model ladder** — free live + paid/pro models “Coming soon”
-5. **Feedback loop** — 👍👎 trains local mind weights / notes
+1. **Message-faithful replies** — always answer *this* user text ✅ done + mind layer
+2. **Conversation memory / mind** — remember prefs, language, goals across turns ✅ done
+3. **User skills / custom instructions** — like Custom GPT instructions ✅ done
+4. **Model ladder** — free live + paid/pro models “Coming soon” ✅ done (seats reserved)
+5. **Feedback loop** — 👍👎 trains local mind weights / notes ✅ done
 
 ### P1 — Parity features
-6. **Web search / browse** — Coming soon (needs search API)
-7. **Vision (image understand)** — upload image → describe/QA — Coming soon
-8. **File analysis** — PDF/CSV deep analysis beyond text paste
-9. **Projects / folders** — group chats by project
-10. **Artifacts panel** — richer than code canvas (docs, previews)
-11. **Share conversation link**
-12. **Branch / edit & continue from message**
-13. **Stop + partial save** (have stop; harden)
-14. **Export chat** Markdown/PDF
+6. **Web search / browse** ✅ done — DuckDuckGo key-free, grounded answers with [n] source chips, `search:` prefix or 🌐 toggle; works even without LLM keys
+7. **Vision (image understand)** ✅ done — attach image in chat → Groq llama-4-scout when key set, honest preview fallback otherwise
+8. **File analysis** ✅ done — attach CSV/TXT/MD/JSON → server-side stats (rows, column types, min/max/avg, keywords) injected into the prompt
+9. **Projects / folders** ✅ done — create/assign/filter/delete projects, sidebar chips
+10. **Artifacts panel** ✅ done — code canvas + live HTML preview tab (sandboxed iframe)
+11. **Share conversation link** ✅ done — `/s/{id}` public read-only page + copy-link button
+12. **Branch / edit & continue from message** ✅ done (edit-prompt button re-asks)
+13. **Stop + partial save** ✅ done — server saves the partial answer when the client aborts
+14. **Export chat** ✅ Markdown export in Settings (PDF via browser print)
 
 ### P2 — Platform growth
-15. **Ads slots** (free only)
-16. **PRO billing** Razorpay live
-17. **Permanent DB** Supabase/Turso
-18. **Mobile apps** PWA first
-19. **Team workspaces**
-20. **API for developers**
+15. **Ads slots** (free only) — pending
+16. **PRO billing** Razorpay ✅ done — real order create + HMAC verify + plan=pro upgrade; demo mode until live keys
+17. **Permanent DB** Supabase/Turso — pending (JSON store fine for single instance)
+18. **Mobile apps** ✅ PWA first — manifest + icons + service worker (installable)
+19. **Team workspaces** — pending
+20. **API for developers** — pending
 
 ## What we will NOT copy blindly
 - Dark generic dashboard

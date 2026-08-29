@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Check, X } from "lucide-react";
+import { UpgradeButton } from "@/components/billing/UpgradeButton";
 
 const FREE = [
   "Full platform access for everyone",
@@ -120,15 +121,9 @@ export default function PricingPage() {
                 </li>
               ))}
             </ul>
-            <button
-              type="button"
-              onClick={() => router.push("/?checkout=pro")}
-              className="mt-8 flex h-11 w-full items-center justify-center rounded-2xl bg-[#C45C26] text-sm font-semibold text-white hover:bg-[#A84B1C]"
-            >
-              Upgrade to PRO →
-            </button>
+            <UpgradeButton />
             <p className="mt-3 text-center text-[11px] text-[#9C958C]">
-              Secure checkout when billing keys are connected
+              Secure Razorpay checkout · demo mode until live keys are connected
             </p>
           </div>
         </div>

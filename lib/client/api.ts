@@ -204,6 +204,104 @@ export async function detectAuto(prompt: string) {
   return j as { mode: string };
 }
 
+/* ── Web search ─────────────────────────────────────────── */
+
+export async function webSearchApi(query: string) {
+  const r = await fetch("/api/ai/search", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Search failed");
+  return j as {
+    ok: boolean;
+    results: { title: string; url: string; snippet: string; host: string }[];
+  };
+}
+
+/* ── Vision ─────────────────────────────────────────────── */
+
+export async function visionApi(imageDataUrl: string, prompt: string) {
+  const r = await fetch("/api/ai/vision", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image: imageDataUrl, prompt }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn't analyze that image");
+  return j as { ok: boolean; text: string; model: string; live: boolean };
+}
+
+/* ── File analysis ──────────────────────────────────────── */
+
+export async function analyzeFileApi(name: string, text: string) {
+  const r = await fetch("/api/ai/file", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, text }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn't analyze that file");
+  return j as { ok: boolean; name: string; summary: string };
+}
+
+/* ── Share links ────────────────────────────────────────── */
+
+export async function createShare(conversationId: string) {
+  const r = await fetch("/api/share", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ conversationId }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn't create share link");
+  return j as { ok: boolean; id: string; url: string };
+}
+
+/* ── Projects ───────────────────────────────────────────── */
+
+export async function fetchProjects() {
+  const r = await fetch("/api/projects", { credentials: "include" });
+  const j = await readJson(r);
+  return j as { projects: { id: string; name: string; createdAt: string }[] };
+}
+
+export async function createProject(name: string) {
+  const r = await fetch("/api/projects", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "create", name }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn't create project");
+  return j as { project: { id: string; name: string } };
+}
+
+export async function assignProject(conversationId: string, projectId: string | null) {
+  const r = await fetch("/api/projects", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "assign", conversationId, projectId }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn't move chat");
+  return j;
+}
+
+export async function deleteProjectApi(id: string) {
+  await fetch(`/api/projects?id=${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+}
+
 export async function sendFeedback(kind: "up" | "down", note?: string) {
   const r = await fetch("/api/ai/feedback", {
     method: "POST",

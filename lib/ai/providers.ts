@@ -236,6 +236,8 @@ export async function streamChatOrCode(opts: {
   prefer?: string[];
   avoid?: string[];
   promptForRouting: string;
+  /** When set AND no provider is reachable, stream this text instead of the generic offline reply */
+  offlineOverrideText?: string;
 }): Promise<{
   stream: ReadableStream<Uint8Array>;
   model: string;
@@ -338,10 +340,84 @@ export async function streamChatOrCode(opts: {
       : smartOfflineChat(lastUser, turns);
 
   return {
-    stream: textToSSE(offline),
+    stream: textToSSE(opts.offlineOverrideText || offline),
     model: publicModelLabel(undefined, opts.mode),
     live: false,
     mind,
+  };
+}
+
+/* ── Vision (image understanding) ─────────────────────────── */
+
+const VISION_MODELS = [
+  "meta-llama/llama-4-scout-17b-16e-instruct",
+  "llama-3.2-11b-vision-preview",
+];
+
+export async function visionComplete(opts: {
+  prompt: string;
+  imageDataUrl: string;
+}): Promise<{ text: string; model: string; live: boolean }> {
+  const question =
+    opts.prompt.trim() || "Describe this image in detail. What's in it?";
+
+  for (const model of VISION_MODELS) {
+    if (!AI_KEYS.groq) break;
+    try {
+      const res = await fetch(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${AI_KEYS.groq}`,
+          },
+          body: JSON.stringify({
+            model,
+            max_tokens: 900,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: question },
+                  {
+                    type: "image_url",
+                    image_url: { url: opts.imageDataUrl },
+                  },
+                ],
+              },
+            ],
+          }),
+        }
+      );
+      if (!res.ok) continue;
+      const data = await res.json();
+      const text: string | undefined =
+        data?.choices?.[0]?.message?.content || undefined;
+      if (text) return { text, model: "BUILDWE Vision AI", live: true };
+    } catch (e) {
+      console.error("[bw] vision fail", model, e);
+    }
+  }
+
+  // Offline fallback — honest, still useful
+  const approxBytes = Math.round((opts.imageDataUrl.length * 3) / 4);
+  return {
+    text: [
+      `**Image received** (~${(approxBytes / 1024).toFixed(0)} KB).`,
+      "",
+      question
+        ? `You asked: _${question.slice(0, 200)}_`
+        : "",
+      "",
+      "Full AI vision needs a `GROQ_API_KEY` (free at console.groq.com) set in `.env.local` — drop it in and image understanding goes live instantly.",
+      "",
+      "Till then: images are attached to this chat and will be sent with your question the moment a key is added.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    model: "BUILDWE Vision (preview)",
+    live: false,
   };
 }
 

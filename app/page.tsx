@@ -52,6 +52,13 @@ import {
   ThumbsDown,
   Download,
   Layers,
+  Globe,
+  Share2,
+  FolderPlus,
+  FolderOpen,
+  ImagePlus,
+  XCircle,
+  Eye,
 } from "lucide-react";
 import clsx from "clsx";
 import {
@@ -70,6 +77,13 @@ import {
   fetchModels,
   fetchSkills,
   saveSkills,
+  visionApi,
+  analyzeFileApi,
+  createShare,
+  fetchProjects,
+  createProject,
+  assignProject,
+  deleteProjectApi,
   type MeResponse,
 } from "@/lib/client/api";
 import { ImageStudio, type StudioImage } from "@/components/workspace/ImageStudio";
@@ -83,6 +97,8 @@ type Msg = {
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
+  image?: string;
+  sources?: { title: string; url: string; host: string }[];
 };
 
 type HistItem = {
@@ -91,7 +107,10 @@ type HistItem = {
   mode: string;
   updatedAt: string;
   preview: string;
+  projectId?: string | null;
 };
+
+type ProjectItem = { id: string; name: string; createdAt: string };
 
 const MODE_META: {
   id: Mode;
@@ -154,6 +173,7 @@ const SUGGEST: Record<Mode, string[]> = {
     "Brainstorm 5 creator startup ideas",
     "Rewrite this colder and clearer",
     "Study plan for learning TypeScript",
+    "Search: latest AI news this week",
   ],
   code: [
     "React todo with localStorage",
@@ -244,6 +264,8 @@ function Btn({
   size = "md",
   className,
   type = "button",
+  style,
+  title,
   "aria-label": al,
 }: {
   children: React.ReactNode;
@@ -253,15 +275,31 @@ function Btn({
   size?: "sm" | "md" | "lg";
   className?: string;
   type?: "button" | "submit";
+  style?: React.CSSProperties;
+  title?: string;
   "aria-label"?: string;
 }) {
+  const base =
+    variant === "primary"
+      ? { background: "var(--accent)" }
+      : variant === "ink"
+        ? { background: "var(--ink)", color: "var(--bg)" }
+        : variant === "soft"
+          ? { background: "var(--accent-soft)", color: "var(--accent)" }
+          : variant === "ghost"
+            ? {
+                borderColor: "var(--border)",
+                background: "var(--card)",
+                color: "var(--ink)",
+              }
+            : { color: "var(--muted)" };
   return (
     <button
       type={type}
       onClick={onClick}
       disabled={disabled}
       aria-label={al}
-      title={al}
+      title={title || al}
       className={clsx(
         "inline-flex items-center justify-center gap-1.5 font-medium transition active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40",
         variant === "primary" && "rounded-2xl text-white shadow-sm",
@@ -275,21 +313,7 @@ function Btn({
         variant === "icon" && (size === "sm" ? "h-8 w-8" : "h-10 w-10"),
         className
       )}
-      style={
-        variant === "primary"
-          ? { background: "var(--accent)" }
-          : variant === "ink"
-            ? { background: "var(--ink)", color: "var(--bg)" }
-            : variant === "soft"
-              ? { background: "var(--accent-soft)", color: "var(--accent)" }
-              : variant === "ghost"
-                ? {
-                    borderColor: "var(--border)",
-                    background: "var(--card)",
-                    color: "var(--ink)",
-                  }
-                : { color: "var(--muted)" }
-      }
+      style={style ? { ...base, ...style } : base}
     >
       {children}
     </button>
@@ -412,10 +436,28 @@ function Dashboard() {
     { id: string; name: string; blurb: string; status: string; badge?: string; family: string }[]
   >([]);
 
+  // web search + vision attachment
+  const [webSearchOn, setWebSearchOn] = useState(false);
+  const [attachment, setAttachment] = useState<{ dataUrl: string; name: string } | null>(null);
+  const [visionBusy, setVisionBusy] = useState(false);
+
+  // projects
+  const [projects, setProjects] = useState<ProjectItem[]>([]);
+  const [activeProject, setActiveProject] = useState<string | null>(null);
+  const [convProjectId, setConvProjectId] = useState<string | null>(null);
+
+  // canvas
+  const [canvasTab, setCanvasTab] = useState<"code" | "preview">("code");
+
+  // share
+  const [shareNote, setShareNote] = useState("");
+  const [projMenu, setProjMenu] = useState(false);
+
   const abortRef = useRef<AbortController | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const imgAttachRef = useRef<HTMLInputElement>(null);
 
   const meta = MODE_META.find((m) => m.id === mode)!;
   const plan = me?.plan || "free";
@@ -424,9 +466,11 @@ function Dashboard() {
   const filteredHistory = useMemo(() => {
     const q = search.trim().toLowerCase();
     return history.filter(
-      (h) => !q || h.title.toLowerCase().includes(q) || h.preview.toLowerCase().includes(q)
+      (h) =>
+        (!activeProject || h.projectId === activeProject) &&
+        (!q || h.title.toLowerCase().includes(q) || h.preview.toLowerCase().includes(q))
     );
-  }, [history, search]);
+  }, [history, search, activeProject]);
 
   /* theme */
   useEffect(() => {
@@ -460,8 +504,18 @@ function Dashboard() {
           mode: c.mode,
           updatedAt: c.updatedAt,
           preview: c.preview,
+          projectId: (c as { projectId?: string | null }).projectId ?? null,
         }))
       );
+    } catch {
+      /* */
+    }
+  }, []);
+
+  const refreshProjects = useCallback(async () => {
+    try {
+      const p = await fetchProjects();
+      setProjects(p.projects || []);
     } catch {
       /* */
     }
@@ -470,10 +524,11 @@ function Dashboard() {
   useEffect(() => {
     refreshMe();
     refreshHistory();
+    refreshProjects();
     fetchModels()
       .then((m) => setModelsCatalog(m.all || []))
       .catch(() => {});
-  }, [refreshMe, refreshHistory]);
+  }, [refreshMe, refreshHistory, refreshProjects]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -512,6 +567,9 @@ function Dashboard() {
     setView("app");
     setMode("chat");
     setDrawer(false);
+    setConvProjectId(null);
+    setCanvasTab("code");
+    setAttachment(null);
   };
 
   const openHist = async (id: string) => {
@@ -521,13 +579,16 @@ function Dashboard() {
       setMessages(
         (c.messages || [])
           .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
-          .map((m: { id: string; role: string; content: string }) => ({
+          .map((m: { id: string; role: string; content: string; meta?: { sources?: Msg["sources"] } }) => ({
             id: m.id,
-            role: m.role,
+            role: m.role as "user" | "assistant",
             content: m.content,
+            sources: m.meta?.sources,
           }))
       );
       setMode((c.mode as Mode) || "chat");
+      setConvProjectId((c as { projectId?: string | null }).projectId ?? null);
+      setCanvasTab("code");
       setView("app");
       setDrawer(false);
       const last = [...(c.messages || [])].reverse().find((m: { role: string }) => m.role === "assistant");
@@ -547,6 +608,53 @@ function Dashboard() {
     abortRef.current?.abort();
     abortRef.current = null;
     setStreaming(false);
+  };
+
+  const doShare = async () => {
+    if (!convId) return;
+    try {
+      const s = await createShare(convId);
+      const url = `${window.location.origin}${s.url}`;
+      try {
+        await navigator.clipboard.writeText(url);
+        setShareNote("Share link copied to clipboard ✓");
+      } catch {
+        setShareNote(url);
+      }
+      setTimeout(() => setShareNote(""), 4500);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const doAssignProject = async (projectId: string | null) => {
+    setProjMenu(false);
+    if (!convId) {
+      setActiveProject(projectId);
+      return;
+    }
+    try {
+      await assignProject(convId, projectId);
+      setConvProjectId(projectId);
+      setActiveProject(projectId);
+      refreshHistory();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const doNewProject = async () => {
+    setProjMenu(false);
+    const name = window.prompt("Project name? (e.g. Startup site, DSA prep)");
+    if (!name?.trim()) return;
+    try {
+      const { project } = await createProject(name.trim());
+      const item: ProjectItem = { ...project, createdAt: new Date().toISOString() };
+      setProjects((ps) => [...ps, item]);
+      await doAssignProject(item.id);
+    } catch (e) {
+      setError((e as Error).message);
+    }
   };
 
   const speakBrowser = (text: string, vId: string, spd: number) => {
@@ -642,14 +750,14 @@ function Dashboard() {
 
   const send = async (override?: string) => {
     const text = (override ?? input).trim();
-    if (!text || streaming) return;
+    if ((!text && !attachment) || streaming || visionBusy) return;
     setError("");
     setView("app");
     setInput("");
     if (taRef.current) taRef.current.style.height = "48px";
 
     let resolved: Mode = mode;
-    if (mode === "auto") {
+    if (mode === "auto" && !attachment) {
       try {
         const d = await detectAuto(text);
         resolved = (d.mode as Mode) || "chat";
@@ -659,16 +767,65 @@ function Dashboard() {
       }
     }
 
-    if (resolved === "image") {
+    if (resolved === "image" && !attachment) {
       await runImageGenerate(text);
       return;
     }
 
-    if (resolved === "audio") {
+    if (resolved === "audio" && !attachment) {
       setAudioText(text);
       await runAudioGenerate(text);
       return;
     }
+
+    // ── Vision flow: image attached → understand it ────────
+    if (attachment) {
+      const att = attachment;
+      setAttachment(null);
+      const vId = rid();
+      const aId = rid();
+      setMessages((ms) => [
+        ...ms,
+        {
+          id: vId,
+          role: "user",
+          content: text || `What's in this image? (${att.name})`,
+          image: att.dataUrl,
+        },
+        { id: aId, role: "assistant", content: "", streaming: true },
+      ]);
+      setVisionBusy(true);
+      try {
+        const v = await visionApi(att.dataUrl, text || "Describe this image in detail.");
+        setMessages((ms) =>
+          ms.map((m) =>
+            m.id === aId ? { ...m, content: v.text, streaming: false } : m
+          )
+        );
+        setModelTag(v.model);
+        refreshMe();
+        refreshHistory();
+      } catch (e) {
+        setError((e as Error).message);
+        setMessages((ms) =>
+          ms.map((m) =>
+            m.id === aId
+              ? { ...m, content: (e as Error).message, streaming: false }
+              : m
+          )
+        );
+      } finally {
+        setVisionBusy(false);
+      }
+      return;
+    }
+
+    if (!text) return;
+
+    // "search: …" prefix → auto web-search grounding
+    const searchPrefix = /^(search|google|web)\s*:\s*/i.exec(text);
+    const effectiveText = searchPrefix ? text.replace(searchPrefix[0], "") : text;
+    const useSearch = (webSearchOn || Boolean(searchPrefix)) && resolved === "chat";
 
     // chat or code stream
     const endpoint = resolved === "code" ? "/api/ai/code" : "/api/ai/chat";
@@ -682,15 +839,6 @@ function Dashboard() {
     setMessages(nextMessages);
     setStreaming(true);
 
-    const apiMessages = nextMessages
-      .filter((m) => m.id !== aId)
-      .concat()
-      .map((m) => ({ role: m.role, content: m.content }));
-    // include current user
-    if (!apiMessages.some((m) => m.content === text && m.role === "user")) {
-      apiMessages.push({ role: "user", content: text });
-    }
-
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
@@ -701,15 +849,27 @@ function Dashboard() {
         {
           messages: [
             ...messages.map((m) => ({ role: m.role, content: m.content })),
-            { role: "user", content: text },
+            { role: "user", content: effectiveText },
           ],
           conversationId: convId,
+          webSearch: useSearch,
+          projectId: convProjectId ?? activeProject ?? null,
         },
         (ev) => {
           if (ev.meta && typeof ev.meta === "object") {
-            const meta = ev.meta as { conversationId?: string; model?: string; live?: boolean };
+            const meta = ev.meta as {
+              conversationId?: string;
+              model?: string;
+              live?: boolean;
+              sources?: Msg["sources"];
+            };
             if (meta.conversationId) setConvId(meta.conversationId);
             if (meta.model) setModelTag(String(meta.model));
+            if (meta.sources?.length) {
+              setMessages((ms) =>
+                ms.map((m) => (m.id === aId ? { ...m, sources: meta.sources } : m))
+              );
+            }
           }
           if (ev.token) {
             acc += ev.token;
@@ -1001,6 +1161,52 @@ function Dashboard() {
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2" style={{ color: "var(--soft)" }} />
                   <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search" className="h-9 w-full rounded-xl pl-8 pr-2 text-xs outline-none" style={{ background: "var(--secondary)" }} />
                 </div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setActiveProject(null)}
+                    className="rounded-full px-2 py-1 text-[10px] font-semibold"
+                    style={!activeProject ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
+                  >
+                    All
+                  </button>
+                  {projects.map((p) => (
+                    <span key={p.id} className="group inline-flex items-center">
+                      <button
+                        type="button"
+                        onClick={() => setActiveProject(p.id)}
+                        className="rounded-l-full px-2 py-1 text-[10px] font-semibold"
+                        style={activeProject === p.id ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
+                      >
+                        {p.name}
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Delete ${p.name}`}
+                        className="rounded-r-full px-1 py-1 opacity-0 transition group-hover:opacity-100"
+                        style={{ color: "var(--soft)" }}
+                        onClick={async () => {
+                          await deleteProjectApi(p.id);
+                          setProjects((ps) => ps.filter((x) => x.id !== p.id));
+                          if (activeProject === p.id) setActiveProject(null);
+                          if (convProjectId === p.id) setConvProjectId(null);
+                          refreshHistory();
+                        }}
+                      >
+                        <Trash2 className="h-2.5 w-2.5" />
+                      </button>
+                    </span>
+                  ))}
+                  <button
+                    type="button"
+                    aria-label="New project"
+                    onClick={doNewProject}
+                    className="rounded-full px-2 py-1 text-[10px] font-semibold"
+                    style={{ background: "var(--secondary)", color: "var(--muted)" }}
+                  >
+                    <Plus className="mr-0.5 inline h-2.5 w-2.5" />Project
+                  </button>
+                </div>
               </div>
               <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
                 {filteredHistory.map((h) => (
@@ -1066,9 +1272,44 @@ function Dashboard() {
             {sidebarOpen ? <PanelLeftClose className="h-[18px] w-[18px]" /> : <PanelLeft className="h-[18px] w-[18px]" />}
           </Btn>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold tracking-tight">{meta.label}</div>
+            <div className="truncate text-sm font-semibold tracking-tight">{meta.label}{webSearchOn && (mode === "chat" || mode === "auto") ? " · Web search on" : ""}</div>
             <div className="hidden truncate text-[11px] sm:block" style={{ color: "var(--muted)" }}>{meta.headline}{modelTag ? ` · ${modelTag}` : ""}</div>
           </div>
+          <div className="relative">
+            <Btn
+              variant="icon"
+              size="sm"
+              aria-label="Move to project"
+              onClick={() => setProjMenu((v) => !v)}
+              style={convProjectId ? { background: "var(--accent-soft)", color: "var(--accent)" } : undefined}
+            >
+              <FolderOpen className="h-4 w-4" />
+            </Btn>
+            {projMenu && (
+              <>
+                <button type="button" className="fixed inset-0 z-40 cursor-default" aria-label="Close menu" onClick={() => setProjMenu(false)} />
+                <div className="absolute right-0 z-50 mt-2 w-52 overflow-hidden rounded-2xl border shadow-lg" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
+                  <div className="px-3 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Move chat to</div>
+                  <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: !convProjectId ? "var(--accent)" : "var(--ink)" }} onClick={() => doAssignProject(null)}>
+                    <FolderOpen className="h-3.5 w-3.5" /> No project
+                  </button>
+                  {projects.map((p) => (
+                    <button key={p.id} type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: convProjectId === p.id ? "var(--accent)" : "var(--ink)" }} onClick={() => doAssignProject(p.id)}>
+                      <FolderOpen className="h-3.5 w-3.5" /> <span className="truncate">{p.name}</span>
+                    </button>
+                  ))}
+                  <button type="button" className="flex w-full items-center gap-2 border-t px-3 py-2.5 text-left text-sm font-medium" style={{ borderColor: "var(--border)", color: "var(--accent)" }} onClick={doNewProject}>
+                    <FolderPlus className="h-3.5 w-3.5" /> New project
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+          {convId && !!messages.length && (
+            <Btn variant="icon" size="sm" aria-label="Share chat" title="Copy public share link" onClick={doShare}>
+              <Share2 className="h-4 w-4" />
+            </Btn>
+          )}
           {plan === "pro" ? (
             <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold" style={{ background: "var(--ink)", color: "var(--bg)" }}><Star className="h-3 w-3" /> PRO</span>
           ) : (
@@ -1181,10 +1422,32 @@ function Dashboard() {
                                     : { background: "var(--card)", borderColor: "var(--border)" }
                                 }
                               >
+                                {isUser && m.image && (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img src={m.image} alt="attachment" className="mb-2 max-h-56 w-auto rounded-2xl object-contain" />
+                                )}
                                 {isUser ? (
                                   <p className="whitespace-pre-wrap">{m.content}</p>
                                 ) : (
                                   <div className="prose-bw" dangerouslySetInnerHTML={{ __html: md(m.content || "") }} />
+                                )}
+                                {!isUser && !!m.sources?.length && !m.streaming && (
+                                  <div className="mt-3 flex flex-wrap gap-1.5 border-t pt-2" style={{ borderColor: "var(--border)" }}>
+                                    <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: "var(--soft)" }}>Sources</span>
+                                    {m.sources.slice(0, 5).map((s, si) => (
+                                      <a
+                                        key={si}
+                                        href={s.url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        title={s.title}
+                                        className="rounded-full px-2 py-0.5 text-[10px] font-medium transition hover:opacity-80"
+                                        style={{ background: "var(--secondary)", color: "var(--muted)" }}
+                                      >
+                                        [{si + 1}] {s.host}
+                                      </a>
+                                    ))}
+                                  </div>
                                 )}
                               </div>
                               {!isUser && m.content && !m.streaming && (
@@ -1270,6 +1533,19 @@ function Dashboard() {
                   )}
 
                   <div className="rounded-3xl border shadow-sm" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
+                    {attachment && (
+                      <div className="mx-3 mt-3 flex items-center gap-3 rounded-2xl border p-2" style={{ borderColor: "var(--border)", background: "var(--secondary)" }}>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={attachment.dataUrl} alt={attachment.name} className="h-12 w-12 rounded-xl object-cover" />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-xs font-medium">{attachment.name}</div>
+                          <div className="text-[10px]" style={{ color: "var(--muted)" }}>Image attached — ask anything about it</div>
+                        </div>
+                        <Btn variant="icon" size="sm" aria-label="Remove image" onClick={() => setAttachment(null)}>
+                          <XCircle className="h-4 w-4" />
+                        </Btn>
+                      </div>
+                    )}
                     <textarea
                       ref={taRef}
                       value={input}
@@ -1306,15 +1582,49 @@ function Dashboard() {
                           );
                         })}
                       </div>
-                      <input ref={fileRef} type="file" className="hidden" accept="text/*,.md,.json,.js,.ts,.tsx,.py,.css,.html" onChange={async (e) => {
+                      <input ref={fileRef} type="file" className="hidden" accept="text/*,.md,.json,.js,.ts,.tsx,.py,.css,.html,.csv" onChange={async (e) => {
                         const f = e.target.files?.[0];
                         if (!f) return;
                         const t = await f.text();
-                        setInput((v) => (v ? v + "\n\n" : "") + `[File: ${f.name}]\n${t.slice(0, 8000)}`);
+                        try {
+                          const a = await analyzeFileApi(f.name, t);
+                          setInput((v) => (v ? v + "\n\n" : "") + `[Attached file: ${f.name}]\n${a.summary}\n\nMy question: `);
+                        } catch {
+                          setInput((v) => (v ? v + "\n\n" : "") + `[File: ${f.name}]\n${t.slice(0, 8000)}`);
+                        }
                         e.target.value = "";
                         requestAnimationFrame(grow);
                       }} />
-                      <Btn variant="icon" size="sm" aria-label="Upload" onClick={() => fileRef.current?.click()}><Paperclip className="h-4 w-4" /></Btn>
+                      <input ref={imgAttachRef} type="file" className="hidden" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (!f) return;
+                        if (f.size > 5 * 1024 * 1024) {
+                          setError("Image too large — keep it under 5 MB.");
+                          e.target.value = "";
+                          return;
+                        }
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                          setAttachment({ dataUrl: String(reader.result), name: f.name });
+                          setMode((m) => (m === "image" || m === "audio" ? "chat" : m));
+                        };
+                        reader.readAsDataURL(f);
+                        e.target.value = "";
+                      }} />
+                      {(mode === "chat" || mode === "auto") && (
+                        <Btn
+                          variant="icon"
+                          size="sm"
+                          aria-label="Web search"
+                          title="Web search — live sources"
+                          onClick={() => setWebSearchOn((v) => !v)}
+                          style={webSearchOn ? { background: "var(--accent-soft)", color: "var(--accent)" } : undefined}
+                        >
+                          <Globe className="h-4 w-4" />
+                        </Btn>
+                      )}
+                      <Btn variant="icon" size="sm" aria-label="Attach image" title="Attach image — AI vision" onClick={() => imgAttachRef.current?.click()}><ImagePlus className="h-4 w-4" /></Btn>
+                      <Btn variant="icon" size="sm" aria-label="Upload file" title="Attach text/CSV file" onClick={() => fileRef.current?.click()}><Paperclip className="h-4 w-4" /></Btn>
                       <Btn
                         variant="icon"
                         size="sm"
@@ -1342,10 +1652,10 @@ function Dashboard() {
                       >
                         {listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
                       </Btn>
-                      {streaming || imgLoading || audioBusy ? (
+                      {streaming || imgLoading || audioBusy || visionBusy ? (
                         <Btn variant="ink" className="!h-10 !w-10 !p-0" aria-label="Stop" onClick={stop}><Square className="h-3.5 w-3.5 fill-current" /></Btn>
                       ) : (
-                        <Btn className="!h-10 !w-10 !p-0" aria-label="Send" disabled={!input.trim()} onClick={() => send()}>
+                        <Btn className="!h-10 !w-10 !p-0" aria-label="Send" disabled={!input.trim() && !attachment} onClick={() => send()}>
                           {streaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                         </Btn>
                       )}
@@ -1359,13 +1669,27 @@ function Dashboard() {
               </div>
             </div>
 
-            {/* code canvas */}
+            {/* code canvas + live preview */}
             {mode === "code" && (
               <div className="hidden min-h-0 flex-1 flex-col lg:flex" style={{ background: "var(--code-bg)", color: "var(--code-fg)" }}>
                 <div className="flex items-center justify-between border-b border-white/10 px-3 py-2">
-                  <div className="flex items-center gap-2 text-xs text-white/50">
-                    <FileCode2 className="h-3.5 w-3.5" />
-                    buildwe · {codeLang}
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setCanvasTab("code")}
+                      className={clsx("flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium", canvasTab === "code" ? "bg-white/15 text-white" : "text-white/45 hover:bg-white/10")}
+                    >
+                      <FileCode2 className="h-3.5 w-3.5" /> Code · {codeLang}
+                    </button>
+                    {/html|xml/.test(codeLang) || /^\s*<!doctype html/i.test(codePanel) ? (
+                      <button
+                        type="button"
+                        onClick={() => setCanvasTab(canvasTab === "code" ? "preview" : "code")}
+                        className={clsx("flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium", canvasTab === "preview" ? "bg-white/15 text-white" : "text-white/45 hover:bg-white/10")}
+                      >
+                        <Eye className="h-3.5 w-3.5" /> Preview
+                      </button>
+                    ) : null}
                   </div>
                   <div className="flex gap-1">
                     <button type="button" className="rounded-lg px-2 py-1 text-[11px] text-white/55 hover:bg-white/10" onClick={() => copy(codePanel, "code")}>{copied === "code" ? "Copied" : "Copy"}</button>
@@ -1378,9 +1702,18 @@ function Dashboard() {
                     }}>Save</button>
                   </div>
                 </div>
-                <div className="flex-1 overflow-auto p-4">
-                  <pre className="font-mono text-[13px] leading-relaxed"><code>{codePanel}</code></pre>
-                </div>
+                {canvasTab === "preview" ? (
+                  <iframe
+                    title="Live preview"
+                    sandbox="allow-scripts"
+                    srcDoc={codePanel}
+                    className="flex-1 bg-white"
+                  />
+                ) : (
+                  <div className="flex-1 overflow-auto p-4">
+                    <pre className="font-mono text-[13px] leading-relaxed"><code>{codePanel}</code></pre>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1405,6 +1738,17 @@ function Dashboard() {
           </div>
         </nav>
       </div>
+
+      {shareNote && (
+        <div className="fixed inset-x-0 bottom-[72px] z-[60] flex justify-center px-4 md:bottom-6">
+          <div
+            className="max-w-full truncate rounded-full border px-4 py-2 text-xs font-medium shadow-lg"
+            style={{ borderColor: "var(--border)", background: "var(--card)", color: "var(--ink)" }}
+          >
+            {shareNote}
+          </div>
+        </div>
+      )}
 
       {/* mobile drawer */}
       {drawer && (

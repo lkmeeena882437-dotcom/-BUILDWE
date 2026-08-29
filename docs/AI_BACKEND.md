@@ -19,20 +19,23 @@ User prompt
     ↓
 [2] If mode=auto → detectIntent()  (chat | code | image | audio)
     ↓
+[2b] If webSearch on → DuckDuckGo top-5 → context block + [n] citations
+     (key-free; without LLM keys the sourced summary IS the answer)
+    ↓
 [3] estimateComplexity()  (simple | normal | complex)
     ↓
 [4] pickModel({ capability, plan, prompt })
        FREE: maximize quality − cost
        PRO:  maximize quality (cost secondary)
     ↓
-[5] Provider call (Groq / OpenRouter / Fal / TTS / …)
+[5] Provider call (Groq / OpenRouter / Pollinations / Vision / TTS / …)
     ↓
-[6] Fallback chain on error
+[6] Fallback chain on error → smart offline reply
     ↓
-[7] Stream or return + usage log
+[7] Stream or return + usage log (+ partial save on abort)
 ```
 
-Code: `lib/ai/rules.ts`, `lib/ai/models-catalog.ts`, `lib/ai/gateway.ts`.
+Code: `lib/ai/rules.ts`, `lib/ai/models-catalog.ts`, `lib/ai/providers.ts`, `lib/ai/search.ts`.
 
 ## Models we recommend adding (all optional — keep many)
 
@@ -67,6 +70,23 @@ Set provider keys + optional `AI_CHAT_MODEL`, `AI_CODE_MODEL_PRO`, etc.
 1. User pastes key in Settings  
 2. Server encrypts with `BYOK_ENCRYPTION_SECRET`  
 3. Gateway prefers BYOK over platform keys for that user  
+
+## Web search (live, key-free)
+
+- `POST /api/ai/search { query }` → top-5 DuckDuckGo results
+- Chat with `webSearch: true` (or the 🌐 toggle / `search:` prefix) injects them as grounding context and streams back `meta.sources`
+- No LLM key? The composed sourced summary is streamed instead — search still works offline-mode
+
+## Vision
+
+- `POST /api/ai/vision { image: dataURL, prompt }`
+- Groq `llama-4-scout-17b` (or `llama-3.2-11b-vision`) when `GROQ_API_KEY` set
+- Otherwise honest preview fallback (explains how to enable)
+
+## File analysis
+
+- `POST /api/ai/file { name, text }` — CSV: rows, column types, min/max/avg, uniques; text: lines/words/keywords + excerpt
+- Deterministic + free; the summary is injected into the chat prompt
 
 ## Privacy
 

@@ -3,6 +3,7 @@ import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
 import { streamChatOrCode } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
+import { composeSearchAnswer, searchContextBlock, webSearch } from "@/lib/ai/search";
 import {
   appendMessages,
   createConversation,
@@ -41,6 +42,14 @@ export async function POST(req: NextRequest) {
       [...body.messages].reverse().find((m: { role: string }) => m.role === "user")
         ?.content || "";
 
+    const wantSearch = Boolean(body.webSearch);
+
+    // ── Web search grounding (free, no key needed) ──────────
+    let searchResults: Awaited<ReturnType<typeof webSearch>> = [];
+    if (wantSearch && userText) {
+      searchResults = await webSearch(userText, { max: 5 });
+    }
+
     let conversationId = (body.conversationId as string | undefined) || uid("conv");
 
     // Persist best-effort — never block the AI reply if storage fails
@@ -51,6 +60,7 @@ export async function POST(req: NextRequest) {
           mode: "chat",
           title: String(userText).slice(0, 48) || "Chat",
           messages: [],
+          projectId: body.projectId || null,
         });
         conversationId = c.id;
       }
@@ -77,14 +87,30 @@ export async function POST(req: NextRequest) {
       .filter((s: string) => s.startsWith("avoid:"))
       .map((s: string) => s.slice(6));
 
+    // Inject search context as a system message before the user's turns
+    const contextBlock = searchContextBlock(searchResults);
+    const apiMessages = contextBlock
+      ? [
+          {
+            role: "system",
+            content: `${contextBlock}\n\nAnswer using these results where relevant. Cite sources inline as [1], [2]. If the results don't cover it, say so and answer from your own knowledge.`,
+          },
+          ...body.messages,
+        ]
+      : body.messages;
+
     const { stream, model, live } = await streamChatOrCode({
       mode: "chat",
-      messages: body.messages,
+      messages: apiMessages,
       plan: session.plan,
       skills,
       prefer,
       avoid,
       promptForRouting: String(userText),
+      // when offline + search on, stream the composed sourced answer instead
+      ...(wantSearch && searchResults.length
+        ? { offlineOverrideText: composeSearchAnswer(userText, searchResults) }
+        : {}),
     });
 
     try {
@@ -97,13 +123,57 @@ export async function POST(req: NextRequest) {
     const encoder = new TextEncoder();
     let full = "";
 
+    const persistAssistant = (text: string) => {
+      if (!text.trim()) return;
+      try {
+        appendMessages(conversationId!, session.userId, [
+          {
+            id: uid("m"),
+            role: "assistant",
+            content: text,
+            createdAt: new Date().toISOString(),
+            meta: {
+              model,
+              live,
+              ...(searchResults.length
+                ? {
+                    sources: searchResults.map((r) => ({
+                      title: r.title,
+                      url: r.url,
+                      host: r.host,
+                    })),
+                  }
+                : {}),
+            },
+          },
+        ]);
+      } catch (e) {
+        console.error("[bw] chat persist assistant", e);
+      }
+    };
+
     const teed = new ReadableStream({
       async start(controller) {
         const reader = stream.getReader();
         try {
           controller.enqueue(
             encoder.encode(
-              `data: ${JSON.stringify({ meta: { conversationId, model, live } })}\n\n`
+              `data: ${JSON.stringify({
+                meta: {
+                  conversationId,
+                  model: wantSearch && searchResults.length && !live ? "buildwe-search" : model,
+                  live,
+                  ...(searchResults.length
+                    ? {
+                        sources: searchResults.map((r) => ({
+                          title: r.title,
+                          url: r.url,
+                          host: r.host,
+                        })),
+                      }
+                    : {}),
+                },
+              })}\n\n`
             )
           );
           while (true) {
@@ -121,23 +191,12 @@ export async function POST(req: NextRequest) {
             }
             controller.enqueue(value);
           }
-          if (full.trim()) {
-            try {
-              appendMessages(conversationId!, session.userId, [
-                {
-                  id: uid("m"),
-                  role: "assistant",
-                  content: full,
-                  createdAt: new Date().toISOString(),
-                  meta: { model, live },
-                },
-              ]);
-            } catch (e) {
-              console.error("[bw] chat persist assistant", e);
-            }
-          }
+          persistAssistant(full);
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true })}\n\n`));
           controller.close();
         } catch (e) {
+          // Client aborted mid-stream → save the partial answer (stop & keep)
+          persistAssistant(full);
           try {
             controller.enqueue(
               encoder.encode(

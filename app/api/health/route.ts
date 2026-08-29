@@ -1,23 +1,23 @@
-export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
 import { NextResponse } from "next/server";
-import { APP, hasProviderKey } from "@/lib/config";
+import { AI_KEYS, APP } from "@/lib/config";
 import { storageMode } from "@/lib/db/store";
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
-  const llm = hasProviderKey("groq") || hasProviderKey("openrouter");
+  const llmLive = Boolean(AI_KEYS.groq || AI_KEYS.openrouter);
   return NextResponse.json({
     ok: true,
     app: APP.name,
-    status: "operational",
-    storage: storageMode(),
-    capabilities: {
-      chat: true,
-      code: true,
-      image: true,
-      audio: true,
-      llmLive: llm,
+    demoMode: APP.demoMode,
+    providers: {
+      llm: llmLive ? (AI_KEYS.groq ? "groq" : "openrouter") : "offline-smart-demo",
+      image: "pollinations",
+      audio: "browser-tts",
+      vision: AI_KEYS.groq ? "groq-vision" : "preview-fallback",
+      webSearch: "duckduckgo",
     },
+    db: storageMode(),
     time: new Date().toISOString(),
   });
 }
