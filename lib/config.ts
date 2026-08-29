@@ -46,13 +46,13 @@ export const AI_KEYS = {
 export const AI_MODELS = {
   free: {
     chat: env("AI_CHAT_MODEL", "llama-3.3-70b-versatile"),
-    code: env("AI_CODE_MODEL", "qwen2.5-coder-32b"),
+    code: env("AI_CODE_MODEL", "llama-3.3-70b-versatile"),
     image: env("AI_IMAGE_MODEL", "fal-ai/flux/schnell"),
     audio: env("AI_AUDIO_MODEL", "default-tts"),
   },
   pro: {
     chat: env("AI_CHAT_MODEL_PRO", "llama-3.3-70b-versatile"),
-    code: env("AI_CODE_MODEL_PRO", "qwen2.5-coder-32b"),
+    code: env("AI_CODE_MODEL_PRO", "llama-3.3-70b-versatile"),
     image: env("AI_IMAGE_MODEL_PRO", "fal-ai/flux/dev"),
     audio: env("AI_AUDIO_MODEL_PRO", "premium-tts"),
   },

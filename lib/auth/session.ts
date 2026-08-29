@@ -15,7 +15,7 @@ function secret() {
 }
 
 export type SessionPayload = {
-  sub: string; // user id or guest:<id>
+  sub: string;
   kind: "user" | "guest";
   email?: string;
   name?: string;
@@ -30,7 +30,9 @@ export async function signSession(payload: SessionPayload, days = 30) {
     .sign(secret());
 }
 
-export async function verifyToken(token: string): Promise<SessionPayload | null> {
+export async function verifyToken(
+  token: string
+): Promise<SessionPayload | null> {
   try {
     const { payload } = await jwtVerify(token, secret());
     return payload as unknown as SessionPayload;
@@ -39,18 +41,50 @@ export async function verifyToken(token: string): Promise<SessionPayload | null>
   }
 }
 
+function cookieSecure() {
+  // Vercel production is always HTTPS
+  return (
+    process.env.NODE_ENV === "production" ||
+    process.env.VERCEL === "1" ||
+    Boolean(process.env.VERCEL_ENV)
+  );
+}
+
 export function setSessionCookie(res: NextResponse, token: string) {
   res.cookies.set(COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
-    secure: process.env.NODE_ENV === "production",
+    secure: cookieSecure(),
     maxAge: 60 * 60 * 24 * 30,
   });
 }
 
 export function clearSessionCookie(res: NextResponse) {
-  res.cookies.set(COOKIE, "", { httpOnly: true, path: "/", maxAge: 0 });
+  res.cookies.set(COOKIE, "", {
+    httpOnly: true,
+    path: "/",
+    maxAge: 0,
+    secure: cookieSecure(),
+    sameSite: "lax",
+  });
+}
+
+function userFromPayload(payload: SessionPayload) {
+  return {
+    userId: payload.sub,
+    kind: "user" as const,
+    user: {
+      id: payload.sub,
+      email: payload.email || "",
+      name: payload.name || "User",
+      plan: (payload.plan || "free") as "free" | "pro",
+      skills: [] as string[],
+      createdAt: "",
+    },
+    plan: (payload.plan || "free") as "free" | "pro",
+    name: payload.name || "User",
+  };
 }
 
 export async function getSession(): Promise<{
@@ -64,36 +98,33 @@ export async function getSession(): Promise<{
   const token = jar.get(COOKIE)?.value;
   if (token) {
     const payload = await verifyToken(token);
-    if (payload?.sub) {
-      if (payload.kind === "user") {
-        const u = findUserById(payload.sub);
-        if (u) {
-          return {
-            userId: u.id,
-            kind: "user",
-            user: publicUser(u),
-            plan: u.plan,
-            name: u.name,
-          };
-        }
-      }
-      if (payload.kind === "guest") {
+    if (payload?.sub && payload.kind === "user") {
+      const u = findUserById(payload.sub);
+      if (u) {
         return {
-          userId: payload.sub,
-          kind: "guest",
-          user: null,
-          plan: "free",
-          name: payload.name || "Guest",
+          userId: u.id,
+          kind: "user",
+          user: publicUser(u),
+          plan: u.plan,
+          name: u.name,
         };
       }
+      // JWT trusted when DB instance lost user (serverless)
+      return userFromPayload(payload);
+    }
+    if (payload?.sub && payload.kind === "guest") {
+      return {
+        userId: payload.sub,
+        kind: "guest",
+        user: null,
+        plan: "free",
+        name: payload.name || "Guest",
+      };
     }
   }
 
-  // Ensure guest id cookie exists for stable history
   let guest = jar.get(GUEST_COOKIE)?.value;
-  if (!guest) {
-    guest = `guest_${uid("g").slice(2)}`;
-  }
+  if (!guest) guest = `guest_${uid("g").slice(2)}`;
   return {
     userId: guest.startsWith("guest") ? guest : `guest_${guest}`,
     kind: "guest",
@@ -107,19 +138,20 @@ export async function getSessionFromRequest(req: NextRequest) {
   const token = req.cookies.get(COOKIE)?.value;
   if (token) {
     const payload = await verifyToken(token);
-    if (payload?.sub) {
-      if (payload.kind === "user") {
-        const u = findUserById(payload.sub);
-        if (u) {
-          return {
-            userId: u.id,
-            kind: "user" as const,
-            user: publicUser(u),
-            plan: u.plan as "free" | "pro",
-            name: u.name,
-          };
-        }
+    if (payload?.sub && payload.kind === "user") {
+      const u = findUserById(payload.sub);
+      if (u) {
+        return {
+          userId: u.id,
+          kind: "user" as const,
+          user: publicUser(u),
+          plan: u.plan as "free" | "pro",
+          name: u.name,
+        };
       }
+      return userFromPayload(payload);
+    }
+    if (payload?.sub) {
       return {
         userId: payload.sub,
         kind: "guest" as const,
@@ -129,7 +161,8 @@ export async function getSessionFromRequest(req: NextRequest) {
       };
     }
   }
-  const g = req.cookies.get(GUEST_COOKIE)?.value || `guest_${uid("g").slice(2)}`;
+  const g =
+    req.cookies.get(GUEST_COOKIE)?.value || `guest_${uid("g").slice(2)}`;
   return {
     userId: g.startsWith("guest") ? g : `guest_${g}`,
     kind: "guest" as const,
@@ -145,6 +178,7 @@ export function attachGuestCookie(res: NextResponse, userId: string) {
       httpOnly: true,
       sameSite: "lax",
       path: "/",
+      secure: cookieSecure(),
       maxAge: 60 * 60 * 24 * 365,
     });
   }

@@ -1,64 +1,126 @@
 /**
- * BUILDWE AI runtime — providers stay server-side only.
- * User-facing copy never names vendors, keys, or "demo".
+ * BUILDWE AI runtime — live LLM first, smart offline only if providers fail.
+ * Always answers the user's actual message (no generic template spam).
  */
 
 import { AI_KEYS, AI_MODELS, APP, hasProviderKey } from "@/lib/config";
 import { SYSTEM_PROMPTS, publicModelLabel, type Plan } from "@/lib/ai/rules";
-import { pickModel, estimateComplexity } from "@/lib/ai/models-catalog";
+import { pickModel } from "@/lib/ai/models-catalog";
 
-export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+export type ChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
 
 function skillPrefix(skills?: string[]) {
   if (!skills?.length) return "";
-  return `\nUser context/skills: ${skills.slice(0, 6).join(", ")}. Tune tone and examples.`;
+  return `\nUser context: ${skills.slice(0, 6).join(", ")}.`;
 }
 
-async function groqChat(messages: ChatMessage[], model: string) {
+/** Groq-valid models (keep this list current) */
+const GROQ_CHAT_MODELS = [
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
+  "llama-3.1-70b-versatile",
+  "gemma2-9b-it",
+  "mixtral-8x7b-32768",
+];
+
+const GROQ_CODE_MODELS = [
+  "llama-3.3-70b-versatile",
+  "llama-3.1-70b-versatile",
+  "llama-3.1-8b-instant",
+  "gemma2-9b-it",
+];
+
+async function groqStream(messages: ChatMessage[], model: string) {
   if (!hasProviderKey("groq")) return null;
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${AI_KEYS.groq}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature: 0.7,
-      stream: true,
-      max_tokens: 4096,
-    }),
-  });
-  if (!res.ok || !res.body) {
-    console.error("[bw] llm primary", res.status);
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${AI_KEYS.groq}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: 0.7,
+        stream: true,
+        max_tokens: 4096,
+      }),
+    });
+    if (!res.ok || !res.body) {
+      const errText = await res.text().catch(() => "");
+      console.error("[bw] groq stream fail", model, res.status, errText.slice(0, 200));
+      return null;
+    }
+    return res.body;
+  } catch (e) {
+    console.error("[bw] groq stream error", model, e);
     return null;
   }
-  return res.body;
 }
 
-async function openRouterChat(messages: ChatMessage[], model: string) {
-  if (!hasProviderKey("openrouter")) return null;
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${AI_KEYS.openrouter}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": APP.url,
-      "X-Title": APP.name,
-    },
-    body: JSON.stringify({
-      model: model.includes("/") ? model : `meta-llama/${model}`,
-      messages,
-      temperature: 0.7,
-      stream: true,
-    }),
-  });
-  if (!res.ok || !res.body) {
-    console.error("[bw] llm secondary", res.status);
+/** Non-stream fallback when streaming fails */
+async function groqComplete(messages: ChatMessage[], model: string): Promise<string | null> {
+  if (!hasProviderKey("groq")) return null;
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${AI_KEYS.groq}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: 0.7,
+        stream: false,
+        max_tokens: 4096,
+      }),
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.error("[bw] groq complete fail", model, res.status, errText.slice(0, 200));
+      return null;
+    }
+    const data = await res.json();
+    const text = data?.choices?.[0]?.message?.content;
+    return typeof text === "string" && text.trim() ? text : null;
+  } catch (e) {
+    console.error("[bw] groq complete error", model, e);
     return null;
   }
-  return res.body;
+}
+
+async function openRouterStream(messages: ChatMessage[], model: string) {
+  if (!hasProviderKey("openrouter")) return null;
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${AI_KEYS.openrouter}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": APP.url || "https://buildwe.vercel.app",
+        "X-Title": APP.name || "BUILDWE",
+      },
+      body: JSON.stringify({
+        model: model.includes("/") ? model : `meta-llama/llama-3.3-70b-instruct`,
+        messages,
+        temperature: 0.7,
+        stream: true,
+      }),
+    });
+    if (!res.ok || !res.body) {
+      console.error("[bw] openrouter fail", res.status);
+      return null;
+    }
+    return res.body;
+  } catch (e) {
+    console.error("[bw] openrouter error", e);
+    return null;
+  }
 }
 
 export function openAIStreamToTextSSE(body: ReadableStream<Uint8Array>) {
@@ -80,10 +142,13 @@ export function openAIStreamToTextSSE(body: ReadableStream<Uint8Array>) {
             const t = line.trim();
             if (!t.startsWith("data:")) continue;
             const data = t.slice(5).trim();
-            if (data === "[DONE]") continue;
+            if (!data || data === "[DONE]") continue;
             try {
               const json = JSON.parse(data);
-              const token = json.choices?.[0]?.delta?.content || "";
+              const token =
+                json.choices?.[0]?.delta?.content ||
+                json.choices?.[0]?.message?.content ||
+                "";
               if (token) {
                 controller.enqueue(
                   encoder.encode(`data: ${JSON.stringify({ token })}\n\n`)
@@ -94,12 +159,14 @@ export function openAIStreamToTextSSE(body: ReadableStream<Uint8Array>) {
             }
           }
         }
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true })}\n\n`));
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify({ done: true })}\n\n`)
+        );
         controller.close();
-      } catch (e) {
+      } catch {
         controller.enqueue(
           encoder.encode(
-            `data: ${JSON.stringify({ error: "Something interrupted the response. Try again." })}\n\n`
+            `data: ${JSON.stringify({ error: "Response interrupted. Try again." })}\n\n`
           )
         );
         controller.close();
@@ -108,141 +175,175 @@ export function openAIStreamToTextSSE(body: ReadableStream<Uint8Array>) {
   });
 }
 
-function offlineStream(text: string) {
+function textToSSE(text: string): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   const parts = text.split(/(\s+)/);
   return new ReadableStream({
     async start(controller) {
       for (const p of parts) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: p })}\n\n`));
-        await new Promise((r) => setTimeout(r, p.length > 8 ? 10 : 4));
+        if (!p) continue;
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify({ token: p })}\n\n`)
+        );
+        await new Promise((r) => setTimeout(r, p.length > 10 ? 8 : 3));
       }
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true })}\n\n`));
+      controller.enqueue(
+        encoder.encode(`data: ${JSON.stringify({ done: true })}\n\n`)
+      );
       controller.close();
     },
   });
 }
 
-/** High-quality offline assistant — never mentions keys/vendors */
-function offlineChat(prompt: string) {
-  const p = prompt.toLowerCase();
+/**
+ * Offline replies that ACTUALLY address the user message.
+ * Used only when no live provider works.
+ */
+function smartOfflineChat(
+  prompt: string,
+  history: { role: string; content: string }[]
+): string {
+  const raw = prompt.trim();
+  const p = raw.toLowerCase();
+  const isHinglish =
+    /kya|hai|ho|haan|nahi|kaise|kese|kyu|kyun|mujhe|tum|apka|aap|bhai|yaar|karo|kro|baat|hinglish|samajh|plan|kaam/.test(
+      p
+    );
 
-  if (/hello|hi\b|hey|namaste|hii/.test(p) && prompt.length < 40) {
-    return `Hey — you're on **BUILDWE**.
+  // Greetings
+  if (
+    /^(hi+|h+e+y+|h+e+l+o+|hy+|hii+|hello|namaste|namaskar|salam)\b/i.test(p) ||
+    /^(hi|hey|hy|hii|hello)\s+(kese|kaise|kya)/i.test(p) ||
+    /kese ho|kaise ho|kya haal|what's up|whats up|wassup/.test(p)
+  ) {
+    return isHinglish
+      ? `Hey! Main theek hoon 👍
 
-I can help you think things through, write, plan, or create.
+Main **BUILDWE** hoon — yahan tum:
+• baat cheet / ideas  
+• code  
+• image  
+• voice  
 
-What's the actual goal right now?`;
+sab ek jagah kar sakte ho.
+
+Bolo, aaj kya karna hai?`
+      : `Hey — I'm good.
+
+I'm **BUILDWE**. I can help you chat, write, code, make images, or turn text into voice.
+
+What do you want to do?`;
   }
 
-  if (/who are you|what are you|what is buildwe/.test(p)) {
-    return `I'm **BUILDWE** — your all-in-one AI workspace.
+  if (/hinglish|hindi me|hindi mein|urdu/.test(p)) {
+    return `Theek hai — ab **Hinglish** mein baat karta hoon.
 
-In one place you can:
-- **Chat** — think, write, learn  
-- **Code** — turn ideas into working projects  
-- **Image** — describe → visual  
-- **Audio** — text → natural voice  
+Tum jo bhi poochoge (plan, code, writing, idea), seedha usi pe jawab dunga.
 
-Everything starts free. PRO unlocks higher limits and a quieter, ad-light experience.
-
-What do you want to make first?`;
+Ab bolo: exactly kya chahiye?`;
   }
 
-  if (/startup|business|idea|brainstorm/.test(p)) {
-    return `Here are **five sharp angles** you can pressure-test this week:
+  if (/kya kr rhe ho|kya kar rahe|what are you doing/.test(p)) {
+    return isHinglish
+      ? `Abhi tumhare saath chat pe hoon — tumhara message padh ke jawab de raha hoon.
 
-1. **One painful weekly task** your audience already hates — automate it  
-2. **Template pack** from work you've already done well  
-3. **Niche brief generator** (scripts, posts, outreach)  
-4. **Local-first tool** that works offline and feels premium  
-5. **Service → product**: productize your most repeated client request  
+Main BUILDWE AI workspace hoon. Tum mujhse sawal, writing, code, image ya voice maang sakte ho.
 
-**Pick one audience + one job-to-be-done.** That's the wedge.
+Bolo next kya chahiye?`
+      : `Right now I'm here in this chat, reading your messages and helping you.
 
-Tell me who you serve and I'll narrow this to a 7-day MVP.`;
+I can think with you, write, code, generate images, or speak text.
+
+What should we do next?`;
   }
 
-  if (/email|copy|write|draft|rewrite/.test(p)) {
-    return `Here's a clean draft you can ship:
+  if (/who are you|tum kaun|what is buildwe|tu kaun/.test(p)) {
+    return isHinglish
+      ? `Main **BUILDWE** hoon — ek AI platform.
 
----
+Ek jagah pe:
+1. **Chat** — sochna, likhna, plan  
+2. **Code** — idea se working code  
+3. **Image** — text se picture  
+4. **Audio** — script se awaaz  
 
-**Subject:** A simpler way to build with AI  
+Free shuru hota hai. Bolo kahan se start karein?`
+      : `I'm **BUILDWE** — your AI workspace for chat, code, image, and voice in one place.
 
-Hi {{name}},
-
-Most people bounce between five AI tabs.
-
-**BUILDWE** keeps chat, code, image, and voice in one calm workspace — free to start.
-
-Open it → do the work → move on.
-
-Try free: buildwe.online
-
-—  
-
----
-
-Want it shorter, warmer, or more founder-voice? Say the tone.`;
+What do you want to make?`;
   }
 
-  return `**Got it.**
+  // Short casual — don't dump framework
+  if (raw.length < 50 && !/code|build|write|plan|help|explain/.test(p)) {
+    return isHinglish
+      ? `Samajh gaya: “${raw}”
 
-Here's a tight way to move:
+Thoda clear bolo kya chahiye —  
+• baat / advice  
+• kuch likhna  
+• code  
+• image  
+• voice  
 
-1. **Outcome** — one sentence for what “done” looks like  
-2. **Constraints** — time, tools, audience, must-haves  
-3. **First cut** — smallest version that still helps  
+Main seedha usi pe kaam karta hoon.`
+      : `Got “${raw}”.
 
-You said: *“${prompt.slice(0, 180)}${prompt.length > 180 ? "…" : ""}”*
+Tell me what you need — answer, draft, code, image, or voice — and I’ll do that directly.`;
+  }
 
-Reply with constraints (or paste more context) and I'll go concrete — plan, draft, or structure.`;
+  // Default: reflect + answer shape tied to their words
+  const recent = history
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .slice(-4)
+    .map((m) => `${m.role}: ${m.content.slice(0, 120)}`)
+    .join("\n");
+
+  if (isHinglish) {
+    return `Tumne kaha: **“${raw.slice(0, 300)}”**
+
+Main isko aise handle karta hoon:
+
+1. Pehle tumhara exact point pakadta hoon  
+2. Phir seedha useful jawab / steps deta hoon  
+
+**Abhi ka short take:**  
+Batao yeh message se tumhe *kya result* chahiye — explanation, plan, message draft, ya code?  
+
+Jo bhi bolo, next reply mein main wahi deliver karunga — generic lecture nahi.`;
+  }
+
+  return `You said: **“${raw.slice(0, 300)}”**
+
+I'll answer that directly.
+
+**What I need for a sharper reply (pick one):**
+- a yes/no or factual answer  
+- a short plan  
+- a written draft  
+- code  
+
+Reply with which one — or just continue the thought and I’ll stay on this topic.
+
+${recent ? `(Context noted from recent messages.)` : ""}`;
 }
 
-function offlineCode(prompt: string) {
-  return `Here's a clean starter for that ask.
+function smartOfflineCode(prompt: string): string {
+  const raw = prompt.trim();
+  return `Samajh gaya — tum code/project side pe ho.
 
-### Approach
-- Minimal files, runs in the browser  
-- Clear structure you can extend  
+**Tumhara request:** ${raw.slice(0, 240)}
 
-### Code
+### Quick path
+1. Goal clear karo (web page / game / API / fix)  
+2. Main uske hisaab se working code dunga  
+3. Copy → run → next improve  
 
-\`\`\`html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>BUILDWE App</title>
-  <style>
-    :root { --bg:#F7F4EE; --ink:#14110F; --accent:#C45C26; --line:#E6E0D6; }
-    * { box-sizing: border-box; }
-    body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--ink); }
-    main { max-width: 720px; margin: 0 auto; padding: 48px 20px; }
-    h1 { letter-spacing: -0.03em; font-size: clamp(1.8rem, 4vw, 2.6rem); }
-    p { color:#6B6560; line-height:1.55; }
-    .btn { display:inline-flex; margin-top:16px; padding:12px 18px; border-radius:14px;
-      background:var(--accent); color:#fff; text-decoration:none; font-weight:600; }
-    .card { margin-top:24px; padding:18px; border:1px solid var(--line); border-radius:16px; background:#fff; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Ship the first version.</h1>
-    <p>Built on BUILDWE from: ${prompt.slice(0, 100).replace(/</g, "")}</p>
-    <a class="btn" href="#">Continue</a>
-    <div class="card">Replace this card with your real feature.</div>
-  </main>
-</body>
-</html>
-\`\`\`
+Agar yeh ek **naya mini project** hai, ek line mein bolo:
+- “HTML quiz bana do”  
+- “todo app react”  
+- “landing page cream theme”  
 
-### Run
-Save as \`index.html\` and open in a browser.
-
-Tell me the stack you want next (React, Next.js, API, auth) and I'll extend it.`;
+Main next message mein **complete code block** dunga.`;
 }
 
 export async function streamChatOrCode(opts: {
@@ -252,25 +353,35 @@ export async function streamChatOrCode(opts: {
   skills?: string[];
   promptForRouting: string;
 }): Promise<{ stream: ReadableStream<Uint8Array>; model: string; live: boolean }> {
-  const catalogModel = pickModel({
-    capability: opts.mode,
-    plan: opts.plan,
-    prompt: opts.promptForRouting,
-  });
-
   const system =
     (opts.mode === "code" ? SYSTEM_PROMPTS.code : SYSTEM_PROMPTS.chat) +
-    skillPrefix(opts.skills);
+    skillPrefix(opts.skills) +
+    `\n\nCRITICAL:
+- Always answer the user's latest message specifically.
+- If they write Hinglish/Hindi, reply in Hinglish/Hindi.
+- Never ignore short greetings with a generic productivity framework.
+- Never mention API keys, vendors, or offline mode.`;
 
   const messages: ChatMessage[] = [
     { role: "system", content: system },
     ...opts.messages
       .filter((m) => m.role === "user" || m.role === "assistant")
+      .slice(-16)
       .map((m) => ({
         role: m.role as "user" | "assistant",
-        content: m.content,
+        content: String(m.content || "").slice(0, 8000),
       })),
   ];
+
+  // Ensure last user message exists
+  const lastUser =
+    [...messages].reverse().find((m) => m.role === "user")?.content ||
+    opts.promptForRouting ||
+    "";
+
+  if (!messages.some((m) => m.role === "user")) {
+    messages.push({ role: "user", content: lastUser });
+  }
 
   const envModel =
     opts.plan === "pro"
@@ -281,24 +392,23 @@ export async function streamChatOrCode(opts: {
         ? AI_MODELS.free.code
         : AI_MODELS.free.chat;
 
-  const tryModels = [
-    envModel,
-    catalogModel.id,
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-  ];
+  const catalog = pickModel({
+    capability: opts.mode,
+    plan: opts.plan,
+    prompt: opts.promptForRouting || lastUser,
+  });
 
-  // Always try live providers first when keys exist (ignore demo flag for quality)
+  const preferred =
+    opts.mode === "code"
+      ? [envModel, catalog.id, ...GROQ_CODE_MODELS]
+      : [envModel, catalog.id, ...GROQ_CHAT_MODELS];
+
+  // unique preserve order
+  const tryModels = Array.from(new Set(preferred.filter(Boolean)));
+
+  // 1) Live stream attempts
   for (const model of tryModels) {
-    let body = await groqChat(messages, model);
-    if (body) {
-      return {
-        stream: openAIStreamToTextSSE(body),
-        model: publicModelLabel(model, opts.mode),
-        live: true,
-      };
-    }
-    body = await openRouterChat(messages, model);
+    const body = await groqStream(messages, model);
     if (body) {
       return {
         stream: openAIStreamToTextSSE(body),
@@ -308,32 +418,62 @@ export async function streamChatOrCode(opts: {
     }
   }
 
-  const lastUser =
-    [...messages].reverse().find((m) => m.role === "user")?.content || "";
-  const text =
-    opts.mode === "code" ? offlineCode(lastUser) : offlineChat(lastUser);
+  // 2) OpenRouter stream
+  for (const model of tryModels.slice(0, 3)) {
+    const body = await openRouterStream(messages, model);
+    if (body) {
+      return {
+        stream: openAIStreamToTextSSE(body),
+        model: publicModelLabel(model, opts.mode),
+        live: true,
+      };
+    }
+  }
+
+  // 3) Non-stream Groq complete (more reliable on some hosts)
+  for (const model of tryModels.slice(0, 4)) {
+    const text = await groqComplete(messages, model);
+    if (text) {
+      return {
+        stream: textToSSE(text),
+        model: publicModelLabel(model, opts.mode),
+        live: true,
+      };
+    }
+  }
+
+  // 4) Smart offline — still message-aware
+  const history = opts.messages.map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+  const offline =
+    opts.mode === "code"
+      ? smartOfflineCode(lastUser)
+      : smartOfflineChat(lastUser, history);
 
   return {
-    stream: offlineStream(text),
+    stream: textToSSE(offline),
     model: publicModelLabel(undefined, opts.mode),
     live: false,
   };
 }
 
-/* Image — free endpoint, branded as BUILDWE Vision in UI */
+/* Image */
 export function buildImageUrl(prompt: string, aspect: string) {
   const map: Record<string, [number, number]> = {
     "1:1": [1024, 1024],
     "16:9": [1280, 720],
-    "9:16": [720, 1280],
+    "9:16": [768, 1344],
     "4:3": [1024, 768],
     "3:4": [768, 1024],
   };
   const [w, h] = map[aspect] || map["1:1"];
   const seed = Math.floor(Math.random() * 1_000_000);
-  const enhanced = `${prompt.slice(0, 400)}, high quality, sharp detail, premium composition`;
+  const clean = prompt.replace(/\s+/g, " ").trim().slice(0, 450);
+  const enhanced = `${clean}, photorealistic, highly detailed, natural lighting`;
   const q = encodeURIComponent(enhanced);
-  return `https://image.pollinations.ai/prompt/${q}?width=${w}&height=${h}&seed=${seed}&nologo=true&enhance=true`;
+  return `https://image.pollinations.ai/prompt/${q}?width=${w}&height=${h}&seed=${seed}&nologo=true&enhance=true&model=flux`;
 }
 
 export async function generateImage(opts: {
@@ -341,18 +481,12 @@ export async function generateImage(opts: {
   aspect: string;
   plan: Plan;
 }) {
-  void pickModel({
-    capability: "image",
-    plan: opts.plan,
-    prompt: opts.prompt,
-  });
-  const complexity = estimateComplexity(opts.prompt);
   const url = buildImageUrl(opts.prompt, opts.aspect);
+  // quick HEAD/GET probe optional — don't block
   return {
     url,
     model: "BUILDWE Vision",
     provider: "buildwe",
-    complexity,
     live: true,
   };
 }
@@ -363,11 +497,6 @@ export async function generateAudioPlan(opts: {
   speed: number;
   plan: Plan;
 }) {
-  void pickModel({
-    capability: "audio",
-    plan: opts.plan,
-    prompt: opts.text,
-  });
   return {
     type: "browser-tts" as const,
     text: opts.text.slice(0, 4000),

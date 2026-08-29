@@ -654,7 +654,7 @@ function Dashboard() {
           if (ev.meta && typeof ev.meta === "object") {
             const meta = ev.meta as { conversationId?: string; model?: string; live?: boolean };
             if (meta.conversationId) setConvId(meta.conversationId);
-            if (meta.model) setModelTag(meta.model);
+            if (meta.model) setModelTag(String(meta.model));
           }
           if (ev.token) {
             acc += ev.token;
@@ -1148,8 +1148,17 @@ function Dashboard() {
                             // eslint-disable-next-line @next/next/no-img-element
                             <img
                               src={images.find((i) => i.id === activeImg)?.url}
-                              alt=""
-                              className="max-h-72 w-auto rounded-2xl"
+                              alt="Generated"
+                              className="max-h-72 w-auto rounded-2xl bg-[var(--secondary)]"
+                              referrerPolicy="no-referrer"
+                              loading="eager"
+                              onError={(e) => {
+                                const el = e.currentTarget;
+                                const cur = el.src;
+                                if (cur && !cur.includes('fallback=1')) {
+                                  el.src = cur + (cur.includes('?') ? '&' : '?') + 'fallback=1';
+                                }
+                              }}
                             />
                           )}
                           <div className="mt-2 flex gap-2 overflow-x-auto">
