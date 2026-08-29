@@ -186,3 +186,39 @@ export async function detectAuto(prompt: string) {
   const j = await readJson(r);
   return j as { mode: string };
 }
+
+export async function sendFeedback(kind: "up" | "down", note?: string) {
+  const r = await fetch("/api/ai/feedback", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind, note }),
+  });
+  return readJson(r);
+}
+
+export async function fetchModels() {
+  const r = await fetch("/api/ai/models");
+  return readJson(r) as Promise<{
+    live: { id: string; name: string; blurb: string; status: string; badge?: string; family: string }[];
+    all: { id: string; name: string; blurb: string; status: string; badge?: string; family: string }[];
+    llmLive: boolean;
+  }>;
+}
+
+export async function fetchSkills() {
+  const r = await fetch("/api/user/skills", { credentials: "include" });
+  return readJson(r) as Promise<{ skills: string[]; requireAuth?: boolean }>;
+}
+
+export async function saveSkills(skills: string[]) {
+  const r = await fetch("/api/user/skills", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skills }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t save skills");
+  return j as { skills: string[] };
+}

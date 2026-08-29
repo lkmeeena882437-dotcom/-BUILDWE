@@ -6,16 +6,17 @@
 import { AI_KEYS, AI_MODELS, APP, hasProviderKey } from "@/lib/config";
 import { SYSTEM_PROMPTS, publicModelLabel, type Plan } from "@/lib/ai/rules";
 import { pickModel } from "@/lib/ai/models-catalog";
+import {
+  buildMind,
+  packMessagesForModel,
+  type ChatTurn,
+  type MindProfile,
+} from "@/lib/ai/mind";
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
   content: string;
 };
-
-function skillPrefix(skills?: string[]) {
-  if (!skills?.length) return "";
-  return `\nUser context: ${skills.slice(0, 6).join(", ")}.`;
-}
 
 /** Groq-valid models (keep this list current) */
 const GROQ_CHAT_MODELS = [
@@ -351,37 +352,47 @@ export async function streamChatOrCode(opts: {
   messages: { role: string; content: string }[];
   plan: Plan;
   skills?: string[];
+  /** thumbs feedback memory */
+  prefer?: string[];
+  avoid?: string[];
   promptForRouting: string;
-}): Promise<{ stream: ReadableStream<Uint8Array>; model: string; live: boolean }> {
-  const system =
-    (opts.mode === "code" ? SYSTEM_PROMPTS.code : SYSTEM_PROMPTS.chat) +
-    skillPrefix(opts.skills) +
-    `\n\nCRITICAL:
-- Always answer the user's latest message specifically.
-- If they write Hinglish/Hindi, reply in Hinglish/Hindi.
-- Never ignore short greetings with a generic productivity framework.
-- Never mention API keys, vendors, or offline mode.`;
+}): Promise<{
+  stream: ReadableStream<Uint8Array>;
+  model: string;
+  live: boolean;
+  mind: MindProfile;
+}> {
+  const turns: ChatTurn[] = opts.messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: String(m.content || ""),
+    }));
 
-  const messages: ChatMessage[] = [
-    { role: "system", content: system },
-    ...opts.messages
-      .filter((m) => m.role === "user" || m.role === "assistant")
-      .slice(-16)
-      .map((m) => ({
-        role: m.role as "user" | "assistant",
-        content: String(m.content || "").slice(0, 8000),
-      })),
-  ];
+  const mind = buildMind(turns, opts.skills || [], {
+    prefer: opts.prefer,
+    avoid: opts.avoid,
+  });
 
-  // Ensure last user message exists
+  const baseSystem =
+    opts.mode === "code" ? SYSTEM_PROMPTS.code : SYSTEM_PROMPTS.chat;
+
+  const packed = packMessagesForModel({
+    baseSystem,
+    mind,
+    turns,
+    maxTurns: 22,
+  });
+
+  const messages: ChatMessage[] = packed.map((m) => ({
+    role: m.role as ChatMessage["role"],
+    content: m.content,
+  }));
+
   const lastUser =
-    [...messages].reverse().find((m) => m.role === "user")?.content ||
+    [...turns].reverse().find((m) => m.role === "user")?.content ||
     opts.promptForRouting ||
     "";
-
-  if (!messages.some((m) => m.role === "user")) {
-    messages.push({ role: "user", content: lastUser });
-  }
 
   const envModel =
     opts.plan === "pro"
@@ -403,10 +414,8 @@ export async function streamChatOrCode(opts: {
       ? [envModel, catalog.id, ...GROQ_CODE_MODELS]
       : [envModel, catalog.id, ...GROQ_CHAT_MODELS];
 
-  // unique preserve order
   const tryModels = Array.from(new Set(preferred.filter(Boolean)));
 
-  // 1) Live stream attempts
   for (const model of tryModels) {
     const body = await groqStream(messages, model);
     if (body) {
@@ -414,11 +423,11 @@ export async function streamChatOrCode(opts: {
         stream: openAIStreamToTextSSE(body),
         model: publicModelLabel(model, opts.mode),
         live: true,
+        mind,
       };
     }
   }
 
-  // 2) OpenRouter stream
   for (const model of tryModels.slice(0, 3)) {
     const body = await openRouterStream(messages, model);
     if (body) {
@@ -426,11 +435,11 @@ export async function streamChatOrCode(opts: {
         stream: openAIStreamToTextSSE(body),
         model: publicModelLabel(model, opts.mode),
         live: true,
+        mind,
       };
     }
   }
 
-  // 3) Non-stream Groq complete (more reliable on some hosts)
   for (const model of tryModels.slice(0, 4)) {
     const text = await groqComplete(messages, model);
     if (text) {
@@ -438,24 +447,21 @@ export async function streamChatOrCode(opts: {
         stream: textToSSE(text),
         model: publicModelLabel(model, opts.mode),
         live: true,
+        mind,
       };
     }
   }
 
-  // 4) Smart offline — still message-aware
-  const history = opts.messages.map((m) => ({
-    role: m.role,
-    content: m.content,
-  }));
   const offline =
     opts.mode === "code"
       ? smartOfflineCode(lastUser)
-      : smartOfflineChat(lastUser, history);
+      : smartOfflineChat(lastUser, turns);
 
   return {
     stream: textToSSE(offline),
     model: publicModelLabel(undefined, opts.mode),
     live: false,
+    mind,
   };
 }
 

@@ -66,11 +66,24 @@ export async function POST(req: NextRequest) {
       console.error("[bw] chat persist user", e);
     }
 
+    const rawSkills = session.user?.skills || [];
+    const skills = rawSkills.filter(
+      (s: string) => !s.startsWith("prefer:") && !s.startsWith("avoid:")
+    );
+    const prefer = rawSkills
+      .filter((s: string) => s.startsWith("prefer:"))
+      .map((s: string) => s.slice(7));
+    const avoid = rawSkills
+      .filter((s: string) => s.startsWith("avoid:"))
+      .map((s: string) => s.slice(6));
+
     const { stream, model, live } = await streamChatOrCode({
       mode: "chat",
       messages: body.messages,
       plan: session.plan,
-      skills: session.user?.skills,
+      skills,
+      prefer,
+      avoid,
       promptForRouting: String(userText),
     });
 

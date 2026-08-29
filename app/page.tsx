@@ -48,6 +48,10 @@ import {
   Loader2,
   RotateCcw,
   SquarePen,
+  ThumbsUp,
+  ThumbsDown,
+  Download,
+  Layers,
 } from "lucide-react";
 import clsx from "clsx";
 import {
@@ -62,6 +66,10 @@ import {
   logout as apiLogout,
   register as apiRegister,
   streamAI,
+  sendFeedback,
+  fetchModels,
+  fetchSkills,
+  saveSkills,
   type MeResponse,
 } from "@/lib/client/api";
 
@@ -346,7 +354,7 @@ function Dashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [drawer, setDrawer] = useState(false);
   const [modal, setModal] = useState<
-    null | "auth" | "settings" | "plans" | "profile"
+    null | "auth" | "settings" | "plans" | "profile" | "models" | "skills"
   >(null);
   const [authTab, setAuthTab] = useState<"login" | "register">("login");
   const [themePref, setThemePref] = useState<ThemePref>("system");
@@ -387,6 +395,11 @@ function Dashboard() {
   const [name, setName] = useState("");
   const [authErr, setAuthErr] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  const [skillDraft, setSkillDraft] = useState("");
+  const [skillList, setSkillList] = useState<string[]>([]);
+  const [modelsCatalog, setModelsCatalog] = useState<
+    { id: string; name: string; blurb: string; status: string; badge?: string; family: string }[]
+  >([]);
 
   const abortRef = useRef<AbortController | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -446,6 +459,9 @@ function Dashboard() {
   useEffect(() => {
     refreshMe();
     refreshHistory();
+    fetchModels()
+      .then((m) => setModelsCatalog(m.all || []))
+      .catch(() => {});
   }, [refreshMe, refreshHistory]);
 
   useEffect(() => {
@@ -1133,6 +1149,30 @@ function Dashboard() {
                                   >
                                     <SquarePen className="h-3.5 w-3.5" />
                                   </Btn>
+                                  <Btn
+                                    variant="icon"
+                                    size="sm"
+                                    aria-label="Good reply"
+                                    onClick={async () => {
+                                      await sendFeedback("up", "helpful and on-topic");
+                                      setCopied("up-" + m.id);
+                                      setTimeout(() => setCopied(null), 1000);
+                                    }}
+                                  >
+                                    <ThumbsUp className="h-3.5 w-3.5" />
+                                  </Btn>
+                                  <Btn
+                                    variant="icon"
+                                    size="sm"
+                                    aria-label="Bad reply"
+                                    onClick={async () => {
+                                      await sendFeedback("down", "missed my message or too generic");
+                                      setCopied("down-" + m.id);
+                                      setTimeout(() => setCopied(null), 1000);
+                                    }}
+                                  >
+                                    <ThumbsDown className="h-3.5 w-3.5" />
+                                  </Btn>
                                 </div>
                               )}
                             </div>
@@ -1437,6 +1477,16 @@ function Dashboard() {
               ))}
             </div>
             <div className="pt-3">
+              <button type="button" onClick={() => setModal("models")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Layers className="h-4 w-4 opacity-70" /> Models <span className="ml-auto text-[10px]" style={{ color: "var(--soft)" }}>Live + Soon</span></button>
+              <button type="button" onClick={async () => { try { const s = await fetchSkills(); setSkillList(s.skills || []); } catch {} setModal("skills"); }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Sparkles className="h-4 w-4 opacity-70" /> Skills &amp; Mind</button>
+              <button type="button" onClick={() => {
+                const md = messages.map(m => `## ${m.role}\n\n${m.content}`).join('\n\n');
+                const blob = new Blob([md || '# Empty chat'], { type: 'text/markdown' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = 'buildwe-chat.md';
+                a.click();
+              }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Download className="h-4 w-4 opacity-70" /> Export chat</button>
               <a href="/about" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Bot className="h-4 w-4 opacity-70" /> About BUILDWE <ExternalLink className="ml-auto h-3.5 w-3.5" style={{ color: "var(--soft)" }} /></a>
               <a href="/privacy" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Shield className="h-4 w-4 opacity-70" /> Privacy</a>
               <a href="/terms" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><FileCode2 className="h-4 w-4 opacity-70" /> Terms</a>
@@ -1448,6 +1498,50 @@ function Dashboard() {
               )}
             </div>
             <p className="px-1 pt-2 text-[10px]" style={{ color: "var(--soft)" }}>Now: {dark ? "Dark" : "Light"}{themePref === "system" ? " (system)" : ""}</p>
+          </div>
+        </Sheet>
+      )}
+
+      {modal === "models" && (
+        <Sheet onClose={() => setModal(null)} title="Models" wide>
+          <p className="mb-4 text-sm" style={{ color: "var(--muted)" }}>
+            Free models are live. Premium seats are reserved — Coming soon when enabled.
+          </p>
+          <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
+            {(modelsCatalog.length ? modelsCatalog : [
+              { id: '1', name: 'BUILDWE AI', blurb: 'Everyday chat', status: 'live', badge: 'Free', family: 'chat' },
+              { id: '2', name: 'GPT-class seat', blurb: 'Premium chat seat', status: 'coming_soon', badge: 'Soon', family: 'chat' },
+            ]).map((m) => (
+              <div key={m.id} className="rounded-2xl border px-3 py-3" style={{ borderColor: "var(--border)", background: m.status === 'live' ? 'var(--card)' : 'var(--secondary)' }}>
+                <div className="flex items-center gap-2">
+                  <div className="text-sm font-semibold">{m.name}</div>
+                  <span className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase" style={{ background: m.status === 'live' ? 'var(--accent-soft)' : 'var(--border)', color: m.status === 'live' ? 'var(--accent)' : 'var(--muted)' }}>{m.badge || m.status}</span>
+                </div>
+                <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>{m.blurb}</p>
+                <div className="mt-1 text-[10px] uppercase tracking-wide" style={{ color: "var(--soft)" }}>{m.family} · {m.status === 'live' ? 'Available now' : 'Coming soon'}</div>
+              </div>
+            ))}
+          </div>
+        </Sheet>
+      )}
+
+      {modal === "skills" && (
+        <Sheet onClose={() => setModal(null)} title="Skills & Mind">
+          <p className="mb-3 text-sm" style={{ color: "var(--muted)" }}>
+            Custom instructions help BUILDWE answer more like you need — language, role, tone. Feedback 👍👎 also trains Mind.
+          </p>
+          {!loggedIn && (
+            <p className="mb-3 text-xs" style={{ color: "var(--accent)" }}>Sign in to save Skills across sessions.</p>
+          )}
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {skillList.map((s) => (
+              <button key={s} type="button" onClick={() => setSkillList((x) => x.filter((i) => i !== s))} className="rounded-full px-2.5 py-1 text-[11px] font-medium" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{s} ×</button>
+            ))}
+          </div>
+          <textarea value={skillDraft} onChange={(e) => setSkillDraft(e.target.value)} rows={3} placeholder={'e.g. "Reply in Hinglish" · "I am a beginner in TypeScript" · "Be concise"'} className="w-full resize-none rounded-2xl border px-3 py-2 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+          <div className="mt-2 flex gap-2">
+            <Btn size="sm" variant="ghost" onClick={() => { if (!skillDraft.trim()) return; setSkillList((x) => Array.from(new Set(x.concat([skillDraft.trim()]))).slice(0, 16)); setSkillDraft(""); }}>Add</Btn>
+            <Btn size="sm" disabled={!loggedIn} onClick={async () => { try { await saveSkills(skillList); setModal(null); await refreshMe(); } catch (e) { setError((e as Error).message); } }}>Save Mind</Btn>
           </div>
         </Sheet>
       )}
