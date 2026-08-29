@@ -72,6 +72,8 @@ import {
   saveSkills,
   type MeResponse,
 } from "@/lib/client/api";
+import { ImageStudio, type StudioImage } from "@/components/workspace/ImageStudio";
+import { AudioStudio } from "@/components/workspace/AudioStudio";
 
 type Mode = "auto" | "chat" | "code" | "image" | "audio";
 type ThemePref = "system" | "light" | "dark";
@@ -171,7 +173,7 @@ const SUGGEST: Record<Mode, string[]> = {
 
 const ASPECTS = ["1:1", "16:9", "9:16", "4:3", "3:4"];
 
-const VOICES = [
+const VOICES: { id: string; label: string; lang: string; tone: string; tier?: "live" | "soon" }[] = [
   { id: "nova", label: "Nova", lang: "EN-US", tone: "Warm" },
   { id: "atlas", label: "Atlas", lang: "EN-US", tone: "Deep" },
   { id: "luna", label: "Luna", lang: "EN-UK", tone: "Soft" },
@@ -192,6 +194,10 @@ const VOICES = [
   { id: "amira", label: "Amira", lang: "AR", tone: "Clear" },
   { id: "yuki", label: "Yuki", lang: "JP", tone: "Soft" },
   { id: "chen", label: "Chen", lang: "ZH", tone: "Steady" },
+  // Studio seats — Coming soon
+  { id: "thomas", label: "Thomas Studio", lang: "Multi", tone: "Deep", tier: "soon" },
+  { id: "priya", label: "Priya Studio", lang: "HI", tone: "Warm", tier: "soon" },
+  { id: "clone", label: "Voice Clone", lang: "Custom", tone: "You", tier: "soon" },
 ];
 
 function rid() {
@@ -377,15 +383,20 @@ function Dashboard() {
 
   // image
   const [aspect, setAspect] = useState("1:1");
-  const [images, setImages] = useState<{ id: string; url: string; prompt: string }[]>([]);
+  const [images, setImages] = useState<StudioImage[]>([]);
   const [imgLoading, setImgLoading] = useState(false);
   const [activeImg, setActiveImg] = useState<string | null>(null);
+  const [imageModelId, setImageModelId] = useState("flux");
+  const [imagePrompt, setImagePrompt] = useState("");
+  const [lastImagePrompt, setLastImagePrompt] = useState("");
 
   // audio
   const [voice, setVoice] = useState("nova");
   const [showVoices, setShowVoices] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [audioBusy, setAudioBusy] = useState(false);
+  const [audioText, setAudioText] = useState("");
+  const [lastSpoken, setLastSpoken] = useState<{ text: string; voice: string } | null>(null);
   const [listening, setListening] = useState(false);
   const utterRef = useRef<SpeechSynthesisUtterance | null>(null);
 
@@ -560,6 +571,75 @@ function Dashboard() {
     window.speechSynthesis.speak(u);
   };
 
+
+  const runImageGenerate = async (text: string) => {
+    const promptText = text.trim();
+    if (!promptText || imgLoading) return;
+    setError("");
+    setImgLoading(true);
+    setView("app");
+    setMode("image");
+    try {
+      const img = await generateImage(promptText, aspect === "yt" ? "16:9" : aspect, {
+        basePrompt: lastImagePrompt || undefined,
+        modelId: imageModelId,
+      });
+      const row: StudioImage = {
+        id: img.id,
+        url: img.url,
+        prompt: img.promptUsed || promptText,
+        userPrompt: promptText,
+        aspect,
+        model: img.model,
+      };
+      setImages((prev) => [row, ...prev]);
+      setActiveImg(img.id);
+      setLastImagePrompt(img.promptUsed || promptText);
+      setImagePrompt("");
+      setModelTag(img.model || "BUILDWE Vision");
+      refreshMe();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setImgLoading(false);
+    }
+  };
+
+  const runAudioGenerate = async (text?: string) => {
+    const script = (text ?? audioText).trim();
+    if (!script || audioBusy) return;
+    setError("");
+    setAudioBusy(true);
+    setView("app");
+    setMode("audio");
+    try {
+      const a = await generateAudio(script, voice, speed);
+      setLastSpoken({ text: a.text, voice });
+      setModelTag("BUILDWE Voice");
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(a.text);
+        u.rate = speed;
+        const sys = window.speechSynthesis.getVoices();
+        const pref = VOICES.find((x) => x.id === voice);
+        const match =
+          sys.find((v) =>
+            pref?.lang?.startsWith("HI")
+              ? /hi|hindi/i.test(v.lang + v.name)
+              : /en/i.test(v.lang)
+          ) || sys[0];
+        if (match) u.voice = match;
+        window.speechSynthesis.speak(u);
+      }
+      refreshMe();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setAudioBusy(false);
+    }
+  };
+
+
   const send = async (override?: string) => {
     const text = (override ?? input).trim();
     if (!text || streaming) return;
@@ -580,54 +660,13 @@ function Dashboard() {
     }
 
     if (resolved === "image") {
-      setImgLoading(true);
-      const userMsg: Msg = { id: rid(), role: "user", content: text };
-      setMessages((m) => [...m, userMsg]);
-      try {
-        const img = await generateImage(text, aspect);
-        setImages((p) => [{ id: img.id, url: img.url, prompt: text }, ...p]);
-        setActiveImg(img.id);
-        setMessages((m) => [
-          ...m,
-          {
-            id: rid(),
-            role: "assistant",
-            content: `**Ready.** Your image is in the preview.\n\n> ${text}`,
-          },
-        ]);
-        setModelTag("BUILDWE Vision");
-        refreshMe();
-        refreshHistory();
-      } catch (e) {
-        setError((e as Error).message);
-      } finally {
-        setImgLoading(false);
-      }
+      await runImageGenerate(text);
       return;
     }
 
     if (resolved === "audio") {
-      setAudioBusy(true);
-      const userMsg: Msg = { id: rid(), role: "user", content: text };
-      setMessages((m) => [...m, userMsg]);
-      try {
-        const a = await generateAudio(text, voice, speed);
-        speakBrowser(a.text, a.voice, a.speed);
-        setMessages((m) => [
-          ...m,
-          {
-            id: rid(),
-            role: "assistant",
-            content: `**Playing** · voice **${VOICES.find((v) => v.id === voice)?.label || voice}**\n\n${a.text}`,
-          },
-        ]);
-        setModelTag("BUILDWE Voice");
-        refreshMe();
-      } catch (e) {
-        setError((e as Error).message);
-      } finally {
-        setAudioBusy(false);
-      }
+      setAudioText(text);
+      await runAudioGenerate(text);
       return;
     }
 
@@ -1051,6 +1090,38 @@ function Dashboard() {
         )}
 
         <div className="flex min-h-0 flex-1 flex-col pb-mobile-nav md:pb-0">
+          {error && (mode === "image" || mode === "audio") && (
+            <div className="px-4 py-2 text-center text-xs" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{error}</div>
+          )}
+          {mode === "image" ? (
+            <ImageStudio
+              images={images}
+              activeId={activeImg}
+              setActiveId={setActiveImg}
+              loading={imgLoading}
+              aspect={aspect}
+              setAspect={setAspect}
+              modelId={imageModelId}
+              setModelId={setImageModelId}
+              prompt={imagePrompt}
+              setPrompt={setImagePrompt}
+              lastPrompt={lastImagePrompt}
+              onGenerate={(text) => runImageGenerate(text)}
+            />
+          ) : mode === "audio" ? (
+            <AudioStudio
+              text={audioText}
+              setText={setAudioText}
+              voice={voice}
+              setVoice={setVoice}
+              speed={speed}
+              setSpeed={setSpeed}
+              voices={VOICES}
+              loading={audioBusy}
+              lastSpoken={lastSpoken}
+              onGenerate={() => runAudioGenerate()}
+            />
+          ) : (
           <div className={clsx("flex min-h-0 flex-1", mode === "code" ? "flex-col lg:flex-row" : "flex-col")}>
             {/* messages */}
             <div className={clsx("flex min-h-0 flex-col", mode === "code" ? "lg:w-[46%] lg:border-r" : "flex-1")} style={{ borderColor: "var(--border)" }}>
@@ -1180,38 +1251,6 @@ function Dashboard() {
                         );
                       })}
 
-                      {mode === "image" && (imgLoading || activeImg) && (
-                        <div className="rounded-3xl border p-3" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
-                          {imgLoading ? (
-                            <div className="shimmer h-48 rounded-2xl" />
-                          ) : (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              src={images.find((i) => i.id === activeImg)?.url}
-                              alt="Generated"
-                              className="max-h-72 w-auto rounded-2xl bg-[var(--secondary)]"
-                              referrerPolicy="no-referrer"
-                              loading="eager"
-                              onError={(e) => {
-                                const el = e.currentTarget;
-                                const cur = el.src;
-                                if (cur && !cur.includes('fallback=1')) {
-                                  el.src = cur + (cur.includes('?') ? '&' : '?') + 'fallback=1';
-                                }
-                              }}
-                            />
-                          )}
-                          <div className="mt-2 flex gap-2 overflow-x-auto">
-                            {images.map((i) => (
-                              <button key={i.id} type="button" onClick={() => setActiveImg(i.id)} className="h-14 w-14 shrink-0 overflow-hidden rounded-xl border-2" style={{ borderColor: i.id === activeImg ? "var(--accent)" : "transparent" }}>
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img src={i.url} alt="" className="h-full w-full object-cover" />
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
                       <div ref={endRef} />
                     </div>
                   )}
@@ -1230,30 +1269,6 @@ function Dashboard() {
                     </div>
                   )}
 
-                  {(mode === "image" || mode === "audio") && (
-                    <div className="mb-2 flex flex-wrap gap-1.5">
-                      {mode === "image" &&
-                        ASPECTS.map((a) => (
-                          <button key={a} type="button" onClick={() => setAspect(a)} className="rounded-xl border px-2.5 py-1 text-[11px] font-medium" style={aspect === a ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" } : { borderColor: "var(--border)", color: "var(--muted)" }}>{a}</button>
-                        ))}
-                      {mode === "audio" && (
-                        <>
-                          {(showVoices ? VOICES : VOICES.slice(0, 6)).map((v) => (
-                            <button key={v.id} type="button" title={`${v.lang} · ${v.tone}`} onClick={() => setVoice(v.id)} className="rounded-xl border px-2.5 py-1 text-[11px] font-medium" style={voice === v.id ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" } : { borderColor: "var(--border)", color: "var(--muted)" }}>
-                              {v.label}{showVoices && <span className="ml-1 opacity-50">{v.lang}</span>}
-                            </button>
-                          ))}
-                          <button type="button" onClick={() => setShowVoices((v) => !v)} className="rounded-xl border px-2.5 py-1 text-[11px] font-semibold" style={{ borderColor: "var(--border)", color: "var(--accent)" }}>
-                            {showVoices ? "Less" : `More +${VOICES.length - 6}`}
-                          </button>
-                          {[0.75, 1, 1.25, 1.5].map((s) => (
-                            <button key={s} type="button" onClick={() => setSpeed(s)} className="rounded-xl border px-2 py-1 text-[11px]" style={speed === s ? { borderColor: "var(--accent)", color: "var(--accent)" } : { borderColor: "var(--border)", color: "var(--muted)" }}>{s}×</button>
-                          ))}
-                        </>
-                      )}
-                    </div>
-                  )}
-
                   <div className="rounded-3xl border shadow-sm" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
                     <textarea
                       ref={taRef}
@@ -1264,11 +1279,7 @@ function Dashboard() {
                           ? "What are we making?"
                           : mode === "code"
                             ? "Describe the build…"
-                            : mode === "image"
-                              ? "Describe the frame…"
-                              : mode === "audio"
-                                ? "Paste the script…"
-                                : "Message BUILDWE"
+                            : "Message BUILDWE"
                       }
                       onChange={(e) => {
                         setInput(e.target.value);
@@ -1373,6 +1384,7 @@ function Dashboard() {
               </div>
             )}
           </div>
+          )}
         </div>
 
         {/* mobile nav */}

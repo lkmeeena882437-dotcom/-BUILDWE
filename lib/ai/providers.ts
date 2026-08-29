@@ -1,6 +1,5 @@
 /**
  * BUILDWE AI runtime — live LLM first, smart offline only if providers fail.
- * Always answers the user's actual message (no generic template spam).
  */
 
 import { AI_KEYS, AI_MODELS, APP, hasProviderKey } from "@/lib/config";
@@ -12,19 +11,18 @@ import {
   type ChatTurn,
   type MindProfile,
 } from "@/lib/ai/mind";
+import { mergeImagePrompt } from "@/lib/ai/image-prompt";
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
   content: string;
 };
 
-/** Groq-valid models (keep this list current) */
 const GROQ_CHAT_MODELS = [
   "llama-3.3-70b-versatile",
   "llama-3.1-8b-instant",
   "llama-3.1-70b-versatile",
   "gemma2-9b-it",
-  "mixtral-8x7b-32768",
 ];
 
 const GROQ_CODE_MODELS = [
@@ -52,19 +50,20 @@ async function groqStream(messages: ChatMessage[], model: string) {
       }),
     });
     if (!res.ok || !res.body) {
-      const errText = await res.text().catch(() => "");
-      console.error("[bw] groq stream fail", model, res.status, errText.slice(0, 200));
+      console.error("[bw] groq stream fail", model, res.status);
       return null;
     }
     return res.body;
   } catch (e) {
-    console.error("[bw] groq stream error", model, e);
+    console.error("[bw] groq stream error", e);
     return null;
   }
 }
 
-/** Non-stream fallback when streaming fails */
-async function groqComplete(messages: ChatMessage[], model: string): Promise<string | null> {
+async function groqComplete(
+  messages: ChatMessage[],
+  model: string
+): Promise<string | null> {
   if (!hasProviderKey("groq")) return null;
   try {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -81,16 +80,11 @@ async function groqComplete(messages: ChatMessage[], model: string): Promise<str
         max_tokens: 4096,
       }),
     });
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      console.error("[bw] groq complete fail", model, res.status, errText.slice(0, 200));
-      return null;
-    }
+    if (!res.ok) return null;
     const data = await res.json();
     const text = data?.choices?.[0]?.message?.content;
     return typeof text === "string" && text.trim() ? text : null;
-  } catch (e) {
-    console.error("[bw] groq complete error", model, e);
+  } catch {
     return null;
   }
 }
@@ -107,19 +101,17 @@ async function openRouterStream(messages: ChatMessage[], model: string) {
         "X-Title": APP.name || "BUILDWE",
       },
       body: JSON.stringify({
-        model: model.includes("/") ? model : `meta-llama/llama-3.3-70b-instruct`,
+        model: model.includes("/")
+          ? model
+          : "meta-llama/llama-3.3-70b-instruct",
         messages,
         temperature: 0.7,
         stream: true,
       }),
     });
-    if (!res.ok || !res.body) {
-      console.error("[bw] openrouter fail", res.status);
-      return null;
-    }
+    if (!res.ok || !res.body) return null;
     return res.body;
-  } catch (e) {
-    console.error("[bw] openrouter error", e);
+  } catch {
     return null;
   }
 }
@@ -156,7 +148,7 @@ export function openAIStreamToTextSSE(body: ReadableStream<Uint8Array>) {
                 );
               }
             } catch {
-              /* skip */
+              /* */
             }
           }
         }
@@ -196,10 +188,6 @@ function textToSSE(text: string): ReadableStream<Uint8Array> {
   });
 }
 
-/**
- * Offline replies that ACTUALLY address the user message.
- * Used only when no live provider works.
- */
 function smartOfflineChat(
   prompt: string,
   history: { role: string; content: string }[]
@@ -207,144 +195,37 @@ function smartOfflineChat(
   const raw = prompt.trim();
   const p = raw.toLowerCase();
   const isHinglish =
-    /kya|hai|ho|haan|nahi|kaise|kese|kyu|kyun|mujhe|tum|apka|aap|bhai|yaar|karo|kro|baat|hinglish|samajh|plan|kaam/.test(
+    /kya|hai|ho|haan|nahi|kaise|kese|kyu|mujhe|tum|bhai|yaar|karo|kro|baat|hinglish|samajh|plan|kaam/.test(
       p
     );
 
-  // Greetings
   if (
-    /^(hi+|h+e+y+|h+e+l+o+|hy+|hii+|hello|namaste|namaskar|salam)\b/i.test(p) ||
-    /^(hi|hey|hy|hii|hello)\s+(kese|kaise|kya)/i.test(p) ||
-    /kese ho|kaise ho|kya haal|what's up|whats up|wassup/.test(p)
+    /^(hi+|h+e+y+|h+e+l+o+|hy+|hii+|hello|namaste)\b/i.test(p) ||
+    /kese ho|kaise ho|kya haal|what's up/.test(p)
   ) {
     return isHinglish
-      ? `Hey! Main theek hoon 👍
-
-Main **BUILDWE** hoon — yahan tum:
-• baat cheet / ideas  
-• code  
-• image  
-• voice  
-
-sab ek jagah kar sakte ho.
-
-Bolo, aaj kya karna hai?`
-      : `Hey — I'm good.
-
-I'm **BUILDWE**. I can help you chat, write, code, make images, or turn text into voice.
-
-What do you want to do?`;
+      ? `Hey! Main theek hoon 👍\n\nMain **BUILDWE** hoon. Chat, code, image, voice — sab yahin.\n\nBolo aaj kya karna hai?`
+      : `Hey — all good.\n\nI'm **BUILDWE**. Chat, code, image, or voice — what do you need?`;
   }
 
-  if (/hinglish|hindi me|hindi mein|urdu/.test(p)) {
-    return `Theek hai — ab **Hinglish** mein baat karta hoon.
-
-Tum jo bhi poochoge (plan, code, writing, idea), seedha usi pe jawab dunga.
-
-Ab bolo: exactly kya chahiye?`;
+  if (/hinglish|hindi me|hindi mein/.test(p)) {
+    return `Theek hai — ab **Hinglish** mein baat karta hoon.\n\nExact bolo kya chahiye.`;
   }
 
-  if (/kya kr rhe ho|kya kar rahe|what are you doing/.test(p)) {
-    return isHinglish
-      ? `Abhi tumhare saath chat pe hoon — tumhara message padh ke jawab de raha hoon.
-
-Main BUILDWE AI workspace hoon. Tum mujhse sawal, writing, code, image ya voice maang sakte ho.
-
-Bolo next kya chahiye?`
-      : `Right now I'm here in this chat, reading your messages and helping you.
-
-I can think with you, write, code, generate images, or speak text.
-
-What should we do next?`;
-  }
-
-  if (/who are you|tum kaun|what is buildwe|tu kaun/.test(p)) {
-    return isHinglish
-      ? `Main **BUILDWE** hoon — ek AI platform.
-
-Ek jagah pe:
-1. **Chat** — sochna, likhna, plan  
-2. **Code** — idea se working code  
-3. **Image** — text se picture  
-4. **Audio** — script se awaaz  
-
-Free shuru hota hai. Bolo kahan se start karein?`
-      : `I'm **BUILDWE** — your AI workspace for chat, code, image, and voice in one place.
-
-What do you want to make?`;
-  }
-
-  // Short casual — don't dump framework
   if (raw.length < 50 && !/code|build|write|plan|help|explain/.test(p)) {
     return isHinglish
-      ? `Samajh gaya: “${raw}”
-
-Thoda clear bolo kya chahiye —  
-• baat / advice  
-• kuch likhna  
-• code  
-• image  
-• voice  
-
-Main seedha usi pe kaam karta hoon.`
-      : `Got “${raw}”.
-
-Tell me what you need — answer, draft, code, image, or voice — and I’ll do that directly.`;
+      ? `Samajh gaya: “${raw}”\n\nClear bolo — baat, draft, code, image, ya voice?`
+      : `Got “${raw}”.\n\nWhat do you need — answer, draft, code, image, or voice?`;
   }
 
-  // Default: reflect + answer shape tied to their words
-  const recent = history
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .slice(-4)
-    .map((m) => `${m.role}: ${m.content.slice(0, 120)}`)
-    .join("\n");
-
-  if (isHinglish) {
-    return `Tumne kaha: **“${raw.slice(0, 300)}”**
-
-Main isko aise handle karta hoon:
-
-1. Pehle tumhara exact point pakadta hoon  
-2. Phir seedha useful jawab / steps deta hoon  
-
-**Abhi ka short take:**  
-Batao yeh message se tumhe *kya result* chahiye — explanation, plan, message draft, ya code?  
-
-Jo bhi bolo, next reply mein main wahi deliver karunga — generic lecture nahi.`;
-  }
-
-  return `You said: **“${raw.slice(0, 300)}”**
-
-I'll answer that directly.
-
-**What I need for a sharper reply (pick one):**
-- a yes/no or factual answer  
-- a short plan  
-- a written draft  
-- code  
-
-Reply with which one — or just continue the thought and I’ll stay on this topic.
-
-${recent ? `(Context noted from recent messages.)` : ""}`;
+  void history;
+  return isHinglish
+    ? `Tumne kaha: **“${raw.slice(0, 280)}”**\n\nSeedha bolo result kya chahiye — explanation, plan, draft, ya code — next reply mein wahi dunga.`
+    : `You said: **“${raw.slice(0, 280)}”**\n\nTell me the result you want (answer / plan / draft / code) and I’ll deliver that.`;
 }
 
 function smartOfflineCode(prompt: string): string {
-  const raw = prompt.trim();
-  return `Samajh gaya — tum code/project side pe ho.
-
-**Tumhara request:** ${raw.slice(0, 240)}
-
-### Quick path
-1. Goal clear karo (web page / game / API / fix)  
-2. Main uske hisaab se working code dunga  
-3. Copy → run → next improve  
-
-Agar yeh ek **naya mini project** hai, ek line mein bolo:
-- “HTML quiz bana do”  
-- “todo app react”  
-- “landing page cream theme”  
-
-Main next message mein **complete code block** dunga.`;
+  return `Request: ${prompt.slice(0, 240)}\n\nBolo exact deliverable (HTML quiz / React todo / landing page) — next message mein complete code block dunga.`;
 }
 
 export async function streamChatOrCode(opts: {
@@ -352,7 +233,6 @@ export async function streamChatOrCode(opts: {
   messages: { role: string; content: string }[];
   plan: Plan;
   skills?: string[];
-  /** thumbs feedback memory */
   prefer?: string[];
   avoid?: string[];
   promptForRouting: string;
@@ -465,8 +345,13 @@ export async function streamChatOrCode(opts: {
   };
 }
 
-/* Image */
-export function buildImageUrl(prompt: string, aspect: string) {
+/* ── Image studio ─────────────────────────────────────────── */
+
+export function buildImageUrl(
+  prompt: string,
+  aspect: string,
+  modelId: string = "flux"
+) {
   const map: Record<string, [number, number]> = {
     "1:1": [1024, 1024],
     "16:9": [1280, 720],
@@ -474,26 +359,52 @@ export function buildImageUrl(prompt: string, aspect: string) {
     "4:3": [1024, 768],
     "3:4": [768, 1024],
   };
-  const [w, h] = map[aspect] || map["1:1"];
+  // YouTube thumb classic
+  if (aspect === "yt") {
+    map["yt"] = [1280, 720];
+  }
+  const key = aspect === "yt" ? "16:9" : aspect;
+  const [w, h] = map[key] || map["1:1"];
   const seed = Math.floor(Math.random() * 1_000_000);
-  const clean = prompt.replace(/\s+/g, " ").trim().slice(0, 450);
-  const enhanced = `${clean}, photorealistic, highly detailed, natural lighting`;
-  const q = encodeURIComponent(enhanced);
-  return `https://image.pollinations.ai/prompt/${q}?width=${w}&height=${h}&seed=${seed}&nologo=true&enhance=true&model=flux`;
+  const clean = prompt.replace(/\s+/g, " ").trim().slice(0, 850);
+  const q = encodeURIComponent(clean);
+  const model = modelId === "turbo" ? "turbo" : "flux";
+  return `https://image.pollinations.ai/prompt/${q}?width=${w}&height=${h}&seed=${seed}&nologo=true&enhance=true&model=${model}`;
 }
 
 export async function generateImage(opts: {
   prompt: string;
   aspect: string;
   plan: Plan;
+  basePrompt?: string;
+  modelId?: string;
 }) {
-  const url = buildImageUrl(opts.prompt, opts.aspect);
-  // quick HEAD/GET probe optional — don't block
+  const merged = mergeImagePrompt({
+    basePrompt: opts.basePrompt,
+    userText: opts.prompt,
+    aspect: opts.aspect === "yt" ? "16:9" : opts.aspect,
+  });
+
+  const url = buildImageUrl(
+    merged.prompt,
+    opts.aspect === "yt" ? "16:9" : opts.aspect,
+    opts.modelId || "flux"
+  );
+
   return {
     url,
-    model: "BUILDWE Vision",
+    promptUsed: merged.prompt,
+    editMode: merged.mode,
+    model:
+      opts.modelId === "turbo"
+        ? "BUILDWE Vision Fast"
+        : opts.modelId === "pro"
+          ? "BUILDWE Vision Pro"
+          : "BUILDWE Vision",
+    modelId: opts.modelId || "flux",
     provider: "buildwe",
     live: true,
+    comingSoon: opts.modelId === "pro",
   };
 }
 
@@ -503,13 +414,23 @@ export async function generateAudioPlan(opts: {
   speed: number;
   plan: Plan;
 }) {
+  // Strip stage directions for cleaner speech when user pastes long briefs
+  let speak = opts.text.slice(0, 4000);
+  // If it looks like a voice profile doc, try to extract quoted dialogue
+  const quotes = Array.from(speak.matchAll(/"([^"]{8,})"/g)).map((m) => m[1]);
+  if (quotes.length >= 1 && /voice profile|pacing|delivery style/i.test(speak)) {
+    speak = quotes.join(". ");
+  }
+
   return {
     type: "browser-tts" as const,
-    text: opts.text.slice(0, 4000),
+    text: speak,
+    displayText: opts.text.slice(0, 4000),
     voice: opts.voice,
     speed: opts.speed,
     model: "BUILDWE Voice",
     provider: "buildwe",
     live: true,
+    charCount: speak.length,
   };
 }

@@ -146,16 +146,33 @@ export async function streamAI(
   }
 }
 
-export async function generateImage(prompt: string, aspect: string) {
+export async function generateImage(
+  prompt: string,
+  aspect: string,
+  opts?: { basePrompt?: string; modelId?: string }
+) {
   const r = await fetch("/api/ai/image", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, aspect }),
+    body: JSON.stringify({
+      prompt,
+      aspect,
+      basePrompt: opts?.basePrompt,
+      modelId: opts?.modelId || "flux",
+    }),
   });
   const j = await readJson(r);
   if (!r.ok) throw new Error(j.error || "Couldn’t create that image. Try again.");
-  return j as { id: string; url: string; model: string; provider: string };
+  return j as {
+    id: string;
+    url: string;
+    model: string;
+    provider: string;
+    promptUsed?: string;
+    editMode?: string;
+    userPrompt?: string;
+  };
 }
 
 export async function generateAudio(text: string, voice: string, speed: number) {
