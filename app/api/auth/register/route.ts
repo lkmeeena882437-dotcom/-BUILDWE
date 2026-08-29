@@ -1,11 +1,9 @@
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createUser, publicUser } from "@/lib/db/store";
-import {
-  attachGuestCookie,
-  setSessionCookie,
-  signSession,
-} from "@/lib/auth/session";
+import { setSessionCookie, signSession } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
 
 const schema = z.object({
@@ -15,13 +13,13 @@ const schema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  const ip = clientIp(req);
-  const rl = rateLimit(`reg:${ip}`, 10, 60_000);
-  if (!rl.ok) {
-    return NextResponse.json({ error: "Too many attempts" }, { status: 429 });
-  }
-
   try {
+    const ip = clientIp(req);
+    const rl = rateLimit(`reg:${ip}`, 10, 60_000);
+    if (!rl.ok) {
+      return NextResponse.json({ error: "Too many attempts. Wait a minute." }, { status: 429 });
+    }
+
     const body = schema.parse(await req.json());
     const user = createUser({
       email: body.email,
@@ -39,8 +37,17 @@ export async function POST(req: NextRequest) {
     setSessionCookie(res, token);
     return res;
   } catch (e) {
-    const msg = (e as Error).message || "Register failed";
+    const msg = (e as Error).message || "Couldn’t create account.";
+    // Never leak raw ENOENT paths to UI
+    const safe = /ENOENT|EACCES|mkdir|EPERM|read-only/i.test(msg)
+      ? "Couldn’t save account right now. Please try again."
+      : msg.includes("already")
+        ? "Email already registered. Try logging in."
+        : msg.includes("Invalid") || msg.includes("email")
+          ? "Enter a valid email and password (min 6 characters)."
+          : "Couldn’t create account. Please try again.";
     const status = msg.includes("already") ? 409 : 400;
-    return NextResponse.json({ error: msg }, { status });
+    console.error("[bw] register", e);
+    return NextResponse.json({ error: safe }, { status });
   }
 }

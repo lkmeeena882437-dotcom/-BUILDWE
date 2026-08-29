@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { findUserByEmail, publicUser, verifyPassword } from "@/lib/db/store";
@@ -10,17 +12,20 @@ const schema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  const ip = clientIp(req);
-  const rl = rateLimit(`login:${ip}`, 20, 60_000);
-  if (!rl.ok) {
-    return NextResponse.json({ error: "Too many attempts" }, { status: 429 });
-  }
-
   try {
+    const ip = clientIp(req);
+    const rl = rateLimit(`login:${ip}`, 20, 60_000);
+    if (!rl.ok) {
+      return NextResponse.json({ error: "Too many attempts. Wait a minute." }, { status: 429 });
+    }
+
     const body = schema.parse(await req.json());
     const user = findUserByEmail(body.email);
     if (!user || !verifyPassword(body.password, user.passwordHash)) {
-      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
+      return NextResponse.json(
+        { error: "Invalid email or password." },
+        { status: 401 }
+      );
     }
     const token = await signSession({
       sub: user.id,
@@ -32,7 +37,11 @@ export async function POST(req: NextRequest) {
     const res = NextResponse.json({ user: publicUser(user) });
     setSessionCookie(res, token);
     return res;
-  } catch {
-    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+  } catch (e) {
+    console.error("[bw] login", e);
+    return NextResponse.json(
+      { error: "Couldn’t log in. Check email/password and try again." },
+      { status: 400 }
+    );
   }
 }

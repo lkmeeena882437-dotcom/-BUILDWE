@@ -16,10 +16,21 @@ export type MeResponse = {
   limits: { chat: number; code: number; image: number; audio: number };
 };
 
+async function readJson(r: Response) {
+  const text = await r.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: r.ok ? "Unexpected response" : `Request failed (${r.status})` };
+  }
+}
+
 export async function fetchMe(): Promise<MeResponse> {
   const r = await fetch("/api/auth/me", { credentials: "include" });
-  if (!r.ok) throw new Error("session failed");
-  return r.json();
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Session failed");
+  return j;
 }
 
 export async function login(email: string, password: string) {
@@ -29,7 +40,7 @@ export async function login(email: string, password: string) {
     credentials: "include",
     body: JSON.stringify({ email, password }),
   });
-  const j = await r.json();
+  const j = await readJson(r);
   if (!r.ok) throw new Error(j.error || "Login failed");
   return j;
 }
@@ -41,8 +52,8 @@ export async function register(email: string, password: string, name?: string) {
     credentials: "include",
     body: JSON.stringify({ email, password, name }),
   });
-  const j = await r.json();
-  if (!r.ok) throw new Error(j.error || "Register failed");
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t create account");
   return j;
 }
 
@@ -52,8 +63,9 @@ export async function logout() {
 
 export async function fetchHistory() {
   const r = await fetch("/api/history", { credentials: "include" });
-  if (!r.ok) throw new Error("history failed");
-  return r.json() as Promise<{
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "History unavailable");
+  return j as {
     conversations: {
       id: string;
       title: string;
@@ -63,7 +75,7 @@ export async function fetchHistory() {
       messageCount: number;
     }[];
     generations: unknown[];
-  }>;
+  };
 }
 
 export async function loadConversation(id: string) {
@@ -73,8 +85,8 @@ export async function loadConversation(id: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "get", conversationId: id }),
   });
-  const j = await r.json();
-  if (!r.ok) throw new Error(j.error || "load failed");
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t open chat");
   return j.conversation;
 }
 
@@ -85,11 +97,15 @@ export async function deleteHistory(id: string) {
   });
 }
 
-/** SSE stream reader for chat/code */
 export async function streamAI(
   endpoint: "/api/ai/chat" | "/api/ai/code",
   body: unknown,
-  onEvent: (ev: { token?: string; done?: boolean; meta?: unknown; error?: string }) => void,
+  onEvent: (ev: {
+    token?: string;
+    done?: boolean;
+    meta?: unknown;
+    error?: string;
+  }) => void,
   signal?: AbortSignal
 ) {
   const r = await fetch(endpoint, {
@@ -101,11 +117,11 @@ export async function streamAI(
   });
 
   if (!r.ok) {
-    const j = await r.json().catch(() => ({}));
-    throw new Error(j.error || `HTTP ${r.status}`);
+    const j = await readJson(r);
+    throw new Error(j.error || `Something went wrong (${r.status})`);
   }
 
-  if (!r.body) throw new Error("No stream");
+  if (!r.body) throw new Error("No response stream");
 
   const reader = r.body.getReader();
   const decoder = new TextDecoder();
@@ -124,7 +140,7 @@ export async function streamAI(
         const json = JSON.parse(t.slice(5).trim());
         onEvent(json);
       } catch {
-        /* */
+        /* ignore partial */
       }
     }
   }
@@ -137,7 +153,7 @@ export async function generateImage(prompt: string, aspect: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt, aspect }),
   });
-  const j = await r.json();
+  const j = await readJson(r);
   if (!r.ok) throw new Error(j.error || "Couldn’t create that image. Try again.");
   return j as { id: string; url: string; model: string; provider: string };
 }
@@ -149,8 +165,8 @@ export async function generateAudio(text: string, voice: string, speed: number) 
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text, voice, speed }),
   });
-  const j = await r.json();
-  if (!r.ok) throw new Error(j.error || "Audio failed");
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t generate voice. Try again.");
   return j as {
     id: string;
     type: "browser-tts";
@@ -167,5 +183,6 @@ export async function detectAuto(prompt: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt }),
   });
-  return r.json() as Promise<{ mode: string }>;
+  const j = await readJson(r);
+  return j as { mode: string };
 }

@@ -1,13 +1,13 @@
 /**
- * BUILDWE free file DB — zero paid services.
- * JSON store under /data (gitignored). Swap to SQLite/Supabase later without UI change.
+ * BUILDWE store — works on Vercel serverless + local dev.
+ *
+ * Vercel: filesystem under project root is read-only.
+ * We write to /tmp when possible, else pure in-memory (per-instance).
+ * For permanent multi-instance auth later: swap to Supabase/Turso.
  */
 import fs from "fs";
 import path from "path";
 import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
-
-const DATA_DIR = path.join(process.cwd(), "data");
-const DB_FILE = path.join(DATA_DIR, "buildwe.json");
 
 export type Plan = "free" | "pro";
 
@@ -15,7 +15,7 @@ export type User = {
   id: string;
   email: string;
   name: string;
-  passwordHash: string; // scrypt
+  passwordHash: string;
   plan: Plan;
   skills: string[];
   createdAt: string;
@@ -32,7 +32,7 @@ export type Message = {
 
 export type Conversation = {
   id: string;
-  userId: string; // "guest:<id>" or user id
+  userId: string;
   mode: "auto" | "chat" | "code" | "image" | "audio";
   title: string;
   messages: Message[];
@@ -53,7 +53,7 @@ export type Generation = {
 
 export type UsageRow = {
   userId: string;
-  day: string; // YYYY-MM-DD
+  day: string;
   chat: number;
   code: number;
   image: number;
@@ -67,26 +67,95 @@ type DB = {
   usage: UsageRow[];
 };
 
-function ensure() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(DB_FILE)) {
-    const empty: DB = { users: [], conversations: [], generations: [], usage: [] };
-    fs.writeFileSync(DB_FILE, JSON.stringify(empty, null, 2));
+const emptyDb = (): DB => ({
+  users: [],
+  conversations: [],
+  generations: [],
+  usage: [],
+});
+
+/** Process-local fallback when disk is unavailable */
+let memoryDb: DB = emptyDb();
+let resolvedPath: string | null | undefined;
+let writable = false;
+
+function candidatePaths(): string[] {
+  const list: string[] = [];
+  if (process.env.BUILDWE_DATA_DIR) {
+    list.push(path.join(process.env.BUILDWE_DATA_DIR, "buildwe.json"));
+  }
+  // Vercel / AWS lambda writable tmp
+  list.push(path.join("/tmp", "buildwe-data", "buildwe.json"));
+  // Local project data folder
+  list.push(path.join(process.cwd(), "data", "buildwe.json"));
+  return list;
+}
+
+function tryInitPath(file: string): boolean {
+  try {
+    const dir = path.dirname(file);
+    fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(file)) {
+      fs.writeFileSync(file, JSON.stringify(emptyDb(), null, 2), "utf8");
+    } else {
+      // touch-read to ensure readable
+      fs.readFileSync(file, "utf8");
+    }
+    // prove write
+    const cur = fs.readFileSync(file, "utf8");
+    fs.writeFileSync(file, cur, "utf8");
+    return true;
+  } catch {
+    return false;
   }
 }
 
+function getPath(): string | null {
+  if (resolvedPath !== undefined) return resolvedPath;
+  for (const p of candidatePaths()) {
+    if (tryInitPath(p)) {
+      resolvedPath = p;
+      writable = true;
+      return p;
+    }
+  }
+  resolvedPath = null;
+  writable = false;
+  return null;
+}
+
 function read(): DB {
-  ensure();
+  const file = getPath();
+  if (!file) return memoryDb;
   try {
-    return JSON.parse(fs.readFileSync(DB_FILE, "utf8")) as DB;
+    const raw = fs.readFileSync(file, "utf8");
+    const parsed = JSON.parse(raw) as DB;
+    memoryDb = {
+      users: parsed.users || [],
+      conversations: parsed.conversations || [],
+      generations: parsed.generations || [],
+      usage: parsed.usage || [],
+    };
+    return memoryDb;
   } catch {
-    return { users: [], conversations: [], generations: [], usage: [] };
+    return memoryDb;
   }
 }
 
 function write(db: DB) {
-  ensure();
-  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+  memoryDb = db;
+  const file = getPath();
+  if (!file || !writable) return;
+  try {
+    fs.writeFileSync(file, JSON.stringify(db, null, 2), "utf8");
+  } catch {
+    writable = false;
+  }
+}
+
+export function storageMode(): "disk" | "memory" {
+  getPath();
+  return writable && resolvedPath ? "disk" : "memory";
 }
 
 export function uid(prefix = "id") {
@@ -102,9 +171,13 @@ export function hashPassword(password: string): string {
 export function verifyPassword(password: string, stored: string): boolean {
   const [salt, hash] = stored.split(":");
   if (!salt || !hash) return false;
-  const hashBuf = Buffer.from(hash, "hex");
-  const test = scryptSync(password, salt, 64);
-  return hashBuf.length === test.length && timingSafeEqual(hashBuf, test);
+  try {
+    const hashBuf = Buffer.from(hash, "hex");
+    const test = scryptSync(password, salt, 64);
+    return hashBuf.length === test.length && timingSafeEqual(hashBuf, test);
+  } catch {
+    return false;
+  }
 }
 
 export function todayKey() {
@@ -173,8 +246,9 @@ export function listConversations(userId: string) {
 }
 
 export function getConversation(id: string, userId: string) {
-  const c = read().conversations.find((x) => x.id === id && x.userId === userId);
-  return c || null;
+  return (
+    read().conversations.find((x) => x.id === id && x.userId === userId) || null
+  );
 }
 
 export function createConversation(input: {
@@ -195,6 +269,10 @@ export function createConversation(input: {
     updatedAt: now,
   };
   db.conversations.unshift(c);
+  // keep memory bounded on serverless
+  if (db.conversations.length > 200) {
+    db.conversations = db.conversations.slice(0, 200);
+  }
   write(db);
   return c;
 }
@@ -206,10 +284,23 @@ export function appendMessages(
   title?: string
 ) {
   const db = read();
-  const i = db.conversations.findIndex(
+  let i = db.conversations.findIndex(
     (c) => c.id === conversationId && c.userId === userId
   );
-  if (i < 0) return null;
+  // If missing (new instance / lost memory), recreate shell
+  if (i < 0) {
+    const now = new Date().toISOString();
+    db.conversations.unshift({
+      id: conversationId,
+      userId,
+      mode: "chat",
+      title: title?.slice(0, 80) || "Chat",
+      messages: [],
+      createdAt: now,
+      updatedAt: now,
+    });
+    i = 0;
+  }
   db.conversations[i].messages.push(...messages);
   db.conversations[i].updatedAt = new Date().toISOString();
   if (title) db.conversations[i].title = title.slice(0, 80);
@@ -237,7 +328,7 @@ export function addGeneration(g: Omit<Generation, "id" | "createdAt">) {
     createdAt: new Date().toISOString(),
   };
   db.generations.unshift(row);
-  db.generations = db.generations.slice(0, 500);
+  db.generations = db.generations.slice(0, 300);
   write(db);
   return row;
 }
