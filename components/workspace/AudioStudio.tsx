@@ -40,7 +40,7 @@ export function AudioStudio({
   voices: VoiceOpt[];
   loading: boolean;
   onGenerate: () => void;
-  lastSpoken?: { text: string; voice: string } | null;
+  lastSpoken?: { text: string; voice: string; audioUrl?: string } | null;
 }) {
   const [showAll, setShowAll] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -269,51 +269,89 @@ export function AudioStudio({
             className="mt-3 rounded-3xl border p-4"
             style={{ borderColor: "var(--border)", background: "var(--card)" }}
           >
-            <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>
-              Player
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>
+                Player
+              </div>
+              {lastSpoken?.audioUrl && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide"
+                  style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+                >
+                  ● MP3
+                </span>
+              )}
             </div>
             <p className="mt-2 line-clamp-3 text-sm" style={{ color: "var(--muted)" }}>
               {lastSpoken?.text || text || "Generate speech to preview here."}
             </p>
-            <div className="mt-4 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={togglePlay}
-                disabled={!(lastSpoken?.text || text).trim()}
-                className="flex h-12 w-12 items-center justify-center rounded-full text-white disabled:opacity-40"
-                style={{ background: "var(--ink)" }}
-                aria-label={playing ? "Pause" : "Play"}
-              >
-                {playing ? (
-                  <Pause className="h-5 w-5 fill-current" />
-                ) : (
-                  <Play className="ml-0.5 h-5 w-5 fill-current" />
-                )}
-              </button>
-              <div className="min-w-0 flex-1">
-                <div className="h-1.5 rounded-full" style={{ background: "var(--secondary)" }}>
-                  <div
-                    className="h-full rounded-full transition-all"
-                    style={{
-                      width: playing ? "66%" : "0%",
-                      background: "var(--accent)",
+
+            {lastSpoken?.audioUrl ? (
+              /* Real generated audio — native player + MP3 download */
+              <div className="mt-4 space-y-2">
+                <audio controls preload="metadata" src={lastSpoken.audioUrl} className="h-10 w-full">
+                  Your browser does not support audio playback.
+                </audio>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px]" style={{ color: "var(--soft)" }}>
+                    {activeLabel} · {speed}× · real audio
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const a = document.createElement("a");
+                      a.href = lastSpoken.audioUrl!;
+                      a.download = `buildwe-voice-${lastSpoken.voice}-${Date.now()}.mp3`;
+                      a.click();
                     }}
-                  />
-                </div>
-                <div className="mt-1 text-[10px]" style={{ color: "var(--soft)" }}>
-                  {activeLabel} · {speed}×
+                    className="inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[11px] font-semibold"
+                    style={{ borderColor: "var(--border)", color: "var(--accent)" }}
+                  >
+                    <Download className="h-3.5 w-3.5" /> MP3
+                  </button>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={downloadScript}
-                className="flex h-10 w-10 items-center justify-center rounded-xl border"
-                style={{ borderColor: "var(--border)" }}
-                aria-label="Download script"
-              >
-                <Download className="h-4 w-4" />
-              </button>
-            </div>
+            ) : (
+              <div className="mt-4 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={togglePlay}
+                  disabled={!(lastSpoken?.text || text).trim()}
+                  className="flex h-12 w-12 items-center justify-center rounded-full text-white disabled:opacity-40"
+                  style={{ background: "var(--ink)" }}
+                  aria-label={playing ? "Pause" : "Play"}
+                >
+                  {playing ? (
+                    <Pause className="h-5 w-5 fill-current" />
+                  ) : (
+                    <Play className="ml-0.5 h-5 w-5 fill-current" />
+                  )}
+                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="h-1.5 rounded-full" style={{ background: "var(--secondary)" }}>
+                    <div
+                      className="h-full rounded-full transition-all"
+                      style={{
+                        width: playing ? "66%" : "0%",
+                        background: "var(--accent)",
+                      }}
+                    />
+                  </div>
+                  <div className="mt-1 text-[10px]" style={{ color: "var(--soft)" }}>
+                    {activeLabel} · {speed}× · device voice
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={downloadScript}
+                  className="flex h-10 w-10 items-center justify-center rounded-xl border"
+                  style={{ borderColor: "var(--border)" }}
+                  aria-label="Download script"
+                >
+                  <Download className="h-4 w-4" />
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

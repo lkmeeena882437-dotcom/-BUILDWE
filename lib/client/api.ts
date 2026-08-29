@@ -186,12 +186,68 @@ export async function generateAudio(text: string, voice: string, speed: number) 
   if (!r.ok) throw new Error(j.error || "Couldn’t generate voice. Try again.");
   return j as {
     id: string;
-    type: "browser-tts";
+    type: "mp3" | "browser-tts";
+    audioUrl?: string;
     text: string;
     voice: string;
     speed: number;
     model: string;
+    live: boolean;
   };
+}
+
+/* ── BYOK (bring your own key) ──────────────────────────── */
+
+export async function fetchByok() {
+  const r = await fetch("/api/user/keys", { credentials: "include" });
+  const j = await readJson(r);
+  return j as {
+    requireAuth?: boolean;
+    keys: { groq: string | null; openrouter: string | null };
+    active: boolean;
+  };
+}
+
+export async function saveByok(keys: { groq?: string; openrouter?: string }) {
+  const r = await fetch("/api/user/keys", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(keys),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t save keys");
+  return j as { keys: { groq: string | null; openrouter: string | null }; active: boolean };
+}
+
+/* ── Developer API keys ─────────────────────────────────── */
+
+export async function fetchDevKeys() {
+  const r = await fetch("/api/dev/keys", { credentials: "include" });
+  const j = await readJson(r);
+  return j as {
+    requireAuth?: boolean;
+    keys: { id: string; name: string; prefix: string; createdAt: string; lastUsedAt?: string }[];
+  };
+}
+
+export async function createDevKey(name: string) {
+  const r = await fetch("/api/dev/keys", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t create key");
+  return j as { key: { id: string; name: string; prefix: string }; secret: string };
+}
+
+export async function revokeDevKey(id: string) {
+  await fetch(`/api/dev/keys?id=${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
 }
 
 export async function detectAuto(prompt: string) {

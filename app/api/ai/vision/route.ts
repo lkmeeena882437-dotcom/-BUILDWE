@@ -3,7 +3,8 @@ import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
 import { visionComplete } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
-import { addGeneration } from "@/lib/db/store";
+import { addGeneration, findUserById } from "@/lib/db/store";
+import { decryptSecret } from "@/lib/crypto";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,7 +48,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const result = await visionComplete({ prompt, imageDataUrl: image });
+    // BYOK — user's own Groq key powers vision too
+    const owner = findUserById(session.userId);
+    const byok = owner?.byok || {};
+    const userKeys = {
+      groq: byok.groq ? decryptSecret(byok.groq) : undefined,
+    };
+
+    const result = await visionComplete({ prompt, imageDataUrl: image, userKeys });
 
     try {
       recordUsage(session.userId, "image");

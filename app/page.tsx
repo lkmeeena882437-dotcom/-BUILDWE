@@ -59,6 +59,9 @@ import {
   ImagePlus,
   XCircle,
   Eye,
+  KeyRound,
+  Terminal,
+  Printer,
 } from "lucide-react";
 import clsx from "clsx";
 import {
@@ -84,10 +87,13 @@ import {
   createProject,
   assignProject,
   deleteProjectApi,
+  fetchByok,
+  saveByok,
   type MeResponse,
 } from "@/lib/client/api";
 import { ImageStudio, type StudioImage } from "@/components/workspace/ImageStudio";
 import { AudioStudio } from "@/components/workspace/AudioStudio";
+import { AdSlot } from "@/components/AdSlot";
 
 type Mode = "auto" | "chat" | "code" | "image" | "audio";
 type ThemePref = "system" | "light" | "dark";
@@ -384,7 +390,7 @@ function Dashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [drawer, setDrawer] = useState(false);
   const [modal, setModal] = useState<
-    null | "auth" | "settings" | "plans" | "profile" | "models" | "skills"
+    null | "auth" | "settings" | "plans" | "profile" | "models" | "skills" | "byok"
   >(null);
   const [authTab, setAuthTab] = useState<"login" | "register">("login");
   const [themePref, setThemePref] = useState<ThemePref>("system");
@@ -420,7 +426,7 @@ function Dashboard() {
   const [speed, setSpeed] = useState(1);
   const [audioBusy, setAudioBusy] = useState(false);
   const [audioText, setAudioText] = useState("");
-  const [lastSpoken, setLastSpoken] = useState<{ text: string; voice: string } | null>(null);
+  const [lastSpoken, setLastSpoken] = useState<{ text: string; voice: string; audioUrl?: string } | null>(null);
   const [listening, setListening] = useState(false);
   const utterRef = useRef<SpeechSynthesisUtterance | null>(null);
 
@@ -452,6 +458,13 @@ function Dashboard() {
   // share
   const [shareNote, setShareNote] = useState("");
   const [projMenu, setProjMenu] = useState(false);
+
+  // BYOK
+  const [byokKeys, setByokKeys] = useState<{ groq: string | null; openrouter: string | null }>({ groq: null, openrouter: null });
+  const [byokActive, setByokActive] = useState(false);
+  const [byokDraft, setByokDraft] = useState({ groq: "", openrouter: "" });
+  const [byokBusy, setByokBusy] = useState(false);
+  const [byokNote, setByokNote] = useState("");
 
   const abortRef = useRef<AbortController | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -525,10 +538,37 @@ function Dashboard() {
     refreshMe();
     refreshHistory();
     refreshProjects();
+    fetchByok()
+      .then((b) => {
+        if (!b.requireAuth) {
+          setByokKeys(b.keys);
+          setByokActive(Boolean(b.active));
+        }
+      })
+      .catch(() => {});
     fetchModels()
       .then((m) => setModelsCatalog(m.all || []))
       .catch(() => {});
   }, [refreshMe, refreshHistory, refreshProjects]);
+
+  const doSaveByok = async (which: "groq" | "openrouter", clear?: boolean) => {
+    setByokBusy(true);
+    setByokNote("");
+    try {
+      const payload = clear
+        ? { clear: which }
+        : { [which]: byokDraft[which].trim() };
+      const r = await saveByok(payload as { groq?: string; openrouter?: string });
+      setByokKeys(r.keys);
+      setByokActive(Boolean(r.active));
+      setByokDraft((d) => ({ ...d, [which]: "" }));
+      setByokNote(clear ? "Key removed." : `Saved — ${which === "groq" ? "Groq" : "OpenRouter"} key is now powering your chats ⚡`);
+    } catch (e) {
+      setByokNote((e as Error).message);
+    } finally {
+      setByokBusy(false);
+    }
+  };
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -722,22 +762,38 @@ function Dashboard() {
     setMode("audio");
     try {
       const a = await generateAudio(script, voice, speed);
-      setLastSpoken({ text: a.text, voice });
-      setModelTag("BUILDWE Voice");
-      if (typeof window !== "undefined" && window.speechSynthesis) {
-        window.speechSynthesis.cancel();
-        const u = new SpeechSynthesisUtterance(a.text);
-        u.rate = speed;
-        const sys = window.speechSynthesis.getVoices();
-        const pref = VOICES.find((x) => x.id === voice);
-        const match =
-          sys.find((v) =>
-            pref?.lang?.startsWith("HI")
-              ? /hi|hindi/i.test(v.lang + v.name)
-              : /en/i.test(v.lang)
-          ) || sys[0];
-        if (match) u.voice = match;
-        window.speechSynthesis.speak(u);
+
+      if (a.type === "mp3" && a.audioUrl) {
+        // Real MP3 back from the studio
+        setLastSpoken({ text: a.text, voice, audioUrl: a.audioUrl });
+        setModelTag(a.model || "BUILDWE Voice Studio");
+        try {
+          const au = new Audio(a.audioUrl);
+          void au.play().catch(() => {
+            /* autoplay blocked — user presses play */
+          });
+        } catch {
+          /* */
+        }
+      } else {
+        // Browser voice fallback
+        setLastSpoken({ text: a.text, voice });
+        setModelTag("BUILDWE Voice");
+        if (typeof window !== "undefined" && window.speechSynthesis) {
+          window.speechSynthesis.cancel();
+          const u = new SpeechSynthesisUtterance(a.text);
+          u.rate = speed;
+          const sys = window.speechSynthesis.getVoices();
+          const pref = VOICES.find((x) => x.id === voice);
+          const match =
+            sys.find((v) =>
+              pref?.lang?.startsWith("HI")
+                ? /hi|hindi/i.test(v.lang + v.name)
+                : /en/i.test(v.lang)
+            ) || sys[0];
+          if (match) u.voice = match;
+          window.speechSynthesis.speak(u);
+        }
       }
       refreshMe();
     } catch (e) {
@@ -1239,6 +1295,11 @@ function Dashboard() {
         </div>
 
         <div className="space-y-1 border-t p-2.5" style={{ borderColor: "var(--border)" }}>
+          {sidebarOpen && plan === "free" && (
+            <div className="mb-2">
+              <AdSlot plan={plan} slot="sidebar" onGoPro={() => setModal("plans")} />
+            </div>
+          )}
           <button type="button" onClick={() => setModal("settings")} className={clsx("flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm", sidebarOpen ? "px-3" : "justify-center")} style={{ color: "var(--muted)" }}>
             <Settings className="h-4 w-4" />
             {sidebarOpen && "Settings"}
@@ -1393,6 +1454,9 @@ function Dashboard() {
                             {s}
                           </button>
                         ))}
+                      </div>
+                      <div className="mt-4 w-full max-w-md">
+                        <AdSlot plan={plan} slot="chat-empty" onGoPro={() => setModal("plans")} />
                       </div>
                     </div>
                   )}
@@ -1664,6 +1728,7 @@ function Dashboard() {
                   <p className="mt-1.5 text-center text-[10px]" style={{ color: "var(--soft)" }}>
                     {me?.kind === "guest" ? "Browsing free · sign in to sync across devices" : me?.user?.email}
                     {plan === "free" ? " · Free plan" : " · PRO"}
+                    {byokActive ? " · Own key ⚡" : ""}
                   </p>
                 </div>
               </div>
@@ -1843,6 +1908,19 @@ function Dashboard() {
                 a.download = 'buildwe-chat.md';
                 a.click();
               }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Download className="h-4 w-4 opacity-70" /> Export chat</button>
+              <button type="button" onClick={() => {
+                try {
+                  sessionStorage.setItem("bw_print", JSON.stringify({
+                    title: filteredHistory.find((h) => h.id === convId)?.title || "BUILDWE chat",
+                    messages: messages.map((m) => ({ role: m.role, content: m.content })),
+                  }));
+                  window.open("/print", "_blank");
+                } catch {
+                  /* */
+                }
+              }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Printer className="h-4 w-4 opacity-70" /> Print / PDF</button>
+              <button type="button" onClick={() => setModal("byok")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><KeyRound className="h-4 w-4 opacity-70" /> API keys <span className="ml-auto text-[10px] font-semibold" style={{ color: byokActive ? "var(--accent)" : "var(--soft)" }}>{byokActive ? "Own key ⚡" : "BYOK"}</span></button>
+              <a href="/developers" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Terminal className="h-4 w-4 opacity-70" /> Developer API <ExternalLink className="ml-auto h-3.5 w-3.5" style={{ color: "var(--soft)" }} /></a>
               <a href="/about" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Bot className="h-4 w-4 opacity-70" /> About BUILDWE <ExternalLink className="ml-auto h-3.5 w-3.5" style={{ color: "var(--soft)" }} /></a>
               <a href="/privacy" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Shield className="h-4 w-4 opacity-70" /> Privacy</a>
               <a href="/terms" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><FileCode2 className="h-4 w-4 opacity-70" /> Terms</a>
@@ -1899,6 +1977,47 @@ function Dashboard() {
             <Btn size="sm" variant="ghost" onClick={() => { if (!skillDraft.trim()) return; setSkillList((x) => Array.from(new Set(x.concat([skillDraft.trim()]))).slice(0, 16)); setSkillDraft(""); }}>Add</Btn>
             <Btn size="sm" disabled={!loggedIn} onClick={async () => { try { await saveSkills(skillList); setModal(null); await refreshMe(); } catch (e) { setError((e as Error).message); } }}>Save Mind</Btn>
           </div>
+        </Sheet>
+      )}
+
+      {modal === "byok" && (
+        <Sheet onClose={() => setModal(null)} title="Your API keys">
+          <p className="mb-3 text-sm" style={{ color: "var(--muted)" }}>
+            Bring your own key — your chats run on <strong>your</strong> free Groq / OpenRouter account. Keys are AES-encrypted server-side and never shown again.
+          </p>
+          {!loggedIn && (
+            <p className="mb-3 text-xs" style={{ color: "var(--accent)" }}>Sign in to save keys across sessions.</p>
+          )}
+          {(["groq", "openrouter"] as const).map((which) => (
+            <div key={which} className="mb-3">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-xs font-semibold">{which === "groq" ? "Groq (fast, free tier)" : "OpenRouter (fallback)"}</span>
+                {byokKeys[which] && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <code className="rounded-md px-1.5 py-0.5 text-[10px]" style={{ background: "var(--secondary)", color: "var(--muted)" }}>{byokKeys[which]}</code>
+                    <button type="button" className="text-[10px] font-semibold text-red-600" onClick={() => doSaveByok(which, true)} disabled={byokBusy}>remove</button>
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={byokDraft[which]}
+                  onChange={(e) => setByokDraft((d) => ({ ...d, [which]: e.target.value }))}
+                  placeholder={which === "groq" ? "gsk_…" : "sk-or-…"}
+                  type="password"
+                  className="h-10 flex-1 rounded-2xl border px-3 text-sm outline-none"
+                  style={{ borderColor: "var(--border)", background: "var(--bg)" }}
+                />
+                <Btn size="sm" disabled={!loggedIn || byokBusy || byokDraft[which].trim().length < 20} onClick={() => doSaveByok(which)}>
+                  {byokBusy ? "Saving…" : "Save"}
+                </Btn>
+              </div>
+            </div>
+          ))}
+          {byokNote && <p className="text-xs" style={{ color: "var(--accent)" }}>{byokNote}</p>}
+          <p className="mt-3 text-[11px]" style={{ color: "var(--soft)" }}>
+            Get a free Groq key at console.groq.com → API Keys. It powers Chat, Code, and Vision for your account only.
+          </p>
         </Sheet>
       )}
 

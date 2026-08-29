@@ -7,8 +7,10 @@ import {
   addGeneration,
   appendMessages,
   createConversation,
+  findUserById,
   uid,
 } from "@/lib/db/store";
+import { decryptSecret } from "@/lib/crypto";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -76,6 +78,14 @@ export async function POST(req: NextRequest) {
       .filter((s: string) => s.startsWith("avoid:"))
       .map((s: string) => s.slice(6));
 
+    // BYOK — the user's own keys take precedence
+    const owner = findUserById(session.userId);
+    const byok = owner?.byok || {};
+    const userKeys = {
+      groq: byok.groq ? decryptSecret(byok.groq) : undefined,
+      openrouter: byok.openrouter ? decryptSecret(byok.openrouter) : undefined,
+    };
+
     const { stream, model, live } = await streamChatOrCode({
       mode: "code",
       messages: body.messages,
@@ -84,6 +94,7 @@ export async function POST(req: NextRequest) {
       prefer,
       avoid,
       promptForRouting: String(userText),
+      userKeys,
     });
 
     try {

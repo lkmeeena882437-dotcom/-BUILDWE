@@ -18,8 +18,20 @@ export type User = {
   passwordHash: string;
   plan: Plan;
   skills: string[];
+  /** encrypted user-provided provider keys (BYOK) */
+  byok?: { groq?: string; openrouter?: string };
   createdAt: string;
   updatedAt: string;
+};
+
+export type ApiKey = {
+  id: string;
+  userId: string;
+  name: string;
+  keyHash: string;
+  prefix: string;
+  createdAt: string;
+  lastUsedAt?: string;
 };
 
 export type Message = {
@@ -99,6 +111,7 @@ type DB = {
   projects: Project[];
   shares: Share[];
   payments: Payment[];
+  apiKeys: ApiKey[];
 };
 
 const emptyDb = (): DB => ({
@@ -109,6 +122,7 @@ const emptyDb = (): DB => ({
   projects: [],
   shares: [],
   payments: [],
+  apiKeys: [],
 });
 
 /** Process-local fallback when disk is unavailable */
@@ -175,6 +189,7 @@ function read(): DB {
       projects: parsed.projects || [],
       shares: parsed.shares || [],
       payments: parsed.payments || [],
+      apiKeys: parsed.apiKeys || [],
     };
     return memoryDb;
   } catch {
@@ -263,7 +278,7 @@ export function createUser(input: {
 
 export function updateUser(
   id: string,
-  patch: Partial<Pick<User, "name" | "plan" | "skills">>
+  patch: Partial<Pick<User, "name" | "plan" | "skills" | "byok">>
 ) {
   const db = read();
   const i = db.users.findIndex((u) => u.id === id);
@@ -501,6 +516,52 @@ export function updatePayment(
   db.payments[i] = { ...db.payments[i], ...patch };
   write(db);
   return db.payments[i];
+}
+
+/* ── API keys (developer platform) ───────────────────────── */
+
+export function listApiKeys(userId: string) {
+  return read()
+    .apiKeys.filter((k) => k.userId === userId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export function addApiKey(input: Omit<ApiKey, "id" | "createdAt">) {
+  const db = read();
+  const row: ApiKey = {
+    ...input,
+    id: uid("key"),
+    createdAt: new Date().toISOString(),
+  };
+  db.apiKeys.unshift(row);
+  if (db.apiKeys.filter((k) => k.userId === input.userId).length > 10) {
+    // keep newest 10 per user
+    const mine = db.apiKeys.filter((k) => k.userId === input.userId);
+    const oldest = mine[mine.length - 1];
+    db.apiKeys = db.apiKeys.filter((k) => k.id !== oldest.id);
+  }
+  write(db);
+  return row;
+}
+
+export function deleteApiKey(id: string, userId: string) {
+  const db = read();
+  db.apiKeys = db.apiKeys.filter((k) => !(k.id === id && k.userId === userId));
+  write(db);
+  return true;
+}
+
+export function findApiKeyByHash(keyHash: string) {
+  return read().apiKeys.find((k) => k.keyHash === keyHash) || null;
+}
+
+export function touchApiKey(id: string) {
+  const db = read();
+  const k = db.apiKeys.find((x) => x.id === id);
+  if (k) {
+    k.lastUsedAt = new Date().toISOString();
+    write(db);
+  }
 }
 
 /* ── Generations ─────────────────────────────────────────── */

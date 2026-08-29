@@ -7,8 +7,10 @@ import { composeSearchAnswer, searchContextBlock, webSearch } from "@/lib/ai/sea
 import {
   appendMessages,
   createConversation,
+  findUserById,
   uid,
 } from "@/lib/db/store";
+import { decryptSecret } from "@/lib/crypto";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -99,6 +101,14 @@ export async function POST(req: NextRequest) {
         ]
       : body.messages;
 
+    // BYOK — the user's own keys take precedence
+    const owner = findUserById(session.userId);
+    const byok = owner?.byok || {};
+    const userKeys = {
+      groq: byok.groq ? decryptSecret(byok.groq) : undefined,
+      openrouter: byok.openrouter ? decryptSecret(byok.openrouter) : undefined,
+    };
+
     const { stream, model, live } = await streamChatOrCode({
       mode: "chat",
       messages: apiMessages,
@@ -107,6 +117,7 @@ export async function POST(req: NextRequest) {
       prefer,
       avoid,
       promptForRouting: String(userText),
+      userKeys,
       // when offline + search on, stream the composed sourced answer instead
       ...(wantSearch && searchResults.length
         ? { offlineOverrideText: composeSearchAnswer(userText, searchResults) }

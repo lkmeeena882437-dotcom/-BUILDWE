@@ -22,7 +22,10 @@ Creators juggle ChatGPT + coding tools + image + TTS apps. BUILDWE is one worksp
 | Vision | Groq `llama-4-scout` (add key) · honest preview fallback |
 | File analysis | CSV stats + text summary (free, no key) |
 | Images | **Pollinations.ai** (no API key) |
-| Audio | **Web Speech API** (browser TTS) |
+| Audio | **Pollinations openai-audio** (key-free real MP3) → browser TTS fallback |
+| BYOK | Users' own Groq/OpenRouter keys, AES-256-GCM encrypted |
+| Dev API | `POST /api/v1/chat` + keys at `/developers` |
+| Ads | Free-plan house-ad slots (PRO ad-free) |
 | Projects | Group chats into projects (folders) |
 | Share | Public read-only links `/s/{id}` |
 | Billing | Razorpay real checkout (demo until keys set) |
@@ -78,6 +81,9 @@ GROQ_API_KEY=gsk_...
 | `POST /api/share` · `GET /api/share?id=` | Public share links |
 | `POST /api/checkout/order` | Razorpay order (real + demo) |
 | `POST /api/checkout/verify` | HMAC verify → plan=pro |
+| `GET/POST /api/user/keys` | BYOK — save/mask own Groq/OpenRouter keys |
+| `GET/POST/DELETE /api/dev/keys` | Developer API key management |
+| `POST /api/v1/chat` | **Public developer API** (Bearer bw_sk_…) |
 | `GET  /api/health` | Provider status |
 
 ## Brain / architecture

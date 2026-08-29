@@ -2,7 +2,7 @@
  * BUILDWE AI runtime — live LLM first, smart offline only if providers fail.
  */
 
-import { AI_KEYS, AI_MODELS, APP, hasProviderKey } from "@/lib/config";
+import { AI_KEYS, AI_MODELS, APP } from "@/lib/config";
 import { SYSTEM_PROMPTS, publicModelLabel, type Plan } from "@/lib/ai/rules";
 import { pickModel } from "@/lib/ai/models-catalog";
 import {
@@ -32,13 +32,16 @@ const GROQ_CODE_MODELS = [
   "gemma2-9b-it",
 ];
 
-async function groqStream(messages: ChatMessage[], model: string) {
-  if (!hasProviderKey("groq")) return null;
+export type ProviderKeys = { groq?: string; openrouter?: string };
+
+async function groqStream(messages: ChatMessage[], model: string, userKeys?: ProviderKeys) {
+  const key = userKeys?.groq || AI_KEYS.groq;
+  if (!key) return null;
   try {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${AI_KEYS.groq}`,
+        Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -62,14 +65,16 @@ async function groqStream(messages: ChatMessage[], model: string) {
 
 async function groqComplete(
   messages: ChatMessage[],
-  model: string
+  model: string,
+  userKeys?: ProviderKeys
 ): Promise<string | null> {
-  if (!hasProviderKey("groq")) return null;
+  const key = userKeys?.groq || AI_KEYS.groq;
+  if (!key) return null;
   try {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${AI_KEYS.groq}`,
+        Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -89,13 +94,14 @@ async function groqComplete(
   }
 }
 
-async function openRouterStream(messages: ChatMessage[], model: string) {
-  if (!hasProviderKey("openrouter")) return null;
+async function openRouterStream(messages: ChatMessage[], model: string, userKeys?: ProviderKeys) {
+  const key = userKeys?.openrouter || AI_KEYS.openrouter;
+  if (!key) return null;
   try {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${AI_KEYS.openrouter}`,
+        Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
         "HTTP-Referer": APP.url || "https://buildwe.vercel.app",
         "X-Title": APP.name || "BUILDWE",
@@ -238,6 +244,8 @@ export async function streamChatOrCode(opts: {
   promptForRouting: string;
   /** When set AND no provider is reachable, stream this text instead of the generic offline reply */
   offlineOverrideText?: string;
+  /** user-supplied keys (BYOK) take precedence over platform keys */
+  userKeys?: ProviderKeys;
 }): Promise<{
   stream: ReadableStream<Uint8Array>;
   model: string;
@@ -299,7 +307,7 @@ export async function streamChatOrCode(opts: {
   const tryModels = Array.from(new Set(preferred.filter(Boolean)));
 
   for (const model of tryModels) {
-    const body = await groqStream(messages, model);
+    const body = await groqStream(messages, model, opts.userKeys);
     if (body) {
       return {
         stream: openAIStreamToTextSSE(body),
@@ -311,7 +319,7 @@ export async function streamChatOrCode(opts: {
   }
 
   for (const model of tryModels.slice(0, 3)) {
-    const body = await openRouterStream(messages, model);
+    const body = await openRouterStream(messages, model, opts.userKeys);
     if (body) {
       return {
         stream: openAIStreamToTextSSE(body),
@@ -323,7 +331,7 @@ export async function streamChatOrCode(opts: {
   }
 
   for (const model of tryModels.slice(0, 4)) {
-    const text = await groqComplete(messages, model);
+    const text = await groqComplete(messages, model, opts.userKeys);
     if (text) {
       return {
         stream: textToSSE(text),
@@ -357,12 +365,14 @@ const VISION_MODELS = [
 export async function visionComplete(opts: {
   prompt: string;
   imageDataUrl: string;
+  userKeys?: ProviderKeys;
 }): Promise<{ text: string; model: string; live: boolean }> {
   const question =
     opts.prompt.trim() || "Describe this image in detail. What's in it?";
+  const groqKey = opts.userKeys?.groq || AI_KEYS.groq;
 
   for (const model of VISION_MODELS) {
-    if (!AI_KEYS.groq) break;
+    if (!groqKey) break;
     try {
       const res = await fetch(
         "https://api.groq.com/openai/v1/chat/completions",
@@ -370,7 +380,7 @@ export async function visionComplete(opts: {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${AI_KEYS.groq}`,
+            Authorization: `Bearer ${groqKey}`,
           },
           body: JSON.stringify({
             model,
@@ -498,6 +508,28 @@ export async function generateAudioPlan(opts: {
     speak = quotes.join(". ");
   }
 
+  // ── Real MP3 via Pollinations openai-audio (key-free) ────
+  const mp3 = await synthesizeSpeech({
+    text: speak,
+    voice: opts.voice,
+    speed: opts.speed,
+  });
+  if (mp3) {
+    return {
+      type: "mp3" as const,
+      audioUrl: mp3.dataUrl,
+      audioMs: mp3.estMs,
+      text: speak,
+      displayText: opts.text.slice(0, 4000),
+      voice: opts.voice,
+      speed: opts.speed,
+      model: "BUILDWE Voice Studio",
+      provider: "pollinations",
+      live: true,
+      charCount: speak.length,
+    };
+  }
+
   return {
     type: "browser-tts" as const,
     text: speak,
@@ -509,4 +541,120 @@ export async function generateAudioPlan(opts: {
     live: true,
     charCount: speak.length,
   };
+}
+
+/* ── Real speech synthesis (MP3) ──────────────────────────── */
+
+/** BUILDWE voice ids → openai-audio timbres */
+const TTS_VOICE_MAP: Record<string, string> = {
+  nova: "nova",
+  atlas: "onyx",
+  luna: "shimmer",
+  ember: "echo",
+  river: "fable",
+  aanya: "shimmer",
+  arjun: "onyx",
+  kiara: "nova",
+  vihaan: "echo",
+  meera: "alloy",
+  kabir: "fable",
+  saanvi: "shimmer",
+  ananya: "nova",
+  dev: "onyx",
+  isha: "alloy",
+  sofia: "shimmer",
+  luca: "echo",
+  amira: "nova",
+  yuki: "alloy",
+  chen: "onyx",
+};
+
+const DATA_AUDIO_RE = /data:audio\/[a-z0-9]+;base64,([A-Za-z0-9+/=]+)/;
+
+/**
+ * Key-free TTS via Pollinations `openai-audio`.
+ * GET when the script is short; POST /openai for longer scripts.
+ * Returns a data URL the browser can play/download directly.
+ */
+export async function synthesizeSpeech(opts: {
+  text: string;
+  voice: string;
+  speed: number;
+}): Promise<{ dataUrl: string; estMs: number } | null> {
+  const script = opts.text.trim().slice(0, 3500);
+  if (!script) return null;
+  const voice = TTS_VOICE_MAP[opts.voice] || "alloy";
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 45_000);
+
+  try {
+    // 1) POST /openai — handles long scripts cleanly
+    try {
+      const res = await fetch("https://text.pollinations.ai/openai", {
+        method: "POST",
+        signal: ctrl.signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "openai-audio",
+          voice,
+          speed: opts.speed,
+          messages: [
+            {
+              role: "user",
+              content: `Read this script aloud exactly, nothing else:\n\n${script}`,
+            },
+          ],
+        }),
+      });
+      if (res.ok) {
+        const raw = await res.text();
+        const m = raw.match(DATA_AUDIO_RE);
+        if (m) {
+          const b64 = m[1];
+          return {
+            dataUrl: `data:audio/mpeg;base64,${b64}`,
+            estMs: Math.round((b64.length * 3) / 4 / 24), // ~24KB/s mp3
+          };
+        }
+      }
+    } catch {
+      /* fall through to GET */
+    }
+
+    // 2) GET path — short scripts
+    if (encodeURIComponent(script).length < 1400) {
+      const res = await fetch(
+        `https://text.pollinations.ai/${encodeURIComponent(
+          `Read this script aloud exactly, nothing else:\n\n${script}`
+        )}?model=openai-audio&voice=${voice}`,
+        { signal: ctrl.signal }
+      );
+      if (res.ok) {
+        const ct = res.headers.get("content-type") || "";
+        if (ct.includes("audio")) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          if (buf.length > 1000) {
+            return {
+              dataUrl: `data:audio/mpeg;base64,${buf.toString("base64")}`,
+              estMs: Math.round(buf.length / 24),
+            };
+          }
+        }
+        // JSON body with embedded data URL
+        const m = (await res.text()).match(DATA_AUDIO_RE);
+        if (m) {
+          return {
+            dataUrl: `data:audio/mpeg;base64,${m[1]}`,
+            estMs: Math.round((m[1].length * 3) / 4 / 24),
+          };
+        }
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }

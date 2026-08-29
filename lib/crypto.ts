@@ -1,0 +1,58 @@
+/**
+ * AES-256-GCM secret box for user-provided API keys (BYOK).
+ * Stored as: v1:<iv>:<tag>:<data> (all hex). Never returned to the client.
+ */
+import crypto from "crypto";
+
+function keyMaterial(): Buffer {
+  const secret =
+    process.env.BYOK_ENCRYPTION_SECRET ||
+    process.env.SESSION_SECRET ||
+    "buildwe-dev-byok-secret-change-me-in-production-32b";
+  // derive a stable 32-byte key from whatever-length secret
+  return crypto.createHash("sha256").update(secret).digest();
+}
+
+export function encryptSecret(plain: string): string {
+  if (!plain) return "";
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", keyMaterial(), iv);
+  const data = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `v1:${iv.toString("hex")}:${tag.toString("hex")}:${data.toString("hex")}`;
+}
+
+export function decryptSecret(boxed: string): string {
+  try {
+    const [v, ivHex, tagHex, dataHex] = boxed.split(":");
+    if (v !== "v1" || !ivHex || !tagHex || !dataHex) return "";
+    const decipher = crypto.createDecipheriv(
+      "aes-256-gcm",
+      keyMaterial(),
+      Buffer.from(ivHex, "hex")
+    );
+    decipher.setAuthTag(Buffer.from(tagHex, "hex"));
+    const plain = Buffer.concat([
+      decipher.update(Buffer.from(dataHex, "hex")),
+      decipher.final(),
+    ]);
+    return plain.toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+/** gsk_abcd…wxyz → gsk_a…wxyz (display only) */
+export function maskSecret(plain: string): string {
+  if (!plain) return "";
+  if (plain.length <= 10) return plain.slice(0, 2) + "…";
+  return `${plain.slice(0, 6)}…${plain.slice(-4)}`;
+}
+
+export function sha256Hex(s: string): string {
+  return crypto.createHash("sha256").update(s).digest("hex");
+}
+
+export function newApiKey(): string {
+  return `bw_sk_${crypto.randomBytes(20).toString("hex")}`;
+}

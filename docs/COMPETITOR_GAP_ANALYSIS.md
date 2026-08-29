@@ -36,12 +36,17 @@
 14. **Export chat** ✅ Markdown export in Settings (PDF via browser print)
 
 ### P2 — Platform growth
-15. **Ads slots** (free only) — pending
+15. **Ads slots** ✅ done — tasteful house-ad slots (chat empty state + sidebar), free only, PRO ad-free; override via `NEXT_PUBLIC_AD_HTML`
 16. **PRO billing** Razorpay ✅ done — real order create + HMAC verify + plan=pro upgrade; demo mode until live keys
 17. **Permanent DB** Supabase/Turso — pending (JSON store fine for single instance)
 18. **Mobile apps** ✅ PWA first — manifest + icons + service worker (installable)
 19. **Team workspaces** — pending
-20. **API for developers** — pending
+20. **API for developers** ✅ done — `/api/v1/chat` + key management at `/developers`, hashed keys, 30 rpm
+
+### P3 — This update ("Real Audio + BYOK + Dev API + Ads")
+21. **Real TTS audio** ✅ done — Pollinations `openai-audio` key-free MP3 with native player + MP3 download; browser TTS fallback
+22. **BYOK** ✅ done — Settings → API keys; user keys AES-256-GCM encrypted server-side, power Chat/Code/Vision/dev API for that account
+23. **Export PDF** ✅ done — Settings → Print / PDF (clean print view at `/print`)
 
 ## What we will NOT copy blindly
 - Dark generic dashboard

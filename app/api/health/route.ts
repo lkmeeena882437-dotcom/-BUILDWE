@@ -13,9 +13,11 @@ export async function GET() {
     providers: {
       llm: llmLive ? (AI_KEYS.groq ? "groq" : "openrouter") : "offline-smart-demo",
       image: "pollinations",
-      audio: "browser-tts",
+      audio: "pollinations-tts + browser fallback",
       vision: AI_KEYS.groq ? "groq-vision" : "preview-fallback",
       webSearch: "duckduckgo",
+      devApi: "/api/v1/chat",
+      byok: "aes-256-gcm",
     },
     db: storageMode(),
     time: new Date().toISOString(),
