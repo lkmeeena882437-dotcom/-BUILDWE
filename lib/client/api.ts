@@ -228,6 +228,40 @@ export async function verifyApi(text: string) {
 
 /* ── Multi-model comparison (Update #2 · P1 mix) ────────── */
 
+export async function codeActionApi(
+  code: string,
+  lang: string,
+  action: "fix" | "optimize" | "refactor" | "test"
+) {
+  const r = await fetch("/api/ai/code-action", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code, lang, action }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) {
+    const err = new Error(j.error || "Action failed") as Error & {
+      code?: string;
+      hint?: string;
+    };
+    if (j.code) err.code = j.code;
+    if (j.hint) err.hint = j.hint;
+    throw err;
+  }
+  return j as {
+    ok: boolean;
+    available?: boolean;
+    message?: string;
+    action?: string;
+    title?: string;
+    code?: string;
+    notes?: string;
+    raw?: string;
+  };
+}
+
+
 export async function compareApi(prompt: string) {
   const r = await fetch("/api/ai/compare", {
     method: "POST",

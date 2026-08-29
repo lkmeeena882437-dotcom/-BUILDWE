@@ -122,3 +122,15 @@ Boss asked: "recheck everything, kuch adhura to nahi?" Full audit of v1.4.0+v1.5
 - ✅ fixed: Try Again retries SAME model; Use another model advances (was double-shifting)
 
 **QA**: TS clean, build pass, live — metrics snapshot counts chat_send/chat_done/fallback + ttft sample, vision 413 carries code+hint, dup-message chat 200, /api disallowed in robots.
+
+## v1.7.0 — Code Canvas Actions (Update #1 P1 #8 complete)
+
+- ✅ New POST /api/ai/code-action {code, lang, action: fix|optimize|refactor|test} — 20/min rate limit, plan code limits, BYOK precedence, honest offline unavailable (never fabricates a "fix"), fenced-block extraction + Hinglish change-notes
+- ✅ Canvas toolbar: Run ▶ (emerald) · Test · Fix · Optimize · Refactor — with busy spinners + tooltips, Copy/Save intact
+- ✅ Run: HTML→preview, JS→sandboxed Web Worker (console.log/assert capture, 3s timeout, imports stripped, no server-side execution ever), other langs→honest note
+- ✅ Test: AI-generated framework-free assertions, auto-run in sandbox for JS with PASS ✓/FAIL ✗ output
+- ✅ Fix/Optimize/Refactor: canvas update + auto version snapshot (History restore path intact)
+- ✅ Canvas console panel (Output/Tests/Info/Note, dismissible, role=status/alert)
+- ✅ docs/STATUS_REVIEW.md added (internal ops doc)
+
+**QA**: TS clean, build pass, live — code-action 400 empty/unknown, offline honest available:false, v1.7.0 boot, metrics live.

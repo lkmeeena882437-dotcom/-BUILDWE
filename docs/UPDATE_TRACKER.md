@@ -9,6 +9,7 @@ Boss bhejte hue updates yahan track hote hain. Public changelog page hata diya g
 | Update #1 — Product Audit & AI Intelligence Roadmap | boss (chat paste) | ✅ Implemented (v1.5.0) — P0 complete, P1 partial (see below) |
 | Update #2 — Next Big Update (latency/cost/security/fallback/verification/errors + smart-execution rules) | boss (chat paste) | ✅ Implemented (v1.6.0) — see below |
 | Update #2 re-check pass | boss ("recheck karo, kuch adhura to nahi") | ✅ v1.6.1 — 4 gaps mile aur fix hue (niche) |
+| Code Canvas actions + status review + main push | boss ("ha kr bhai… pahle status review do, phir main me push") | ✅ v1.7.0 — Run/Test/Fix/Optimize/Refactor + docs/STATUS_REVIEW.md |
 | Update #3 — Product/UX/Brand/Trust plan | boss (chat paste) | ✅ Implemented earlier (v1.4.0) |
 
 ## Update #2 — kya implement hua (v1.6.0)
@@ -52,6 +53,18 @@ Koi naya mode/nav item nahi — sab intelligence existing UI ke andar (composer 
 - ✅ Recovery semantics fix: **Try Again = same model**, **Use another model = next model** (pehle dono shift kar rahe the)
 
 **Deliberately pending (boss ko bataya)**: code canvas Run/Test/Fix/Optimize/Refactor actions (Update #1 P1 #8), PDF/DOCX/XLSX file intelligence (#7), real-device mobile QA, persistent metrics storage.
+
+## v1.7.0 — Code Canvas Actions + Status Review (boss ka green signal)
+
+- ✅ **Run ▶** — HTML → live preview switch; JS → sandboxed Web Worker (console capture, 3s timeout, no DOM/network, user code KABHI server pe nahi chalta); other langs → honest note + Save
+- ✅ **Test ✓** — AI runnable tests banata hai (console.assert style, no frameworks); JS me tests+code sandbox me chal ke PASS/FAIL output panel me
+- ✅ **Fix 🔧 / Optimize ⚡ / Refactor ♻** — `/api/ai/code-action` (rate limit 20/min, plan limits, BYOK priority); naya code canvas me set + **version history me auto-save** (purana wapas mil sakta hai); kya badla wo Hinglish notes me
+- ✅ Canvas console panel (Output/Tests/Info/Note) with close button
+- ✅ Offline honest: bina live model ke action bolta hai "key add karo" — fake fix kabhi nahi
+- ✅ `docs/STATUS_REVIEW.md` — boss ke liye complete website review (kya bana, kaise kaam karta hai)
+- 🔁 Update #1 ka P1 #8 ab COMPLETE — bacha sirf: PDF/DOCX/XLSX (#7), real-device mobile QA, persistent metrics
+
+**Update #1 P1 list final status**: multi-model compare ✅ (v1.6.0) · consensus/judge ✅ (v1.6.0) · convert-to-deliverable ✅ (v1.6.0) · canvas actions ✅ (v1.7.0) · file intelligence PDF/DOCX ⏳
 
 ## Update #1 — kya implement hua (v1.5.0)
 

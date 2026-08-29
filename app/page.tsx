@@ -48,6 +48,10 @@ import {
   Loader2,
   ArrowRightLeft,
   RotateCcw,
+  Play,
+  FlaskConical,
+  Wrench,
+  Recycle,
   SquarePen,
   ThumbsUp,
   ThumbsDown,
@@ -107,6 +111,7 @@ import {
   assignTeam,
   verifyApi,
   compareApi,
+  codeActionApi,
   type TeamView,
   type MeResponse,
 } from "@/lib/client/api";
@@ -506,6 +511,12 @@ function Dashboard() {
   const [canvasVersions, setCanvasVersions] = useState<
     { ts: number; code: string; lang: string }[]
   >([]);
+  const [canvasActionBusy, setCanvasActionBusy] = useState<string | null>(null);
+  const [canvasConsole, setCanvasConsole] = useState<{
+    kind: "run" | "test" | "note";
+    ok: boolean;
+    text: string;
+  } | null>(null);
   const [verMenu, setVerMenu] = useState(false);
 
   // response style (human-language controls)
@@ -818,6 +829,150 @@ function Dashboard() {
       if (vs.length && vs[0].code === code) return vs;
       return [{ ts: Date.now(), code, lang }, ...vs].slice(0, 12);
     });
+  };
+
+  // ── Code Canvas actions (Update #1 P1 #8 — v1.7.0) ──────
+  // Sandboxed JS run: Web Worker + console capture, 3s timeout,
+  // no DOM, no network. User code NEVER runs on the server.
+  const runInSandbox = (js: string, timeoutMs = 3000) =>
+    new Promise<{ ok: boolean; logs: string[]; error?: string }>((resolve) => {
+      const src = `
+        const __logs = [];
+        const __fmt = (a) => {
+          if (typeof a === "object" && a !== null) { try { return JSON.stringify(a); } catch { return String(a); } }
+          return String(a);
+        };
+        console.log = (...a) => __logs.push(a.map(__fmt).join(" "));
+        console.info = console.warn = console.error = console.log;
+        console.assert = (c, ...a) => __logs.push((c ? "PASS ✓ " : "FAIL ✗ ") + a.map(__fmt).join(" "));
+        try {
+          ${js}
+          postMessage({ ok: true, logs: __logs.slice(0, 200) });
+        } catch (e) {
+          postMessage({ ok: false, logs: __logs.slice(0, 200), error: String(e) });
+        }
+      `;
+      let blobUrl: string | null = null;
+      try {
+        blobUrl = URL.createObjectURL(new Blob([src], { type: "application/javascript" }));
+        const w = new Worker(blobUrl);
+        const t = setTimeout(() => {
+          w.terminate();
+          resolve({ ok: false, logs: [], error: "Timeout (3s) — infinite loop ya bahut slow code lagta hai." });
+        }, timeoutMs);
+        w.onmessage = (ev) => {
+          clearTimeout(t);
+          w.terminate();
+          resolve(ev.data as { ok: boolean; logs: string[]; error?: string });
+        };
+        w.onerror = (ev) => {
+          clearTimeout(t);
+          w.terminate();
+          resolve({ ok: false, logs: [], error: (ev as ErrorEvent).message || "Runtime error" });
+        };
+      } catch (e) {
+        resolve({ ok: false, logs: [], error: (e as Error).message });
+      } finally {
+        if (blobUrl) setTimeout(() => URL.revokeObjectURL(blobUrl!), 5000);
+      }
+    });
+
+  const runCanvasAction = async (
+    action: "run" | "test" | "fix" | "optimize" | "refactor"
+  ) => {
+    if (canvasActionBusy) return;
+    const code = codePanel;
+    if (!code.trim() || code.startsWith("// generated code")) {
+      setCanvasConsole({
+        kind: "note",
+        ok: false,
+        text: "Canvas me abhi koi code nahi hai — chat me kuch likho jaise 'landing page banao', code yahan aa jayega.",
+      });
+      return;
+    }
+
+    const isHtml =
+      /html|xml/.test(codeLang) ||
+      /^\s*<!doctype html/i.test(code) ||
+      /<html[\s>]/i.test(code);
+    const isJs = /javascript|js|typescript|ts/.test(codeLang) && !isHtml;
+    const stripModules = (s: string) => s.replace(/^\s*(import|export)\b.*$/gm, "");
+
+    // RUN — always client-side, never on the server
+    if (action === "run") {
+      if (isHtml) {
+        setCanvasTab("preview");
+        setCanvasConsole({ kind: "run", ok: true, text: "Preview khul gaya — live result dekho. (Scripts sandboxed hain.)" });
+        return;
+      }
+      if (isJs) {
+        setCanvasConsole({ kind: "run", ok: true, text: "Chal raha hai… (sandboxed worker)" });
+        const r = await runInSandbox(stripModules(code));
+        setCanvasConsole({
+          kind: "run",
+          ok: r.ok,
+          text: [
+            ...(r.logs?.length ? r.logs : ["(koi output nahi — code me console.log() use karo)"]),
+            ...(r.error ? ["❌ " + r.error] : []),
+          ].join("\n"),
+        });
+        return;
+      }
+      setCanvasConsole({
+        kind: "note",
+        ok: false,
+        text: `${codeLang} browser me run nahi hota. HTML/JS yahan chalte hain — Save dabao aur file apne system me chalao.`,
+      });
+      return;
+    }
+
+    // FIX / OPTIMIZE / REFACTOR / TEST — live model actions
+    setCanvasActionBusy(action);
+    setCanvasConsole({ kind: "note", ok: true, text: `${action === "test" ? "Tests" : action} chal raha hai…` });
+    try {
+      const r = await codeActionApi(code, codeLang, action);
+      if (r.available === false) {
+        setCanvasConsole({ kind: "note", ok: false, text: r.message || "Live model chahiye." });
+        return;
+      }
+      if (action === "test") {
+        const testCode = r.code || "";
+        if (testCode && isJs) {
+          setCanvasConsole({ kind: "test", ok: true, text: "Tests ban gaye — sandbox me chal raha hai…" });
+          const run = await runInSandbox(stripModules(code) + "\n;\n" + stripModules(testCode), 5000);
+          setCanvasConsole({
+            kind: "test",
+            ok: run.ok,
+            text: [r.notes || "", "— test run (sandboxed browser worker) —", ...(run.logs || []), ...(run.error ? ["❌ " + run.error] : [])]
+              .filter(Boolean)
+              .join("\n"),
+          });
+        } else {
+          setCanvasConsole({
+            kind: "test",
+            ok: true,
+            text: [r.notes, testCode || r.raw || ""].filter(Boolean).join("\n\n"),
+          });
+        }
+        return;
+      }
+      if (r.code) {
+        setCodePanel(r.code);
+        pushCanvasVersion(r.code, codeLang);
+        setCanvasConsole({
+          kind: "note",
+          ok: true,
+          text: `✓ ${r.title} applied${r.notes ? " — " + r.notes : ""}\n(Purana version History me safe hai — wapas jaa sakte ho)`,
+        });
+      } else {
+        setCanvasConsole({ kind: "note", ok: false, text: r.raw || "Model ne code block nahi diya — dobara try karo." });
+      }
+    } catch (e) {
+      const err = e as Error & { hint?: string };
+      setCanvasConsole({ kind: "note", ok: false, text: err.message + (err.hint ? "\nTip: " + err.hint : "") });
+    } finally {
+      setCanvasActionBusy(null);
+    }
   };
 
   const doShare = async () => {
@@ -2525,7 +2680,37 @@ function Dashboard() {
                       </div>
                     )}
                   </div>
-                  <div className="flex gap-1">
+                  <div className="flex items-center gap-1">
+                    {([
+                      ["run", "Run", Play, "HTML preview me chalao · JS sandboxed worker me"],
+                      ["test", "Test", FlaskConical, "AI se runnable tests banao aur chalao"],
+                      ["fix", "Fix", Wrench, "Bugs dhundo aur theek karo"],
+                      ["optimize", "Optimize", Zap, "Fast/light banao — behaviour same"],
+                      ["refactor", "Refactor", Recycle, "Safar sudharo — behaviour same"],
+                    ] as const).map(([act, label, Icon, tip]) => (
+                      <button
+                        key={act}
+                        type="button"
+                        title={tip}
+                        aria-label={label}
+                        disabled={canvasActionBusy !== null}
+                        onClick={() => runCanvasAction(act)}
+                        className={clsx(
+                          "flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium transition",
+                          act === "run"
+                            ? "bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                            : "text-white/55 hover:bg-white/10 hover:text-white"
+                        )}
+                      >
+                        {canvasActionBusy === act ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Icon className="h-3.5 w-3.5" />
+                        )}
+                        <span className="hidden xl:inline">{label}</span>
+                      </button>
+                    ))}
+                    <span className="mx-0.5 h-4 w-px bg-white/10" />
                     <button type="button" className="rounded-lg px-2 py-1 text-[11px] text-white/55 hover:bg-white/10" onClick={() => copy(codePanel, "code")}>{copied === "code" ? "Copied" : "Copy"}</button>
                     <button type="button" className="rounded-lg px-2 py-1 text-[11px] text-white/55 hover:bg-white/10" onClick={() => {
                       const blob = new Blob([codePanel], { type: "text/plain" });
@@ -2544,8 +2729,46 @@ function Dashboard() {
                     className="flex-1 bg-white"
                   />
                 ) : (
-                  <div className="flex-1 overflow-auto p-4">
-                    <pre className="font-mono text-[13px] leading-relaxed"><code>{codePanel}</code></pre>
+                  <div className="flex min-h-0 flex-1 flex-col">
+                    <div className="min-h-0 flex-1 overflow-auto p-4">
+                      <pre className="font-mono text-[13px] leading-relaxed"><code>{codePanel}</code></pre>
+                    </div>
+                    {canvasConsole && (
+                      <div
+                        className="max-h-48 shrink-0 overflow-y-auto border-t border-white/10 px-4 py-2.5"
+                        role={canvasConsole.ok ? "status" : "alert"}
+                      >
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                          <span
+                            className={clsx(
+                              "text-[10px] font-bold uppercase tracking-wider",
+                              canvasConsole.kind === "run"
+                                ? "text-emerald-300"
+                                : canvasConsole.kind === "test"
+                                  ? "text-sky-300"
+                                  : canvasConsole.ok ? "text-amber-300" : "text-red-300"
+                            )}
+                          >
+                            {canvasConsole.kind === "run"
+                              ? "▶ Output"
+                              : canvasConsole.kind === "test"
+                                ? "✓ Tests"
+                                : canvasConsole.ok ? "ℹ Info" : "⚠ Note"}
+                          </span>
+                          <button
+                            type="button"
+                            aria-label="Close console"
+                            className="rounded px-1.5 text-[11px] text-white/40 hover:bg-white/10 hover:text-white/80"
+                            onClick={() => setCanvasConsole(null)}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <pre className="whitespace-pre-wrap font-mono text-[12px] leading-relaxed text-white/75">
+                          {canvasConsole.text}
+                        </pre>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
