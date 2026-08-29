@@ -3,12 +3,16 @@ import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
 import { streamChatOrCode } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
+import { understandPrompt } from "@/lib/ai/understanding";
+import { qualityGate } from "@/lib/ai/quality";
 import {
   addGeneration,
   appendMessages,
   createConversation,
+  findUserById,
   uid,
 } from "@/lib/db/store";
+import { decryptSecret } from "@/lib/crypto";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,7 +24,7 @@ export async function POST(req: NextRequest) {
     const rl = rateLimit(`ai:code:${session.userId}:${ip}`, 30, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
-        { error: "Too many requests — wait a moment." },
+        { error: "Too many requests — wait a moment.", code: "RATE_LIMIT", hint: "Thoda ruk ke Try again dabao — 1 minute me limit reset ho jaati hai." },
         { status: 429 }
       );
     }
@@ -76,14 +80,29 @@ export async function POST(req: NextRequest) {
       .filter((s: string) => s.startsWith("avoid:"))
       .map((s: string) => s.slice(6));
 
-    const { stream, model, live } = await streamChatOrCode({
+    // BYOK — the user's own keys take precedence
+    const owner = findUserById(session.userId);
+    const byok = owner?.byok || {};
+    const userKeys = {
+      groq: byok.groq ? decryptSecret(byok.groq) : undefined,
+      openrouter: byok.openrouter ? decryptSecret(byok.openrouter) : undefined,
+    };
+
+    // Prompt Understanding Layer (Update #1) — same benefits for Code
+    const understood = understandPrompt(String(userText));
+    const codeMessages = understood.systemHint
+      ? [{ role: "system", content: understood.systemHint }, ...body.messages]
+      : body.messages;
+
+    const { stream, model, live, fallbackNote } = await streamChatOrCode({
       mode: "code",
-      messages: body.messages,
+      messages: codeMessages,
       plan: session.plan,
       skills,
       prefer,
       avoid,
       promptForRouting: String(userText),
+      userKeys,
     });
 
     try {
@@ -102,7 +121,7 @@ export async function POST(req: NextRequest) {
         try {
           controller.enqueue(
             encoder.encode(
-              `data: ${JSON.stringify({ meta: { conversationId, model, live } })}\n\n`
+              `data: ${JSON.stringify({ meta: { conversationId, model, live, ...(fallbackNote ? { fallbackNote } : {}) } })}\n\n`
             )
           );
           while (true) {

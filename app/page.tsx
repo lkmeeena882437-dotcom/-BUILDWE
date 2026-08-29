@@ -46,12 +46,36 @@ import {
   ArrowRight,
   FileCode2,
   Loader2,
+  ArrowRightLeft,
   RotateCcw,
+  Play,
+  FlaskConical,
+  Wrench,
+  Recycle,
   SquarePen,
   ThumbsUp,
   ThumbsDown,
   Download,
   Layers,
+  Globe,
+  Share2,
+  FolderPlus,
+  FolderOpen,
+  ImagePlus,
+  XCircle,
+  Eye,
+  KeyRound,
+  Terminal,
+  Printer,
+  Users,
+  UserPlus,
+  SlidersHorizontal,
+  Chrome,
+  Github,
+  HelpCircle,
+  AlertTriangle,
+  Wand2,
+  ShieldCheck,
 } from "lucide-react";
 import clsx from "clsx";
 import {
@@ -70,10 +94,30 @@ import {
   fetchModels,
   fetchSkills,
   saveSkills,
+  visionApi,
+  analyzeFileApi,
+  createShare,
+  fetchProjects,
+  createProject,
+  assignProject,
+  deleteProjectApi,
+  fetchByok,
+  saveByok,
+  fetchTeams,
+  createTeam,
+  teamInvite,
+  joinTeam,
+  leaveTeamApi,
+  assignTeam,
+  verifyApi,
+  compareApi,
+  codeActionApi,
+  type TeamView,
   type MeResponse,
 } from "@/lib/client/api";
 import { ImageStudio, type StudioImage } from "@/components/workspace/ImageStudio";
 import { AudioStudio } from "@/components/workspace/AudioStudio";
+import { AdSlot } from "@/components/AdSlot";
 
 type Mode = "auto" | "chat" | "code" | "image" | "audio";
 type ThemePref = "system" | "light" | "dark";
@@ -83,6 +127,25 @@ type Msg = {
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
+  image?: string;
+  sources?: { title: string; url: string; host: string }[];
+  understood?: string;
+  clarifier?: string;
+  quality?: { label: "good" | "review"; notes: string[] };
+  fallbackNote?: string;
+  recovery?: {
+    text: string;
+    mode: "chat" | "code";
+    useSearch: boolean;
+    altModel?: number;
+    code?: string;
+    hint?: string;
+  };
+  verified?: {
+    verdict: string;
+    message: string;
+    claims: { claim: string; kind: string; verdict: string; source?: { title: string; url: string; host: string; official?: boolean } }[];
+  };
 };
 
 type HistItem = {
@@ -91,7 +154,12 @@ type HistItem = {
   mode: string;
   updatedAt: string;
   preview: string;
+  projectId?: string | null;
+  teamId?: string | null;
+  mine?: boolean;
 };
+
+type ProjectItem = { id: string; name: string; createdAt: string };
 
 const MODE_META: {
   id: Mode;
@@ -113,31 +181,31 @@ const MODE_META: {
     id: "chat",
     label: "Chat",
     icon: MessageSquare,
-    headline: "Clarity under pressure.",
+    headline: "Think. Write. Understand.",
     sub: "Decide faster. Write sharper. Learn without noise.",
-    power: "BUILDWE AI",
+    power: "BUILDWE Chat",
   },
   {
     id: "code",
     label: "Code",
     icon: Code2,
-    headline: "From brief to working build.",
+    headline: "Build. Debug. Ship.",
     sub: "Scaffold, fix, and ship — without leaving the workspace.",
     power: "BUILDWE Code",
   },
   {
     id: "image",
-    label: "Image",
+    label: "Vision",
     icon: ImageIcon,
-    headline: "Describe it. See it.",
+    headline: "Imagine. Create. Transform.",
     sub: "Brand frames, product shots, and scenes on demand.",
     power: "BUILDWE Vision",
   },
   {
     id: "audio",
-    label: "Audio",
+    label: "Voice",
     icon: Mic2,
-    headline: "Script in. Voice out.",
+    headline: "Speak. Listen. Create.",
     sub: "Natural speech for briefs, stories, and product copy.",
     power: "BUILDWE Voice",
   },
@@ -154,6 +222,7 @@ const SUGGEST: Record<Mode, string[]> = {
     "Brainstorm 5 creator startup ideas",
     "Rewrite this colder and clearer",
     "Study plan for learning TypeScript",
+    "Search: latest AI news this week",
   ],
   code: [
     "React todo with localStorage",
@@ -244,6 +313,8 @@ function Btn({
   size = "md",
   className,
   type = "button",
+  style,
+  title,
   "aria-label": al,
 }: {
   children: React.ReactNode;
@@ -253,15 +324,31 @@ function Btn({
   size?: "sm" | "md" | "lg";
   className?: string;
   type?: "button" | "submit";
+  style?: React.CSSProperties;
+  title?: string;
   "aria-label"?: string;
 }) {
+  const base =
+    variant === "primary"
+      ? { background: "var(--accent)" }
+      : variant === "ink"
+        ? { background: "var(--ink)", color: "var(--bg)" }
+        : variant === "soft"
+          ? { background: "var(--accent-soft)", color: "var(--accent)" }
+          : variant === "ghost"
+            ? {
+                borderColor: "var(--border)",
+                background: "var(--card)",
+                color: "var(--ink)",
+              }
+            : { color: "var(--muted)" };
   return (
     <button
       type={type}
       onClick={onClick}
       disabled={disabled}
       aria-label={al}
-      title={al}
+      title={title || al}
       className={clsx(
         "inline-flex items-center justify-center gap-1.5 font-medium transition active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40",
         variant === "primary" && "rounded-2xl text-white shadow-sm",
@@ -275,21 +362,7 @@ function Btn({
         variant === "icon" && (size === "sm" ? "h-8 w-8" : "h-10 w-10"),
         className
       )}
-      style={
-        variant === "primary"
-          ? { background: "var(--accent)" }
-          : variant === "ink"
-            ? { background: "var(--ink)", color: "var(--bg)" }
-            : variant === "soft"
-              ? { background: "var(--accent-soft)", color: "var(--accent)" }
-              : variant === "ghost"
-                ? {
-                    borderColor: "var(--border)",
-                    background: "var(--card)",
-                    color: "var(--ink)",
-                  }
-                : { color: "var(--muted)" }
-      }
+      style={style ? { ...base, ...style } : base}
     >
       {children}
     </button>
@@ -360,7 +433,7 @@ function Dashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [drawer, setDrawer] = useState(false);
   const [modal, setModal] = useState<
-    null | "auth" | "settings" | "plans" | "profile" | "models" | "skills"
+    null | "auth" | "settings" | "plans" | "profile" | "models" | "skills" | "byok" | "teams" | "compare"
   >(null);
   const [authTab, setAuthTab] = useState<"login" | "register">("login");
   const [themePref, setThemePref] = useState<ThemePref>("system");
@@ -396,7 +469,7 @@ function Dashboard() {
   const [speed, setSpeed] = useState(1);
   const [audioBusy, setAudioBusy] = useState(false);
   const [audioText, setAudioText] = useState("");
-  const [lastSpoken, setLastSpoken] = useState<{ text: string; voice: string } | null>(null);
+  const [lastSpoken, setLastSpoken] = useState<{ text: string; voice: string; audioUrl?: string } | null>(null);
   const [listening, setListening] = useState(false);
   const utterRef = useRef<SpeechSynthesisUtterance | null>(null);
 
@@ -405,6 +478,7 @@ function Dashboard() {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [authErr, setAuthErr] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [skillDraft, setSkillDraft] = useState("");
   const [skillList, setSkillList] = useState<string[]>([]);
@@ -412,10 +486,64 @@ function Dashboard() {
     { id: string; name: string; blurb: string; status: string; badge?: string; family: string }[]
   >([]);
 
+  // web search + vision attachment
+  const [webSearchOn, setWebSearchOn] = useState(false);
+  const [comparePrompt, setComparePrompt] = useState("");
+  const [compareBusy, setCompareBusy] = useState(false);
+  const [compareResult, setCompareResult] = useState<Awaited<ReturnType<typeof compareApi>> | null>(null);
+  const [attachment, setAttachment] = useState<{ dataUrl: string; name: string } | null>(null);
+  const [visionBusy, setVisionBusy] = useState(false);
+
+  // projects
+  const [projects, setProjects] = useState<ProjectItem[]>([]);
+  const [activeProject, setActiveProject] = useState<string | null>(null);
+  const [convProjectId, setConvProjectId] = useState<string | null>(null);
+
+  // teams
+  const [teams, setTeams] = useState<TeamView[]>([]);
+  const [activeTeam, setActiveTeam] = useState<string | null>(null);
+  const [convTeamId, setConvTeamId] = useState<string | null>(null);
+  const [joinCode, setJoinCode] = useState("");
+  const [teamNote, setTeamNote] = useState("");
+
+  // canvas
+  const [canvasTab, setCanvasTab] = useState<"code" | "preview">("code");
+  const [canvasVersions, setCanvasVersions] = useState<
+    { ts: number; code: string; lang: string }[]
+  >([]);
+  const [canvasActionBusy, setCanvasActionBusy] = useState<string | null>(null);
+  const [canvasConsole, setCanvasConsole] = useState<{
+    kind: "run" | "test" | "note";
+    ok: boolean;
+    text: string;
+  } | null>(null);
+  const [verMenu, setVerMenu] = useState(false);
+
+  // response style (human-language controls)
+  const [depth, setDepth] = useState<"short" | "balanced" | "detailed" | "deep">("balanced");
+  const [tone, setTone] = useState<"simple" | "standard" | "expert">("standard");
+  const [styleMenu, setStyleMenu] = useState(false);
+  const [streamPhase, setStreamPhase] = useState("");
+  const lastPrompt = useRef("");
+  const phaseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // share
+  const [shareNote, setShareNote] = useState("");
+  const [projMenu, setProjMenu] = useState(false);
+  const [verifying, setVerifying] = useState<string | null>(null);
+
+  // BYOK
+  const [byokKeys, setByokKeys] = useState<{ groq: string | null; openrouter: string | null }>({ groq: null, openrouter: null });
+  const [byokActive, setByokActive] = useState(false);
+  const [byokDraft, setByokDraft] = useState({ groq: "", openrouter: "" });
+  const [byokBusy, setByokBusy] = useState(false);
+  const [byokNote, setByokNote] = useState("");
+
   const abortRef = useRef<AbortController | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const imgAttachRef = useRef<HTMLInputElement>(null);
 
   const meta = MODE_META.find((m) => m.id === mode)!;
   const plan = me?.plan || "free";
@@ -424,9 +552,13 @@ function Dashboard() {
   const filteredHistory = useMemo(() => {
     const q = search.trim().toLowerCase();
     return history.filter(
-      (h) => !q || h.title.toLowerCase().includes(q) || h.preview.toLowerCase().includes(q)
+      (h) =>
+        (activeTeam
+          ? h.teamId === activeTeam
+          : !activeProject || h.projectId === activeProject) &&
+        (!q || h.title.toLowerCase().includes(q) || h.preview.toLowerCase().includes(q))
     );
-  }, [history, search]);
+  }, [history, search, activeProject, activeTeam]);
 
   /* theme */
   useEffect(() => {
@@ -460,8 +592,29 @@ function Dashboard() {
           mode: c.mode,
           updatedAt: c.updatedAt,
           preview: c.preview,
+          projectId: (c as { projectId?: string | null }).projectId ?? null,
+          teamId: (c as { teamId?: string | null }).teamId ?? null,
+          mine: (c as { mine?: boolean }).mine ?? true,
         }))
       );
+    } catch {
+      /* */
+    }
+  }, []);
+
+  const refreshProjects = useCallback(async () => {
+    try {
+      const p = await fetchProjects();
+      setProjects(p.projects || []);
+    } catch {
+      /* */
+    }
+  }, []);
+
+  const refreshTeams = useCallback(async () => {
+    try {
+      const t = await fetchTeams();
+      setTeams(t.teams || []);
     } catch {
       /* */
     }
@@ -470,14 +623,88 @@ function Dashboard() {
   useEffect(() => {
     refreshMe();
     refreshHistory();
+    refreshProjects();
+    refreshTeams();
+    fetchByok()
+      .then((b) => {
+        if (!b.requireAuth) {
+          setByokKeys(b.keys);
+          setByokActive(Boolean(b.active));
+        }
+      })
+      .catch(() => {});
     fetchModels()
       .then((m) => setModelsCatalog(m.all || []))
       .catch(() => {});
-  }, [refreshMe, refreshHistory]);
+  }, [refreshMe, refreshHistory, refreshProjects, refreshTeams]);
+
+  const doSaveByok = async (which: "groq" | "openrouter", clear?: boolean) => {
+    setByokBusy(true);
+    setByokNote("");
+    try {
+      const payload = clear
+        ? { clear: which }
+        : { [which]: byokDraft[which].trim() };
+      const r = await saveByok(payload as { groq?: string; openrouter?: string });
+      setByokKeys(r.keys);
+      setByokActive(Boolean(r.active));
+      setByokDraft((d) => ({ ...d, [which]: "" }));
+      setByokNote(clear ? "Key removed." : `Saved — ${which === "groq" ? "Groq" : "OpenRouter"} key is now powering your chats ⚡`);
+    } catch (e) {
+      setByokNote((e as Error).message);
+    } finally {
+      setByokBusy(false);
+    }
+  };
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streaming]);
+
+  // invite-link auto-join: /?join=CODE
+  const joinTried = useRef(false);
+  useEffect(() => {
+    if (joinTried.current) return;
+    const code = new URLSearchParams(window.location.search).get("join");
+    if (!code) return;
+    joinTried.current = true;
+    window.history.replaceState({}, "", window.location.pathname);
+    if (!code.trim()) return;
+    joinTeam(code.trim())
+      .then(({ team }) => {
+        setTeams((ts) => (ts.some((t) => t.id === team.id) ? ts : [...ts, team]));
+        setTeamNote(`Joined “${team.name}” ✓ — switched to team chats`);
+        setActiveTeam(team.id);
+      })
+      .catch((e: Error) => setTeamNote(e.message));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // OAuth redirects: /?oauth=setup|failed|unknown or /?welcome=1
+  const oauthTried = useRef(false);
+  useEffect(() => {
+    if (oauthTried.current) return;
+    oauthTried.current = true;
+    const q = new URLSearchParams(window.location.search);
+    const oauth = q.get("oauth");
+    if (q.get("welcome")) {
+      window.history.replaceState({}, "", window.location.pathname);
+      refreshMe();
+      setTeamNote("Logged in ✓ — welcome to your workspace");
+      setTimeout(() => setTeamNote(""), 3500);
+      return;
+    }
+    if (!oauth) return;
+    window.history.replaceState({}, "", window.location.pathname);
+    setAuthTab("login");
+    setModal("auth");
+    setAuthNotice(
+      oauth === "setup"
+        ? "Social sign-in needs provider keys on the server — use email for now (it works great)."
+        : "Sign-in with that provider didn't complete. Try again or use email."
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const grow = () => {
     const el = taRef.current;
@@ -512,6 +739,10 @@ function Dashboard() {
     setView("app");
     setMode("chat");
     setDrawer(false);
+    setConvProjectId(null);
+    setConvTeamId(null);
+    setCanvasTab("code");
+    setAttachment(null);
   };
 
   const openHist = async (id: string) => {
@@ -521,13 +752,19 @@ function Dashboard() {
       setMessages(
         (c.messages || [])
           .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
-          .map((m: { id: string; role: string; content: string }) => ({
+          .map((m: { id: string; role: string; content: string; meta?: { sources?: Msg["sources"]; understood?: string; qualityLabel?: "good" | "review" } }) => ({
             id: m.id,
-            role: m.role,
+            role: m.role as "user" | "assistant",
             content: m.content,
+            sources: m.meta?.sources,
+            understood: m.meta?.understood,
+            ...(m.meta?.qualityLabel ? { quality: { label: m.meta.qualityLabel, notes: [] } } : {}),
           }))
       );
       setMode((c.mode as Mode) || "chat");
+      setConvProjectId((c as { projectId?: string | null }).projectId ?? null);
+      setConvTeamId((c as { teamId?: string | null }).teamId ?? null);
+      setCanvasTab("code");
       setView("app");
       setDrawer(false);
       const last = [...(c.messages || [])].reverse().find((m: { role: string }) => m.role === "assistant");
@@ -536,6 +773,7 @@ function Dashboard() {
         if (blocks.length) {
           setCodePanel(blocks[blocks.length - 1].code);
           setCodeLang(blocks[blocks.length - 1].lang);
+          pushCanvasVersion(blocks[blocks.length - 1].code, blocks[blocks.length - 1].lang);
         }
       }
     } catch (e) {
@@ -547,6 +785,316 @@ function Dashboard() {
     abortRef.current?.abort();
     abortRef.current = null;
     setStreaming(false);
+  };
+
+  const streamPhaseRef = useRef("");
+
+  const doVerify = async (m: Msg) => {
+    if (verifying) return;
+    setVerifying(m.id);
+    try {
+      const v = await verifyApi(m.content);
+      setMessages((ms) => ms.map((x) => (x.id === m.id ? { ...x, verified: v } : x)));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setVerifying(null);
+    }
+  };
+
+  const doCompare = async () => {
+    const p = comparePrompt.trim();
+    if (!p || compareBusy) return;
+    setCompareBusy(true);
+    setError("");
+    try {
+      const r = await compareApi(p);
+      setCompareResult(r);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setCompareBusy(false);
+    }
+  };
+
+  const openCompare = () => {
+    const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content || "";
+    setComparePrompt(input.trim() || lastUser.slice(0, 500));
+    setCompareResult(null);
+    setModal("compare");
+  };
+
+  const pushCanvasVersion = (code: string, lang: string) => {
+    setCanvasVersions((vs) => {
+      if (vs.length && vs[0].code === code) return vs;
+      return [{ ts: Date.now(), code, lang }, ...vs].slice(0, 12);
+    });
+  };
+
+  // ── Code Canvas actions (Update #1 P1 #8 — v1.7.0) ──────
+  // Sandboxed JS run: Web Worker + console capture, 3s timeout,
+  // no DOM, no network. User code NEVER runs on the server.
+  const runInSandbox = (js: string, timeoutMs = 3000) =>
+    new Promise<{ ok: boolean; logs: string[]; error?: string }>((resolve) => {
+      const src = `
+        const __logs = [];
+        const __fmt = (a) => {
+          if (typeof a === "object" && a !== null) { try { return JSON.stringify(a); } catch { return String(a); } }
+          return String(a);
+        };
+        console.log = (...a) => __logs.push(a.map(__fmt).join(" "));
+        console.info = console.warn = console.error = console.log;
+        console.assert = (c, ...a) => __logs.push((c ? "PASS ✓ " : "FAIL ✗ ") + a.map(__fmt).join(" "));
+        try {
+          ${js}
+          postMessage({ ok: true, logs: __logs.slice(0, 200) });
+        } catch (e) {
+          postMessage({ ok: false, logs: __logs.slice(0, 200), error: String(e) });
+        }
+      `;
+      let blobUrl: string | null = null;
+      try {
+        blobUrl = URL.createObjectURL(new Blob([src], { type: "application/javascript" }));
+        const w = new Worker(blobUrl);
+        const t = setTimeout(() => {
+          w.terminate();
+          resolve({ ok: false, logs: [], error: "Timeout (3s) — infinite loop ya bahut slow code lagta hai." });
+        }, timeoutMs);
+        w.onmessage = (ev) => {
+          clearTimeout(t);
+          w.terminate();
+          resolve(ev.data as { ok: boolean; logs: string[]; error?: string });
+        };
+        w.onerror = (ev) => {
+          clearTimeout(t);
+          w.terminate();
+          resolve({ ok: false, logs: [], error: (ev as ErrorEvent).message || "Runtime error" });
+        };
+      } catch (e) {
+        resolve({ ok: false, logs: [], error: (e as Error).message });
+      } finally {
+        if (blobUrl) setTimeout(() => URL.revokeObjectURL(blobUrl!), 5000);
+      }
+    });
+
+  const runCanvasAction = async (
+    action: "run" | "test" | "fix" | "optimize" | "refactor"
+  ) => {
+    if (canvasActionBusy) return;
+    const code = codePanel;
+    if (!code.trim() || code.startsWith("// generated code")) {
+      setCanvasConsole({
+        kind: "note",
+        ok: false,
+        text: "Canvas me abhi koi code nahi hai — chat me kuch likho jaise 'landing page banao', code yahan aa jayega.",
+      });
+      return;
+    }
+
+    const isHtml =
+      /html|xml/.test(codeLang) ||
+      /^\s*<!doctype html/i.test(code) ||
+      /<html[\s>]/i.test(code);
+    const isJs = /javascript|js|typescript|ts/.test(codeLang) && !isHtml;
+    const stripModules = (s: string) => s.replace(/^\s*(import|export)\b.*$/gm, "");
+
+    // RUN — always client-side, never on the server
+    if (action === "run") {
+      if (isHtml) {
+        setCanvasTab("preview");
+        setCanvasConsole({ kind: "run", ok: true, text: "Preview khul gaya — live result dekho. (Scripts sandboxed hain.)" });
+        return;
+      }
+      if (isJs) {
+        setCanvasConsole({ kind: "run", ok: true, text: "Chal raha hai… (sandboxed worker)" });
+        const r = await runInSandbox(stripModules(code));
+        setCanvasConsole({
+          kind: "run",
+          ok: r.ok,
+          text: [
+            ...(r.logs?.length ? r.logs : ["(koi output nahi — code me console.log() use karo)"]),
+            ...(r.error ? ["❌ " + r.error] : []),
+          ].join("\n"),
+        });
+        return;
+      }
+      setCanvasConsole({
+        kind: "note",
+        ok: false,
+        text: `${codeLang} browser me run nahi hota. HTML/JS yahan chalte hain — Save dabao aur file apne system me chalao.`,
+      });
+      return;
+    }
+
+    // FIX / OPTIMIZE / REFACTOR / TEST — live model actions
+    setCanvasActionBusy(action);
+    setCanvasConsole({ kind: "note", ok: true, text: `${action === "test" ? "Tests" : action} chal raha hai…` });
+    try {
+      const r = await codeActionApi(code, codeLang, action);
+      if (r.available === false) {
+        setCanvasConsole({ kind: "note", ok: false, text: r.message || "Live model chahiye." });
+        return;
+      }
+      if (action === "test") {
+        const testCode = r.code || "";
+        if (testCode && isJs) {
+          setCanvasConsole({ kind: "test", ok: true, text: "Tests ban gaye — sandbox me chal raha hai…" });
+          const run = await runInSandbox(stripModules(code) + "\n;\n" + stripModules(testCode), 5000);
+          setCanvasConsole({
+            kind: "test",
+            ok: run.ok,
+            text: [r.notes || "", "— test run (sandboxed browser worker) —", ...(run.logs || []), ...(run.error ? ["❌ " + run.error] : [])]
+              .filter(Boolean)
+              .join("\n"),
+          });
+        } else {
+          setCanvasConsole({
+            kind: "test",
+            ok: true,
+            text: [r.notes, testCode || r.raw || ""].filter(Boolean).join("\n\n"),
+          });
+        }
+        return;
+      }
+      if (r.code) {
+        setCodePanel(r.code);
+        pushCanvasVersion(r.code, codeLang);
+        setCanvasConsole({
+          kind: "note",
+          ok: true,
+          text: `✓ ${r.title} applied${r.notes ? " — " + r.notes : ""}\n(Purana version History me safe hai — wapas jaa sakte ho)`,
+        });
+      } else {
+        setCanvasConsole({ kind: "note", ok: false, text: r.raw || "Model ne code block nahi diya — dobara try karo." });
+      }
+    } catch (e) {
+      const err = e as Error & { hint?: string };
+      setCanvasConsole({ kind: "note", ok: false, text: err.message + (err.hint ? "\nTip: " + err.hint : "") });
+    } finally {
+      setCanvasActionBusy(null);
+    }
+  };
+
+  const doShare = async () => {
+    if (!convId) return;
+    try {
+      const s = await createShare(convId);
+      const url = `${window.location.origin}${s.url}`;
+      try {
+        await navigator.clipboard.writeText(url);
+        setShareNote("Share link copied to clipboard ✓");
+      } catch {
+        setShareNote(url);
+      }
+      setTimeout(() => setShareNote(""), 4500);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const doAssignProject = async (projectId: string | null) => {
+    setProjMenu(false);
+    if (!convId) {
+      setActiveProject(projectId);
+      return;
+    }
+    try {
+      await assignProject(convId, projectId);
+      setConvProjectId(projectId);
+      setActiveProject(projectId);
+      refreshHistory();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const doNewProject = async () => {
+    setProjMenu(false);
+    const name = window.prompt("Project name? (e.g. Startup site, DSA prep)");
+    if (!name?.trim()) return;
+    try {
+      const { project } = await createProject(name.trim());
+      const item: ProjectItem = { ...project, createdAt: new Date().toISOString() };
+      setProjects((ps) => [...ps, item]);
+      await doAssignProject(item.id);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const doAssignTeam = async (teamId: string | null) => {
+    setProjMenu(false);
+    if (!convId) {
+      setActiveTeam(teamId);
+      setActiveProject(null);
+      return;
+    }
+    try {
+      await assignTeam(convId, teamId);
+      setConvTeamId(teamId);
+      setActiveTeam(teamId);
+      setActiveProject(null);
+      refreshHistory();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const doNewTeam = async () => {
+    const name = window.prompt("Team name? (e.g. Studio crew, College project)");
+    if (!name?.trim()) return;
+    try {
+      const { team } = await createTeam(name.trim());
+      setTeams((ts) => [...ts, team]);
+      setTeamNote(`Team “${team.name}” created — invite friends with the code below.`);
+    } catch (e) {
+      setTeamNote((e as Error).message);
+    }
+  };
+
+  const doInvite = async (teamId: string) => {
+    try {
+      const { code } = await teamInvite(teamId);
+      const url = `${window.location.origin}/?join=${code}`;
+      try {
+        await navigator.clipboard.writeText(url);
+        setTeamNote(`Invite link copied ✓ — share it with your team`);
+      } catch {
+        setTeamNote(`Invite code: ${code}`);
+      }
+      setTimeout(() => setTeamNote(""), 4000);
+    } catch (e) {
+      setTeamNote((e as Error).message);
+    }
+  };
+
+  const doJoin = async () => {
+    const code = joinCode.trim();
+    if (!code) return;
+    try {
+      // accept full links or raw codes
+      const raw = code.includes("join=") ? (code.split("join=")[1] || "") : code;
+      const { team } = await joinTeam(raw);
+      setTeams((ts) => [...ts, team]);
+      setJoinCode("");
+      setTeamNote(`Joined “${team.name}” ✓ — switch to it from the sidebar`);
+    } catch (e) {
+      setTeamNote((e as Error).message);
+    }
+  };
+
+  const doLeaveTeam = async (teamId: string, name: string) => {
+    if (!window.confirm(`Leave “${name}”?${teams.find((t) => t.id === teamId)?.myRole === "owner" ? " You own it — the team will be deleted." : ""}`)) return;
+    try {
+      await leaveTeamApi(teamId);
+      setTeams((ts) => ts.filter((t) => t.id !== teamId));
+      if (activeTeam === teamId) setActiveTeam(null);
+      if (convTeamId === teamId) setConvTeamId(null);
+      refreshHistory();
+      setTeamNote("Left the team.");
+    } catch (e) {
+      setTeamNote((e as Error).message);
+    }
   };
 
   const speakBrowser = (text: string, vId: string, spd: number) => {
@@ -614,22 +1162,38 @@ function Dashboard() {
     setMode("audio");
     try {
       const a = await generateAudio(script, voice, speed);
-      setLastSpoken({ text: a.text, voice });
-      setModelTag("BUILDWE Voice");
-      if (typeof window !== "undefined" && window.speechSynthesis) {
-        window.speechSynthesis.cancel();
-        const u = new SpeechSynthesisUtterance(a.text);
-        u.rate = speed;
-        const sys = window.speechSynthesis.getVoices();
-        const pref = VOICES.find((x) => x.id === voice);
-        const match =
-          sys.find((v) =>
-            pref?.lang?.startsWith("HI")
-              ? /hi|hindi/i.test(v.lang + v.name)
-              : /en/i.test(v.lang)
-          ) || sys[0];
-        if (match) u.voice = match;
-        window.speechSynthesis.speak(u);
+
+      if (a.type === "mp3" && a.audioUrl) {
+        // Real MP3 back from the studio
+        setLastSpoken({ text: a.text, voice, audioUrl: a.audioUrl });
+        setModelTag(a.model || "BUILDWE Voice Studio");
+        try {
+          const au = new Audio(a.audioUrl);
+          void au.play().catch(() => {
+            /* autoplay blocked — user presses play */
+          });
+        } catch {
+          /* */
+        }
+      } else {
+        // Browser voice fallback
+        setLastSpoken({ text: a.text, voice });
+        setModelTag("BUILDWE Voice");
+        if (typeof window !== "undefined" && window.speechSynthesis) {
+          window.speechSynthesis.cancel();
+          const u = new SpeechSynthesisUtterance(a.text);
+          u.rate = speed;
+          const sys = window.speechSynthesis.getVoices();
+          const pref = VOICES.find((x) => x.id === voice);
+          const match =
+            sys.find((v) =>
+              pref?.lang?.startsWith("HI")
+                ? /hi|hindi/i.test(v.lang + v.name)
+                : /en/i.test(v.lang)
+            ) || sys[0];
+          if (match) u.voice = match;
+          window.speechSynthesis.speak(u);
+        }
       }
       refreshMe();
     } catch (e) {
@@ -640,16 +1204,19 @@ function Dashboard() {
   };
 
 
-  const send = async (override?: string) => {
+  const send = async (
+    override?: string,
+    retry?: { altModel?: number; baseMessages?: Msg[] }
+  ) => {
     const text = (override ?? input).trim();
-    if (!text || streaming) return;
+    if ((!text && !attachment) || streaming || visionBusy) return;
     setError("");
     setView("app");
     setInput("");
     if (taRef.current) taRef.current.style.height = "48px";
 
     let resolved: Mode = mode;
-    if (mode === "auto") {
+    if (mode === "auto" && !attachment) {
       try {
         const d = await detectAuto(text);
         resolved = (d.mode as Mode) || "chat";
@@ -659,59 +1226,153 @@ function Dashboard() {
       }
     }
 
-    if (resolved === "image") {
+    if (resolved === "image" && !attachment) {
       await runImageGenerate(text);
       return;
     }
 
-    if (resolved === "audio") {
+    if (resolved === "audio" && !attachment) {
       setAudioText(text);
       await runAudioGenerate(text);
       return;
     }
 
+    // ── Vision flow: image attached → understand it ────────
+    if (attachment) {
+      const att = attachment;
+      setAttachment(null);
+      const vId = rid();
+      const aId = rid();
+      setMessages((ms) => [
+        ...ms,
+        {
+          id: vId,
+          role: "user",
+          content: text || `What's in this image? (${att.name})`,
+          image: att.dataUrl,
+        },
+        { id: aId, role: "assistant", content: "", streaming: true },
+      ]);
+      setVisionBusy(true);
+      try {
+        const v = await visionApi(att.dataUrl, text || "Describe this image in detail.");
+        setMessages((ms) =>
+          ms.map((m) =>
+            m.id === aId ? { ...m, content: v.text, streaming: false } : m
+          )
+        );
+        setModelTag(v.model);
+        refreshMe();
+        refreshHistory();
+      } catch (e) {
+        setError((e as Error).message);
+        setMessages((ms) =>
+          ms.map((m) =>
+            m.id === aId
+              ? { ...m, content: (e as Error).message, streaming: false }
+              : m
+          )
+        );
+      } finally {
+        setVisionBusy(false);
+      }
+      return;
+    }
+
+    if (!text) return;
+
+    // "search: …" prefix → auto web-search grounding
+    const searchPrefix = /^(search|google|web)\s*:\s*/i.exec(text);
+    const effectiveText = searchPrefix ? text.replace(searchPrefix[0], "") : text;
+    const useSearch = (webSearchOn || Boolean(searchPrefix)) && resolved === "chat";
+
     // chat or code stream
     const endpoint = resolved === "code" ? "/api/ai/code" : "/api/ai/chat";
+    const history = retry?.baseMessages ?? messages;
     const userMsg: Msg = { id: rid(), role: "user", content: text };
     const aId = rid();
-    const nextMessages = [
-      ...messages,
-      userMsg,
-      { id: aId, role: "assistant" as const, content: "", streaming: true },
-    ];
+    const nextMessages = retry?.baseMessages
+      ? [
+          ...retry.baseMessages,
+          { id: aId, role: "assistant" as const, content: "", streaming: true },
+        ]
+      : [
+          ...messages,
+          userMsg,
+          { id: aId, role: "assistant" as const, content: "", streaming: true },
+        ];
     setMessages(nextMessages);
     setStreaming(true);
+    lastPrompt.current = effectiveText;
 
-    const apiMessages = nextMessages
-      .filter((m) => m.id !== aId)
-      .concat()
-      .map((m) => ({ role: m.role, content: m.content }));
-    // include current user
-    if (!apiMessages.some((m) => m.content === text && m.role === "user")) {
-      apiMessages.push({ role: "user", content: text });
-    }
+    // progress states: Understanding → Writing
+    setStreamPhase("Understanding…");
+    if (phaseTimer.current) clearTimeout(phaseTimer.current);
+    phaseTimer.current = setTimeout(() => setStreamPhase("Writing…"), 1100);
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
     try {
       let acc = "";
+      const t0 = Date.now();
+      let firstTokenSeen = false;
       await streamAI(
         endpoint,
         {
-          messages: [
-            ...messages.map((m) => ({ role: m.role, content: m.content })),
-            { role: "user", content: text },
-          ],
+          messages: retry?.baseMessages
+            ? retry.baseMessages.map((m) => ({ role: m.role, content: m.content }))
+            : [
+                ...messages.map((m) => ({ role: m.role, content: m.content })),
+                { role: "user", content: effectiveText },
+              ],
           conversationId: convId,
+          webSearch: useSearch,
+          projectId: convProjectId ?? activeProject ?? null,
+          teamId: convTeamId ?? activeTeam ?? null,
+          depth,
+          tone,
+          ...(retry?.altModel ? { altModel: retry.altModel } : {}),
         },
         (ev) => {
           if (ev.meta && typeof ev.meta === "object") {
-            const meta = ev.meta as { conversationId?: string; model?: string; live?: boolean };
+            const meta = ev.meta as {
+              conversationId?: string;
+              model?: string;
+              live?: boolean;
+              sources?: Msg["sources"];
+              understood?: string;
+              clarifier?: string;
+              fallbackNote?: string;
+            };
             if (meta.conversationId) setConvId(meta.conversationId);
             if (meta.model) setModelTag(String(meta.model));
+            if (meta.understood || meta.sources?.length || meta.fallbackNote) {
+              setMessages((ms) =>
+                ms.map((m) =>
+                  m.id === aId
+                    ? {
+                        ...m,
+                        ...(meta.understood ? { understood: meta.understood } : {}),
+                        ...(meta.clarifier ? { clarifier: meta.clarifier } : {}),
+                        ...(meta.sources?.length ? { sources: meta.sources } : {}),
+                        ...(meta.fallbackNote ? { fallbackNote: meta.fallbackNote } : {}),
+                      }
+                    : m
+                )
+              );
+            }
           }
           if (ev.token) {
+            if (streamPhaseRef.current !== "Writing…") {
+              streamPhaseRef.current = "Writing…";
+              setStreamPhase("Writing…");
+              if (phaseTimer.current) clearTimeout(phaseTimer.current);
+            }
+            if (!firstTokenSeen) {
+              firstTokenSeen = true;
+              beat("ttft", Date.now() - t0);
+            }
             acc += ev.token;
             setMessages((ms) =>
               ms.map((m) =>
@@ -726,10 +1387,37 @@ function Dashboard() {
               }
             }
           }
-          if (ev.error) setError(ev.error);
-          if (ev.done) {
+          if (ev.error) {
+            const errEv = ev as { error?: string; code?: string; hint?: string };
+            // error handling (Update #2 P0): useful explanation + recovery actions
             setMessages((ms) =>
-              ms.map((m) => (m.id === aId ? { ...m, streaming: false } : m))
+              ms.map((m) =>
+                m.id === aId
+                  ? {
+                      ...m,
+                      content: errEv.error || "Something went wrong. Try again.",
+                      streaming: false,
+                      recovery: {
+                        text: effectiveText,
+                        mode: resolved === "code" ? "code" : "chat",
+                        useSearch,
+                        altModel: (retry?.altModel || 0) + 1,
+                        ...(errEv.code ? { code: errEv.code } : {}),
+                        ...(errEv.hint ? { hint: errEv.hint } : {}),
+                      },
+                    }
+                  : m
+              )
+            );
+          }
+          if (ev.done) {
+            const q = (ev as { quality?: Msg["quality"] }).quality;
+            setMessages((ms) =>
+              ms.map((m) =>
+                m.id === aId
+                  ? { ...m, streaming: false, ...(q ? { quality: q } : {}) }
+                  : m
+              )
             );
           }
         },
@@ -737,16 +1425,32 @@ function Dashboard() {
       );
       refreshMe();
       refreshHistory();
+      // keep a version snapshot for the canvas
+      if (resolved === "code") {
+        const blocks = extractCode(acc);
+        if (blocks.length) {
+          pushCanvasVersion(blocks[blocks.length - 1].code, blocks[blocks.length - 1].lang);
+        }
+      }
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
-        setError((e as Error).message);
+        const err = e as Error & { code?: string; hint?: string };
+        // show a useful error + recovery actions instead of a dead bubble
         setMessages((ms) =>
           ms.map((m) =>
             m.id === aId
               ? {
                   ...m,
-                  content: m.content || "Something went wrong. Try again.",
+                  content: err.message || "Something went wrong. Try again.",
                   streaming: false,
+                  recovery: {
+                    text: effectiveText,
+                    mode: resolved === "code" ? "code" : "chat",
+                    useSearch,
+                    altModel: (retry?.altModel || 0) + 1,
+                    ...(err.code ? { code: err.code } : {}),
+                    ...(err.hint ? { hint: err.hint } : {}),
+                  },
                 }
               : m
           )
@@ -755,6 +1459,32 @@ function Dashboard() {
     } finally {
       setStreaming(false);
       abortRef.current = null;
+      setStreamPhase("");
+      streamPhaseRef.current = "";
+      if (phaseTimer.current) clearTimeout(phaseTimer.current);
+    }
+  };
+
+  const retrySend = async (rec: NonNullable<Msg["recovery"]>) => {
+    if (streaming || visionBusy) return;
+    const last = messages[messages.length - 1];
+    const base = last?.role === "assistant" && last.recovery ? messages.slice(0, -1) : messages;
+    setMode(rec.mode);
+    beat(rec.altModel ? "recovery_use_another_model" : "recovery_try_again");
+    await send(rec.text, { altModel: rec.altModel || undefined, baseMessages: base });
+  };
+
+  // internal metrics beat (Update #2) — fire-and-forget, never blocks UX
+  const beat = (kind: string, ms?: number) => {
+    try {
+      void fetch("/api/metrics", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, ...(ms !== undefined ? { ms } : {}) }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch {
+      /* */
     }
   };
 
@@ -780,6 +1510,42 @@ function Dashboard() {
     await apiLogout();
     await refreshMe();
     setModal(null);
+  };
+
+  const doDeleteAccount = async () => {
+    const user = me?.user;
+    const isOauth = (user as unknown as { provider?: string })?.provider === "google" ||
+      (user as unknown as { provider?: string })?.provider === "github";
+    const answer = window.prompt(
+      isOauth
+        ? `This PERMANENTLY deletes your account, chats, projects, teams, and keys. Type DELETE to confirm:`
+        : `This PERMANENTLY deletes your account, chats, projects, teams, and keys.\nEnter your password to confirm:`
+    );
+    if (!answer) return;
+    setAuthBusy(true);
+    try {
+      const r = await fetch("/api/auth/delete", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          isOauth ? { confirm: answer } : { password: answer }
+        ),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "Couldn't delete account");
+      newChat();
+      setHistory([]);
+      setTeams([]);
+      setProjects([]);
+      setModal(null);
+      await refreshMe();
+      setTeamNote("Account deleted. We're sorry to see you go.");
+    } catch (e) {
+      window.alert((e as Error).message);
+    } finally {
+      setAuthBusy(false);
+    }
   };
 
   const copy = async (t: string, id: string) => {
@@ -808,9 +1574,11 @@ function Dashboard() {
             </div>
           </div>
           <nav className="hidden items-center gap-6 text-sm md:flex" style={{ color: "var(--muted)" }}>
+            <Link href="/how-it-works" className="hover:opacity-80">How it works</Link>
             <Link href="/about" className="hover:opacity-80">About</Link>
             <Link href="/pricing" className="hover:opacity-80">Pricing</Link>
-            <Link href="/privacy" className="hover:opacity-80">Privacy</Link>
+            <Link href="/security" className="hover:opacity-80">Security</Link>
+            <Link href="/status" className="hover:opacity-80">Status</Link>
           </nav>
           <div className="flex items-center gap-2">
             <Btn variant="ghost" size="sm" onClick={() => { setAuthTab("login"); setModal("auth"); }}>
@@ -828,23 +1596,30 @@ function Dashboard() {
               className="mb-5 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium"
               style={{ borderColor: "var(--border)", background: "var(--card)", color: "var(--accent)" }}
             >
-              <Sparkles className="h-3.5 w-3.5" /> Free for everyone · Ad-supported
+              <Sparkles className="h-3.5 w-3.5" /> BUILDWE · Free AI workspace
             </div>
             <h1 className="text-4xl font-semibold tracking-tight sm:text-6xl sm:leading-[1.05]">
-              Four AI problems.
+              AI that understands the work.
               <br />
-              <span style={{ color: "var(--accent)" }}>One platform.</span>
+              <span style={{ color: "var(--accent)" }}>Not just the words.</span>
             </h1>
             <p className="mx-auto mt-5 max-w-xl text-base sm:text-lg" style={{ color: "var(--muted)" }}>
-              Chat. Code. Image. Audio. BUILDWE is the free workspace that keeps creation in one place — so more people can build, and the platform grows with you.
+              Tell BUILDWE what you want in plain language. It picks the right tool, does the work, checks the result, and hands you the answer — chat, code, images, and voice in one calm workspace.
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
               <Btn size="lg" onClick={() => setView("app")}>
-                Enter BUILDWE <ArrowRight className="h-4 w-4" />
+                Start free — no signup needed <ArrowRight className="h-4 w-4" />
               </Btn>
-              <Btn variant="ghost" size="lg" onClick={() => setModal("plans")}>
-                Free &amp; PRO
-              </Btn>
+              <Link
+                href="/how-it-works"
+                className="inline-flex h-12 items-center rounded-2xl border px-5 text-[15px] font-medium"
+                style={{ borderColor: "var(--border)", background: "var(--card)", color: "var(--ink)" }}
+              >
+                How it works
+              </Link>
+            </div>
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[11px]" style={{ color: "var(--soft)" }}>
+              <span>Free forever plan</span>·<span>Guest mode</span>·<span>Works on mobile</span>·<span>Installable app</span>·<span>No card needed</span>
             </div>
           </div>
 
@@ -905,17 +1680,42 @@ function Dashboard() {
               <div className="rounded-2xl border p-4" style={{ borderColor: "var(--border)", background: "var(--bg)" }}>
                 <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Inside the workspace</div>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {["Auto route", "Streaming chat", "Code canvas", "Vision", "Voice", "History", "Guest mode"].map((label) => (
+                  {["Auto route", "Streaming chat", "Web search", "File analysis", "Code canvas", "Vision", "Voice", "Projects & teams", "Share links", "History", "Guest mode"].map((label) => (
                     <span key={label} className="rounded-full border px-3 py-1 text-xs font-medium" style={{ borderColor: "var(--border)", background: "var(--card)" }}>{label}</span>
                   ))}
                 </div>
-                <Link href="/about" className="mt-4 inline-flex items-center gap-1 text-sm font-medium" style={{ color: "var(--accent)" }}>
-                  How BUILDWE works <ExternalLink className="h-3.5 w-3.5" />
-                </Link>
+                <div className="mt-4 flex flex-wrap gap-4 text-sm font-medium">
+                  <Link href="/how-it-works" className="inline-flex items-center gap-1" style={{ color: "var(--accent)" }}>
+                    How it works <ExternalLink className="h-3.5 w-3.5" />
+                  </Link>
+                  <Link href="/help" className="inline-flex items-center gap-1" style={{ color: "var(--accent)" }}>
+                    Help &amp; FAQ <ExternalLink className="h-3.5 w-3.5" />
+                  </Link>
+                  <Link href="/security" className="inline-flex items-center gap-1" style={{ color: "var(--accent)" }}>
+                    Security <ExternalLink className="h-3.5 w-3.5" />
+                  </Link>
+                </div>
               </div>
             </div>
           </div>
         </main>
+
+        <footer className="border-t px-4 py-6" style={{ borderColor: "var(--border)" }}>
+          <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-[11px]" style={{ color: "var(--soft)" }}>
+            <span className="font-semibold" style={{ color: "var(--muted)" }}>BUILDWE.ONLINE</span>
+            <Link href="/how-it-works" className="hover:opacity-80">How it works</Link>
+            <Link href="/about" className="hover:opacity-80">About</Link>
+            <Link href="/pricing" className="hover:opacity-80">Pricing</Link>
+            <Link href="/security" className="hover:opacity-80">Security</Link>
+            <Link href="/status" className="hover:opacity-80">Status</Link>
+            <Link href="/help" className="hover:opacity-80">Help</Link>
+            <Link href="/contact" className="hover:opacity-80">Contact</Link>
+            <Link href="/privacy" className="hover:opacity-80">Privacy</Link>
+            <Link href="/terms" className="hover:opacity-80">Terms</Link>
+            <Link href="/acceptable-use" className="hover:opacity-80">Acceptable use</Link>
+            <Link href="/developers" className="hover:opacity-80">Developers</Link>
+          </div>
+        </footer>
 
         {modal === "auth" && (
           <AuthSheet
@@ -1001,12 +1801,114 @@ function Dashboard() {
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2" style={{ color: "var(--soft)" }} />
                   <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search" className="h-9 w-full rounded-xl pl-8 pr-2 text-xs outline-none" style={{ background: "var(--secondary)" }} />
                 </div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setActiveProject(null)}
+                    className="rounded-full px-2 py-1 text-[10px] font-semibold"
+                    style={!activeProject ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
+                  >
+                    All
+                  </button>
+                  {projects.map((p) => (
+                    <span key={p.id} className="group inline-flex items-center">
+                      <button
+                        type="button"
+                        onClick={() => setActiveProject(p.id)}
+                        className="rounded-l-full px-2 py-1 text-[10px] font-semibold"
+                        style={activeProject === p.id ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
+                      >
+                        {p.name}
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Delete ${p.name}`}
+                        className="rounded-r-full px-1 py-1 opacity-0 transition group-hover:opacity-100"
+                        style={{ color: "var(--soft)" }}
+                        onClick={async () => {
+                          await deleteProjectApi(p.id);
+                          setProjects((ps) => ps.filter((x) => x.id !== p.id));
+                          if (activeProject === p.id) setActiveProject(null);
+                          if (convProjectId === p.id) setConvProjectId(null);
+                          refreshHistory();
+                        }}
+                      >
+                        <Trash2 className="h-2.5 w-2.5" />
+                      </button>
+                    </span>
+                  ))}
+                  <button
+                    type="button"
+                    aria-label="New project"
+                    onClick={doNewProject}
+                    className="rounded-full px-2 py-1 text-[10px] font-semibold"
+                    style={{ background: "var(--secondary)", color: "var(--muted)" }}
+                  >
+                    <Plus className="mr-0.5 inline h-2.5 w-2.5" />Project
+                  </button>
+                </div>
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  <button
+                    type="button"
+                    onClick={() => { setActiveTeam(null); setActiveProject(null); }}
+                    className="rounded-full px-2 py-1 text-[10px] font-semibold"
+                    style={!activeTeam ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
+                  >
+                    Personal
+                  </button>
+                  {teams.map((t) => (
+                    <span key={t.id} className="group inline-flex items-center">
+                      <button
+                        type="button"
+                        onClick={() => { setActiveTeam(t.id); setActiveProject(null); }}
+                        className="rounded-l-full px-2 py-1 text-[10px] font-semibold"
+                        style={activeTeam === t.id ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
+                      >
+                        <Users className="mr-0.5 inline h-2.5 w-2.5" />{t.name}
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Leave ${t.name}`}
+                        className="rounded-r-full px-1 py-1 opacity-0 transition group-hover:opacity-100"
+                        style={{ color: "var(--soft)" }}
+                        onClick={() => doLeaveTeam(t.id, t.name)}
+                      >
+                        <Trash2 className="h-2.5 w-2.5" />
+                      </button>
+                    </span>
+                  ))}
+                  <button
+                    type="button"
+                    aria-label="Teams"
+                    onClick={() => setModal("teams")}
+                    className="rounded-full px-2 py-1 text-[10px] font-semibold"
+                    style={{ background: "var(--secondary)", color: "var(--muted)" }}
+                  >
+                    <UserPlus className="mr-0.5 inline h-2.5 w-2.5" />Team
+                  </button>
+                </div>
               </div>
+              {me?.kind === "guest" && !!history.length && (
+                <div className="anim-rise mx-2 mb-2 rounded-2xl border p-2.5" style={{ borderColor: "var(--border)", background: "var(--secondary)" }}>
+                  <div className="text-[11px] font-semibold">Guest = Try · Account = Own</div>
+                  <p className="mt-0.5 text-[10px] leading-snug" style={{ color: "var(--muted)" }}>
+                    History is saved on this device only. Log in to own your workspace, sync devices, and unlock PRO &amp; your own API keys.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => { setAuthTab("register"); setModal("auth"); }}
+                    className="mt-1.5 w-full rounded-xl py-1.5 text-[11px] font-semibold text-white"
+                    style={{ background: "var(--accent)" }}
+                  >
+                    Create free account
+                  </button>
+                </div>
+              )}
               <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
                 {filteredHistory.map((h) => (
                   <div key={h.id} className="group flex items-center rounded-xl" style={h.id === convId ? { background: "var(--secondary)" } : undefined}>
                     <button type="button" onClick={() => openHist(h.id)} className="min-w-0 flex-1 px-2.5 py-2 text-left">
-                      <div className="truncate text-[13px] font-medium">{h.title}</div>
+                      <div className="truncate text-[13px] font-medium">{h.mine === false && <Users className="mr-1 inline h-3 w-3" style={{ color: "var(--accent)" }} />}{h.title}</div>
                       <div className="truncate text-[10px]" style={{ color: "var(--soft)" }}>{h.mode} · {h.preview}</div>
                     </button>
                     <button
@@ -1033,6 +1935,11 @@ function Dashboard() {
         </div>
 
         <div className="space-y-1 border-t p-2.5" style={{ borderColor: "var(--border)" }}>
+          {sidebarOpen && plan === "free" && (
+            <div className="mb-2">
+              <AdSlot plan={plan} slot="sidebar" onGoPro={() => setModal("plans")} />
+            </div>
+          )}
           <button type="button" onClick={() => setModal("settings")} className={clsx("flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm", sidebarOpen ? "px-3" : "justify-center")} style={{ color: "var(--muted)" }}>
             <Settings className="h-4 w-4" />
             {sidebarOpen && "Settings"}
@@ -1066,9 +1973,70 @@ function Dashboard() {
             {sidebarOpen ? <PanelLeftClose className="h-[18px] w-[18px]" /> : <PanelLeft className="h-[18px] w-[18px]" />}
           </Btn>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold tracking-tight">{meta.label}</div>
+            <div className="flex items-center gap-1.5 truncate text-sm font-semibold tracking-tight">
+              <span className="truncate">{meta.label}</span>
+              {activeTeam && (
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
+                  <Users className="h-2.5 w-2.5" /> {teams.find((t) => t.id === activeTeam)?.name || "Team"}
+                </span>
+              )}
+              {webSearchOn && (mode === "chat" || mode === "auto") ? <span className="shrink-0 text-[10px] font-medium" style={{ color: "var(--accent)" }}>· Web</span> : null}
+            </div>
             <div className="hidden truncate text-[11px] sm:block" style={{ color: "var(--muted)" }}>{meta.headline}{modelTag ? ` · ${modelTag}` : ""}</div>
           </div>
+          <div className="relative">
+            <Btn
+              variant="icon"
+              size="sm"
+              aria-label="Move to project"
+              onClick={() => setProjMenu((v) => !v)}
+              style={convProjectId ? { background: "var(--accent-soft)", color: "var(--accent)" } : undefined}
+            >
+              <FolderOpen className="h-4 w-4" />
+            </Btn>
+            {projMenu && (
+              <>
+                <button type="button" className="fixed inset-0 z-40 cursor-default" aria-label="Close menu" onClick={() => setProjMenu(false)} />
+                <div className="absolute right-0 z-50 mt-2 w-52 overflow-hidden rounded-2xl border shadow-lg" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
+                  <div className="px-3 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Move chat to</div>
+                  <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: !convProjectId ? "var(--accent)" : "var(--ink)" }} onClick={() => doAssignProject(null)}>
+                    <FolderOpen className="h-3.5 w-3.5" /> No project
+                  </button>
+                  {projects.map((p) => (
+                    <button key={p.id} type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: convProjectId === p.id ? "var(--accent)" : "var(--ink)" }} onClick={() => doAssignProject(p.id)}>
+                      <FolderOpen className="h-3.5 w-3.5" /> <span className="truncate">{p.name}</span>
+                    </button>
+                  ))}
+                  <button type="button" className="flex w-full items-center gap-2 border-t px-3 py-2.5 text-left text-sm font-medium" style={{ borderColor: "var(--border)", color: "var(--accent)" }} onClick={doNewProject}>
+                    <FolderPlus className="h-3.5 w-3.5" /> New project
+                  </button>
+                  <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Shared with team</div>
+                  {teams.length ? (
+                    <>
+                      <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: !convTeamId ? "var(--muted)" : "var(--ink)" }} onClick={() => doAssignTeam(null)}>
+                        <FolderOpen className="h-3.5 w-3.5" /> Not shared
+                      </button>
+                      {teams.map((t) => (
+                        <button key={t.id} type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: convTeamId === t.id ? "var(--accent)" : "var(--ink)" }} onClick={() => doAssignTeam(t.id)}>
+                          <Users className="h-3.5 w-3.5" /> <span className="truncate">{t.name}</span>
+                          <span className="ml-auto text-[9px]" style={{ color: "var(--soft)" }}>{t.memberCount}</span>
+                        </button>
+                      ))}
+                    </>
+                  ) : (
+                    <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: "var(--accent)" }} onClick={() => { setProjMenu(false); setModal("teams"); }}>
+                      <UserPlus className="h-3.5 w-3.5" /> Create / join a team
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+          {convId && !!messages.length && (
+            <Btn variant="icon" size="sm" aria-label="Share chat" title="Copy public share link" onClick={doShare}>
+              <Share2 className="h-4 w-4" />
+            </Btn>
+          )}
           {plan === "pro" ? (
             <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold" style={{ background: "var(--ink)", color: "var(--bg)" }}><Star className="h-3 w-3" /> PRO</span>
           ) : (
@@ -1153,6 +2121,9 @@ function Dashboard() {
                           </button>
                         ))}
                       </div>
+                      <div className="mt-4 w-full max-w-md">
+                        <AdSlot plan={plan} slot="chat-empty" onGoPro={() => setModal("plans")} />
+                      </div>
                     </div>
                   )}
 
@@ -1167,7 +2138,25 @@ function Dashboard() {
                                 <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium" style={{ color: "var(--muted)" }}>
                                   <span className="flex h-5 w-5 items-center justify-center rounded-md text-[10px] font-bold text-white" style={{ background: "var(--accent)" }}>B</span>
                                   BUILDWE
+                                  {m.quality && !m.streaming && (
+                                    <span
+                                      className={clsx("ml-1 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide")}
+                                      style={
+                                        m.quality.label === "good"
+                                          ? { background: "var(--ok-soft)", color: "var(--ok)" }
+                                          : { background: "var(--warn-soft)", color: "var(--warn)" }
+                                      }
+                                      title={m.quality.notes.join(" · ")}
+                                    >
+                                      {m.quality.label === "good" ? "✓ Checked" : "⚠ Review"}
+                                    </span>
+                                  )}
                                 </div>
+                              )}
+                              {!isUser && m.understood && (
+                                <p className="mb-1 max-w-[min(100%,36rem)] truncate text-[10px] italic" style={{ color: "var(--soft)" }} title={m.understood}>
+                                  Understood: {m.understood}
+                                </p>
                               )}
                               <div
                                 className={clsx(
@@ -1181,13 +2170,78 @@ function Dashboard() {
                                     : { background: "var(--card)", borderColor: "var(--border)" }
                                 }
                               >
+                                {isUser && m.image && (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img src={m.image} alt="attachment" className="mb-2 max-h-56 w-auto rounded-2xl object-contain" />
+                                )}
                                 {isUser ? (
                                   <p className="whitespace-pre-wrap">{m.content}</p>
                                 ) : (
                                   <div className="prose-bw" dangerouslySetInnerHTML={{ __html: md(m.content || "") }} />
                                 )}
+                                {!isUser && !!m.sources?.length && !m.streaming && (
+                                  <div className="mt-3 flex flex-wrap gap-1.5 border-t pt-2" style={{ borderColor: "var(--border)" }}>
+                                    <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: "var(--soft)" }}>Sources</span>
+                                    {m.sources.slice(0, 5).map((s, si) => (
+                                      <a
+                                        key={si}
+                                        href={s.url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        title={s.title}
+                                        className="rounded-full px-2 py-0.5 text-[10px] font-medium transition hover:opacity-80"
+                                        style={{ background: "var(--secondary)", color: "var(--muted)" }}
+                                      >
+                                        [{si + 1}] {s.host}
+                                      </a>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
-                              {!isUser && m.content && !m.streaming && (
+                              {!isUser && m.fallbackNote && !m.streaming && (
+                                <p
+                                  className="mt-1.5 flex items-start gap-1.5 rounded-xl px-2.5 py-1.5 text-[11px]"
+                                  style={{ background: "var(--warn-soft)", color: "var(--warn)" }}
+                                  title="Provider transparency — what happened behind the scenes"
+                                >
+                                  <span aria-hidden>⚙</span>
+                                  <span>
+                                    <strong className="font-semibold">Model switched:</strong> {m.fallbackNote}
+                                  </span>
+                                </p>
+                              )}
+                              {!isUser && m.recovery && !m.streaming && (
+                                <div
+                                  className="mt-1.5 rounded-2xl border px-3 py-2"
+                                  style={{ borderColor: "var(--warn)", background: "var(--warn-soft)" }}
+                                  role="alert"
+                                >
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <Btn
+                                      size="sm"
+                                      onClick={() => retrySend({ ...m.recovery!, altModel: 0 })}
+                                      disabled={streaming || visionBusy}
+                                    >
+                                      <RotateCcw className="h-3.5 w-3.5" /> Try Again
+                                    </Btn>
+                                    <Btn
+                                      size="sm"
+                                      variant="ghost"
+                                      onClick={() => retrySend({ ...m.recovery!, altModel: Math.min(m.recovery!.altModel || 1, 3) })}
+                                      disabled={streaming || visionBusy}
+                                      title="Send the same request to a different AI model"
+                                    >
+                                      <ArrowRightLeft className="h-3.5 w-3.5" /> Use another model
+                                    </Btn>
+                                  </div>
+                                  {m.recovery.hint && (
+                                    <p className="mt-1.5 text-[11px]" style={{ color: "var(--muted)" }}>
+                                      Tip: {m.recovery.hint}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                              {!isUser && m.content && !m.streaming && !m.recovery && (
                                 <div className="mt-1 flex gap-0.5">
                                   <Btn variant="icon" size="sm" aria-label="Copy" onClick={() => copy(m.content, m.id)}>
                                     {copied === m.id ? <Check className="h-3.5 w-3.5" style={{ color: "var(--accent)" }} /> : <Copy className="h-3.5 w-3.5" />}
@@ -1200,6 +2254,7 @@ function Dashboard() {
                                       const idx = messages.findIndex((x) => x.id === m.id);
                                       const prevUser = [...messages.slice(0, idx)].reverse().find((x) => x.role === "user");
                                       if (!prevUser || streaming) return;
+                                      beat("regenerate");
                                       setMessages((ms) => ms.filter((x) => x.id !== m.id));
                                       setTimeout(() => send(prevUser.content), 30);
                                     }}
@@ -1244,6 +2299,103 @@ function Dashboard() {
                                   >
                                     <ThumbsDown className="h-3.5 w-3.5" />
                                   </Btn>
+                                  <span className="mx-1 h-3 w-px" style={{ background: "var(--border)" }} />
+                                  {[
+                                    ["Simplify", "Rewrite your previous answer in simple, beginner-friendly language — keep every fact."],
+                                    ["Shorten", "Rewrite your previous answer much shorter — only the essentials, keep it accurate."],
+                                    ["Expand", "Expand your previous answer with more detail and useful examples — keep it accurate."],
+                                    ["Explain", "Explain your previous answer step by step like I'm new to this topic."],
+                                    ["Example", "Give one concrete example for your previous answer."],
+                                    ["Document", "Turn your previous answer into a clean shareable document: a clear title, short intro, well-organised sections with headings, and a one-line summary at the end. Keep every fact exactly as stated."],
+                                    ["Table", "Turn your previous answer into a markdown table with clear column headers — one row per item. Keep every fact exactly as stated, and add a one-line note under the table."],
+                                    ["Report", "Turn your previous answer into a short professional report: Title, Key findings (bullets), Details, Risks or caveats, and Recommended next steps. Keep every fact exactly as stated."],
+                                  ].map(([label, instruction]) => (
+                                    <button
+                                      key={label}
+                                      type="button"
+                                      disabled={streaming}
+                                      onClick={() => send(instruction)}
+                                      className="rounded-lg px-1.5 py-1 text-[10px] font-semibold transition hover:opacity-80 disabled:opacity-40"
+                                      style={{ background: "var(--secondary)", color: "var(--muted)" }}
+                                    >
+                                      {label}
+                                    </button>
+                                  ))}
+                                  <Btn
+                                    variant="icon"
+                                    size="sm"
+                                    aria-label="Verify claims"
+                                    title="Verify — check facts against live sources"
+                                    disabled={verifying === m.id}
+                                    onClick={() => doVerify(m)}
+                                  >
+                                    {verifying === m.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+                                  </Btn>
+                                  <Btn
+                                    variant="icon"
+                                    size="sm"
+                                    aria-label="Use as prompt"
+                                    title="Use this answer as your next prompt"
+                                    onClick={() => {
+                                      setInput(m.content.slice(0, 2000));
+                                      requestAnimationFrame(grow);
+                                      taRef.current?.focus();
+                                    }}
+                                  >
+                                    <SquarePen className="h-3.5 w-3.5" />
+                                  </Btn>
+                                  <Btn
+                                    variant="icon"
+                                    size="sm"
+                                    aria-label="Save answer"
+                                    title="Save this answer to a file"
+                                    onClick={() => {
+                                      const blob = new Blob([m.content], { type: "text/plain" });
+                                      const a = document.createElement("a");
+                                      a.href = URL.createObjectURL(blob);
+                                      a.download = "buildwe-answer.txt";
+                                      a.click();
+                                    }}
+                                  >
+                                    <Download className="h-3.5 w-3.5" />
+                                  </Btn>
+                                </div>
+                              )}
+                              {!isUser && m.clarifier && !m.streaming && (
+                                <p className="mt-1 rounded-xl px-2.5 py-1.5 text-[11px]" style={{ background: "var(--info-soft)", color: "var(--info)" }}>
+                                  {m.clarifier}
+                                </p>
+                              )}
+                              {!isUser && m.verified && (
+                                <div className="anim-rise mt-1.5 rounded-2xl border px-3 py-2" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
+                                  <div className="flex items-center gap-1.5 text-[11px] font-semibold">
+                                    <ShieldCheck className="h-3.5 w-3.5" style={{ color: m.verified.verdict === "verified" ? "var(--ok)" : "var(--warn)" }} />
+                                    <span style={{ color: m.verified.verdict === "verified" ? "var(--ok)" : "var(--warn)" }}>
+                                      {m.verified.verdict === "verified" ? "Verified" : m.verified.verdict === "nothing-to-check" ? "Nothing to check" : "Needs verification"}
+                                    </span>
+                                    <span className="font-normal" style={{ color: "var(--soft)" }}>· {m.verified.message}</span>
+                                  </div>
+                                  {!!m.verified.claims.length && (
+                                    <ul className="mt-1.5 space-y-1">
+                                      {m.verified.claims.map((c, ci) => (
+                                        <li key={ci} className="flex items-start gap-1.5 text-[11px]" style={{ color: "var(--muted)" }}>
+                                          <span
+                                            className="mt-0.5 shrink-0 rounded-full px-1.5 py-px text-[9px] font-bold uppercase"
+                                            style={c.verdict === "verified" ? { background: "var(--ok-soft)", color: "var(--ok)" } : { background: "var(--warn-soft)", color: "var(--warn)" }}
+                                          >
+                                            {c.verdict === "verified" ? "source ✓" : "uncertain"}
+                                          </span>
+                                          <span className="min-w-0 flex-1">
+                                            {c.claim.slice(0, 140)}
+                                            {c.claim.length > 140 ? "…" : ""}
+                                            {c.source && (
+                                              <> — <a href={c.source.url} target="_blank" rel="noopener noreferrer" className="font-semibold" style={{ color: "var(--accent)" }}>{c.source.host}</a></>
+                                            )}
+                                          </span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -1261,25 +2413,50 @@ function Dashboard() {
               <div className="shrink-0 border-t px-3 py-2.5 sm:px-5" style={{ borderColor: "var(--border)", background: "color-mix(in srgb, var(--bg-elevated) 95%, transparent)" }}>
                 <div className="mx-auto max-w-2xl">
                   {error && (
-                    <div className="mb-2 rounded-xl px-3 py-2 text-xs" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
-                      {error}
-                      {/limit|PRO/i.test(error) && (
-                        <button type="button" className="ml-2 font-semibold underline" onClick={() => setModal("plans")}>Upgrade</button>
-                      )}
+                    <div className="anim-rise mb-2 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2 text-xs" style={{ background: "var(--err-soft)", color: "var(--err)" }}>
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                      <span className="min-w-0 flex-1">{error}</span>
+                      {/limit|PRO/i.test(error) ? (
+                        <button type="button" className="font-semibold underline" onClick={() => setModal("plans")}>Upgrade</button>
+                      ) : lastPrompt.current ? (
+                        <button type="button" className="font-semibold underline" onClick={() => { setError(""); send(lastPrompt.current); }}>Try again</button>
+                      ) : null}
+                    </div>
+                  )}
+                  {streaming && (
+                    <div className="anim-rise mb-1.5 flex items-center gap-1.5 px-1 text-[11px]" style={{ color: "var(--muted)" }}>
+                      <Loader2 className="h-3 w-3 animate-spin" style={{ color: "var(--accent)" }} />
+                      {streamPhase || "Working…"}
+                      <span className="ml-1" style={{ color: "var(--soft)" }}>· you can stop anytime, the partial answer is saved</span>
                     </div>
                   )}
 
                   <div className="rounded-3xl border shadow-sm" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
+                    {attachment && (
+                      <div className="mx-3 mt-3 flex items-center gap-3 rounded-2xl border p-2" style={{ borderColor: "var(--border)", background: "var(--secondary)" }}>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={attachment.dataUrl} alt={attachment.name} className="h-12 w-12 rounded-xl object-cover" />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-xs font-medium">{attachment.name}</div>
+                          <div className="text-[10px]" style={{ color: "var(--muted)" }}>Image attached — ask anything about it</div>
+                        </div>
+                        <Btn variant="icon" size="sm" aria-label="Remove image" onClick={() => setAttachment(null)}>
+                          <XCircle className="h-4 w-4" />
+                        </Btn>
+                      </div>
+                    )}
                     <textarea
                       ref={taRef}
                       value={input}
                       rows={1}
                       placeholder={
                         mode === "auto"
-                          ? "What are we making?"
+                          ? "What do you want to do? e.g. “plan my launch”, “build a quiz app”, “make a logo”"
                           : mode === "code"
-                            ? "Describe the build…"
-                            : "Message BUILDWE"
+                            ? "Describe what you want to build — BUILDWE handles the code"
+                            : mode === "chat"
+                              ? "Ask anything — plain language works best"
+                              : "Message BUILDWE"
                       }
                       onChange={(e) => {
                         setInput(e.target.value);
@@ -1306,15 +2483,102 @@ function Dashboard() {
                           );
                         })}
                       </div>
-                      <input ref={fileRef} type="file" className="hidden" accept="text/*,.md,.json,.js,.ts,.tsx,.py,.css,.html" onChange={async (e) => {
+                      <input ref={fileRef} type="file" className="hidden" accept="text/*,.md,.json,.js,.ts,.tsx,.py,.css,.html,.csv" onChange={async (e) => {
                         const f = e.target.files?.[0];
                         if (!f) return;
+                        if (f.size > 200 * 1024) {
+                          setError("File too large — keep text files under 200 KB. Tip: attach just the part you need help with.");
+                          e.target.value = "";
+                          return;
+                        }
                         const t = await f.text();
-                        setInput((v) => (v ? v + "\n\n" : "") + `[File: ${f.name}]\n${t.slice(0, 8000)}`);
+                        try {
+                          const a = await analyzeFileApi(f.name, t);
+                          setInput((v) => (v ? v + "\n\n" : "") + `[Attached file: ${f.name}]\n${a.summary}\n\nMy question: `);
+                        } catch {
+                          setInput((v) => (v ? v + "\n\n" : "") + `[File: ${f.name}]\n${t.slice(0, 8000)}`);
+                        }
                         e.target.value = "";
                         requestAnimationFrame(grow);
                       }} />
-                      <Btn variant="icon" size="sm" aria-label="Upload" onClick={() => fileRef.current?.click()}><Paperclip className="h-4 w-4" /></Btn>
+                      <input ref={imgAttachRef} type="file" className="hidden" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (!f) return;
+                        if (f.size > 5 * 1024 * 1024) {
+                          setError("Image too large — keep it under 5 MB.");
+                          e.target.value = "";
+                          return;
+                        }
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                          setAttachment({ dataUrl: String(reader.result), name: f.name });
+                          setMode((m) => (m === "image" || m === "audio" ? "chat" : m));
+                        };
+                        reader.readAsDataURL(f);
+                        e.target.value = "";
+                      }} />
+                      {(mode === "chat" || mode === "auto") && (
+                        <div className="relative">
+                          <Btn
+                            variant="icon"
+                            size="sm"
+                            aria-label="Answer style"
+                            title="Answer style — length & language"
+                            onClick={() => setStyleMenu((v) => !v)}
+                            style={depth !== "balanced" || tone !== "standard" ? { background: "var(--accent-soft)", color: "var(--accent)" } : undefined}
+                          >
+                            <SlidersHorizontal className="h-4 w-4" />
+                          </Btn>
+                          {styleMenu && (
+                            <>
+                              <button type="button" className="fixed inset-0 z-40 cursor-default" aria-label="Close style menu" onClick={() => setStyleMenu(false)} />
+                              <div className="anim-rise absolute bottom-10 left-0 z-50 w-60 rounded-2xl border p-3 shadow-lg" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
+                                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Answer length</div>
+                                <div className="mb-3 flex flex-wrap gap-1">
+                                  {(["short", "balanced", "detailed", "deep"] as const).map((d) => (
+                                    <button key={d} type="button" onClick={() => setDepth(d)} className="rounded-full px-2 py-1 text-[11px] font-semibold capitalize" style={depth === d ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}>
+                                      {d}
+                                    </button>
+                                  ))}
+                                </div>
+                                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Language</div>
+                                <div className="flex flex-wrap gap-1">
+                                  {(["simple", "standard", "expert"] as const).map((t) => (
+                                    <button key={t} type="button" onClick={() => setTone(t)} className="rounded-full px-2 py-1 text-[11px] font-semibold capitalize" style={tone === t ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}>
+                                      {t}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                      {(mode === "chat" || mode === "auto") && (
+                        <Btn
+                          variant="icon"
+                          size="sm"
+                          aria-label="Web search"
+                          title="Web search — live sources"
+                          onClick={() => setWebSearchOn((v) => !v)}
+                          style={webSearchOn ? { background: "var(--accent-soft)", color: "var(--accent)" } : undefined}
+                        >
+                          <Globe className="h-4 w-4" />
+                        </Btn>
+                      )}
+                      {(mode === "chat" || mode === "auto") && (
+                        <Btn
+                          variant="icon"
+                          size="sm"
+                          aria-label="Compare models"
+                          title="Compare models — ask 3 AIs the same question"
+                          onClick={openCompare}
+                        >
+                          <Layers className="h-4 w-4" />
+                        </Btn>
+                      )}
+                      <Btn variant="icon" size="sm" aria-label="Attach image" title="Attach image — AI vision" onClick={() => imgAttachRef.current?.click()}><ImagePlus className="h-4 w-4" /></Btn>
+                      <Btn variant="icon" size="sm" aria-label="Upload file" title="Attach text/CSV file" onClick={() => fileRef.current?.click()}><Paperclip className="h-4 w-4" /></Btn>
                       <Btn
                         variant="icon"
                         size="sm"
@@ -1342,32 +2606,111 @@ function Dashboard() {
                       >
                         {listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
                       </Btn>
-                      {streaming || imgLoading || audioBusy ? (
+                      {streaming || imgLoading || audioBusy || visionBusy ? (
                         <Btn variant="ink" className="!h-10 !w-10 !p-0" aria-label="Stop" onClick={stop}><Square className="h-3.5 w-3.5 fill-current" /></Btn>
                       ) : (
-                        <Btn className="!h-10 !w-10 !p-0" aria-label="Send" disabled={!input.trim()} onClick={() => send()}>
+                        <Btn className="!h-10 !w-10 !p-0" aria-label="Send" disabled={!input.trim() && !attachment} onClick={() => send()}>
                           {streaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                         </Btn>
                       )}
                     </div>
                   </div>
                   <p className="mt-1.5 text-center text-[10px]" style={{ color: "var(--soft)" }}>
-                    {me?.kind === "guest" ? "Browsing free · sign in to sync across devices" : me?.user?.email}
+                    BUILDWE picks the right tool — no commands or code needed, just type naturally
+                    {me?.kind === "guest" ? " · guest mode" : ` · ${me?.user?.email}`}
                     {plan === "free" ? " · Free plan" : " · PRO"}
+                    {byokActive ? " · Own key ⚡" : ""}
                   </p>
                 </div>
               </div>
             </div>
 
-            {/* code canvas */}
+            {/* code canvas + live preview */}
             {mode === "code" && (
               <div className="hidden min-h-0 flex-1 flex-col lg:flex" style={{ background: "var(--code-bg)", color: "var(--code-fg)" }}>
                 <div className="flex items-center justify-between border-b border-white/10 px-3 py-2">
-                  <div className="flex items-center gap-2 text-xs text-white/50">
-                    <FileCode2 className="h-3.5 w-3.5" />
-                    buildwe · {codeLang}
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setCanvasTab("code")}
+                      className={clsx("flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium", canvasTab === "code" ? "bg-white/15 text-white" : "text-white/45 hover:bg-white/10")}
+                    >
+                      <FileCode2 className="h-3.5 w-3.5" /> Code · {codeLang}
+                    </button>
+                    {/html|xml/.test(codeLang) || /^\s*<!doctype html/i.test(codePanel) ? (
+                      <button
+                        type="button"
+                        onClick={() => setCanvasTab(canvasTab === "code" ? "preview" : "code")}
+                        className={clsx("flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium", canvasTab === "preview" ? "bg-white/15 text-white" : "text-white/45 hover:bg-white/10")}
+                      >
+                        <Eye className="h-3.5 w-3.5" /> Preview
+                      </button>
+                    ) : null}
+                    {canvasVersions.length > 1 && (
+                      <div className="relative ml-1">
+                        <button
+                          type="button"
+                          onClick={() => setVerMenu((v) => !v)}
+                          className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-white/45 hover:bg-white/10"
+                        >
+                          <RotateCcw className="h-3 w-3" /> History · {canvasVersions.length}
+                        </button>
+                        {verMenu && (
+                          <>
+                            <button type="button" className="fixed inset-0 z-40 cursor-default" aria-label="Close history" onClick={() => setVerMenu(false)} />
+                            <div className="absolute left-0 z-50 mt-2 max-h-56 w-56 overflow-y-auto rounded-2xl border border-white/10 bg-[#1e1b18] p-1.5 shadow-lg">
+                              {canvasVersions.map((v, vi) => (
+                                <button
+                                  key={v.ts}
+                                  type="button"
+                                  onClick={() => {
+                                    setCodePanel(v.code);
+                                    setCodeLang(v.lang);
+                                    setVerMenu(false);
+                                  }}
+                                  className="flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-left text-[11px] text-white/80 hover:bg-white/10"
+                                >
+                                  <span>{v.code === codePanel ? "Current" : `Version ${canvasVersions.length - vi}`}</span>
+                                  <span className="text-white/40">{new Date(v.ts).toLocaleTimeString()}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <div className="flex gap-1">
+                  <div className="flex items-center gap-1">
+                    {([
+                      ["run", "Run", Play, "HTML preview me chalao · JS sandboxed worker me"],
+                      ["test", "Test", FlaskConical, "AI se runnable tests banao aur chalao"],
+                      ["fix", "Fix", Wrench, "Bugs dhundo aur theek karo"],
+                      ["optimize", "Optimize", Zap, "Fast/light banao — behaviour same"],
+                      ["refactor", "Refactor", Recycle, "Safar sudharo — behaviour same"],
+                    ] as const).map(([act, label, Icon, tip]) => (
+                      <button
+                        key={act}
+                        type="button"
+                        title={tip}
+                        aria-label={label}
+                        disabled={canvasActionBusy !== null}
+                        onClick={() => runCanvasAction(act)}
+                        className={clsx(
+                          "flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium transition",
+                          act === "run"
+                            ? "bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                            : "text-white/55 hover:bg-white/10 hover:text-white"
+                        )}
+                      >
+                        {canvasActionBusy === act ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Icon className="h-3.5 w-3.5" />
+                        )}
+                        <span className="hidden xl:inline">{label}</span>
+                      </button>
+                    ))}
+                    <span className="mx-0.5 h-4 w-px bg-white/10" />
                     <button type="button" className="rounded-lg px-2 py-1 text-[11px] text-white/55 hover:bg-white/10" onClick={() => copy(codePanel, "code")}>{copied === "code" ? "Copied" : "Copy"}</button>
                     <button type="button" className="rounded-lg px-2 py-1 text-[11px] text-white/55 hover:bg-white/10" onClick={() => {
                       const blob = new Blob([codePanel], { type: "text/plain" });
@@ -1378,9 +2721,56 @@ function Dashboard() {
                     }}>Save</button>
                   </div>
                 </div>
-                <div className="flex-1 overflow-auto p-4">
-                  <pre className="font-mono text-[13px] leading-relaxed"><code>{codePanel}</code></pre>
-                </div>
+                {canvasTab === "preview" ? (
+                  <iframe
+                    title="Live preview"
+                    sandbox="allow-scripts"
+                    srcDoc={codePanel}
+                    className="flex-1 bg-white"
+                  />
+                ) : (
+                  <div className="flex min-h-0 flex-1 flex-col">
+                    <div className="min-h-0 flex-1 overflow-auto p-4">
+                      <pre className="font-mono text-[13px] leading-relaxed"><code>{codePanel}</code></pre>
+                    </div>
+                    {canvasConsole && (
+                      <div
+                        className="max-h-48 shrink-0 overflow-y-auto border-t border-white/10 px-4 py-2.5"
+                        role={canvasConsole.ok ? "status" : "alert"}
+                      >
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                          <span
+                            className={clsx(
+                              "text-[10px] font-bold uppercase tracking-wider",
+                              canvasConsole.kind === "run"
+                                ? "text-emerald-300"
+                                : canvasConsole.kind === "test"
+                                  ? "text-sky-300"
+                                  : canvasConsole.ok ? "text-amber-300" : "text-red-300"
+                            )}
+                          >
+                            {canvasConsole.kind === "run"
+                              ? "▶ Output"
+                              : canvasConsole.kind === "test"
+                                ? "✓ Tests"
+                                : canvasConsole.ok ? "ℹ Info" : "⚠ Note"}
+                          </span>
+                          <button
+                            type="button"
+                            aria-label="Close console"
+                            className="rounded px-1.5 text-[11px] text-white/40 hover:bg-white/10 hover:text-white/80"
+                            onClick={() => setCanvasConsole(null)}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <pre className="whitespace-pre-wrap font-mono text-[12px] leading-relaxed text-white/75">
+                          {canvasConsole.text}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1405,6 +2795,17 @@ function Dashboard() {
           </div>
         </nav>
       </div>
+
+      {shareNote && (
+        <div className="fixed inset-x-0 bottom-[72px] z-[60] flex justify-center px-4 md:bottom-6">
+          <div
+            className="max-w-full truncate rounded-full border px-4 py-2 text-xs font-medium shadow-lg"
+            style={{ borderColor: "var(--border)", background: "var(--card)", color: "var(--ink)" }}
+          >
+            {shareNote}
+          </div>
+        </div>
+      )}
 
       {/* mobile drawer */}
       {drawer && (
@@ -1442,9 +2843,10 @@ function Dashboard() {
           name={name}
           setName={setName}
           err={authErr}
+          notice={authNotice}
           busy={authBusy}
           onSubmit={onAuth}
-          onClose={() => setModal(null)}
+          onClose={() => { setModal(null); setAuthNotice(""); }}
         />
       )}
 
@@ -1463,6 +2865,87 @@ function Dashboard() {
             }
           }}
         />
+      )}
+
+      {modal === "compare" && (
+        <Sheet onClose={() => setModal(null)} title="Compare models">
+          <div className="space-y-3">
+            <p className="text-[12px]" style={{ color: "var(--muted)" }}>
+              Ask the same question to 3 different AI models at once — then read the combined
+              synthesis. Same prompt, three perspectives, one answer.
+            </p>
+            <textarea
+              value={comparePrompt}
+              onChange={(e) => setComparePrompt(e.target.value)}
+              placeholder="Type the question you want to compare…"
+              rows={3}
+              className="w-full resize-none rounded-2xl border px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+              style={{ borderColor: "var(--border)", background: "var(--secondary)", color: "inherit" }}
+            />
+            <div className="flex items-center gap-2">
+              <Btn size="sm" onClick={doCompare} disabled={!comparePrompt.trim() || compareBusy}>
+                {compareBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Layers className="h-3.5 w-3.5" />}
+                {compareBusy ? "Asking 3 models…" : "Run comparison"}
+              </Btn>
+              {compareResult && (
+                <Btn
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setInput(comparePrompt);
+                    requestAnimationFrame(grow);
+                    setModal(null);
+                    taRef.current?.focus();
+                  }}
+                >
+                  <SquarePen className="h-3.5 w-3.5" /> Continue in chat
+                </Btn>
+              )}
+            </div>
+
+            {compareResult && !compareResult.available && (
+              <div className="rounded-2xl border px-3 py-3 text-[12px]" style={{ borderColor: "var(--border)", background: "var(--secondary)", color: "var(--muted)" }}>
+                {compareResult.synthesis}
+              </div>
+            )}
+
+            {compareResult?.available && (
+              <>
+                <div className="grid gap-2">
+                  {compareResult.lanes.map((l) => (
+                    <div key={l.label} className="rounded-2xl border p-3" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
+                      <div className="mb-1.5 flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-bold uppercase tracking-wide" style={{ color: "var(--accent)" }}>
+                          {l.label}
+                        </span>
+                        <span className="flex items-center gap-1.5">
+                          <span className="text-[10px]" style={{ color: "var(--soft)" }}>{l.model}</span>
+                          <Btn variant="icon" size="sm" aria-label={`Copy ${l.label}`} onClick={() => copy(l.reply, `cmp-${l.label}`)}>
+                            {copied === `cmp-${l.label}` ? <Check className="h-3.5 w-3.5" style={{ color: "var(--ok)" }} /> : <Copy className="h-3.5 w-3.5" />}
+                          </Btn>
+                        </span>
+                      </div>
+                      <p className="max-h-44 overflow-y-auto whitespace-pre-wrap text-[12px] leading-relaxed" style={{ color: "var(--muted)" }}>
+                        {l.reply.trim() ? l.reply : "— offline (no live provider for this seat) —"}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                <div className="rounded-2xl border p-3" style={{ borderColor: "var(--accent)", background: "var(--accent-soft)" }}>
+                  <div className="mb-1 text-[11px] font-bold uppercase tracking-wide" style={{ color: "var(--accent)" }}>
+                    Best combined answer
+                  </div>
+                  <p className="max-h-60 overflow-y-auto whitespace-pre-wrap text-[13px] leading-relaxed">
+                    {compareResult.synthesis}
+                  </p>
+                </div>
+                <p className="text-center text-[10px]" style={{ color: "var(--soft)" }}>
+                  Model agreement is not proof — verify important facts with the ✓ Verify button.
+                </p>
+              </>
+            )}
+          </div>
+        </Sheet>
       )}
 
       {modal === "settings" && (
@@ -1499,12 +2982,33 @@ function Dashboard() {
                 a.download = 'buildwe-chat.md';
                 a.click();
               }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Download className="h-4 w-4 opacity-70" /> Export chat</button>
+              <button type="button" onClick={() => {
+                try {
+                  sessionStorage.setItem("bw_print", JSON.stringify({
+                    title: filteredHistory.find((h) => h.id === convId)?.title || "BUILDWE chat",
+                    messages: messages.map((m) => ({ role: m.role, content: m.content })),
+                  }));
+                  window.open("/print", "_blank");
+                } catch {
+                  /* */
+                }
+              }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Printer className="h-4 w-4 opacity-70" /> Print / PDF</button>
+              <button type="button" onClick={() => setModal("byok")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><KeyRound className="h-4 w-4 opacity-70" /> API keys <span className="ml-auto text-[10px] font-semibold" style={{ color: byokActive ? "var(--accent)" : "var(--soft)" }}>{byokActive ? "Own key ⚡" : "BYOK"}</span></button>
+              <button type="button" onClick={() => setModal("teams")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Users className="h-4 w-4 opacity-70" /> Teams <span className="ml-auto text-[10px] font-semibold" style={{ color: teams.length ? "var(--accent)" : "var(--soft)" }}>{teams.length ? `${teams.length} active` : "Share chats"}</span></button>
+              <a href="/developers" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Terminal className="h-4 w-4 opacity-70" /> Developer API <ExternalLink className="ml-auto h-3.5 w-3.5" style={{ color: "var(--soft)" }} /></a>
+              <a href="/help" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><HelpCircle className="h-4 w-4 opacity-70" /> Help &amp; FAQ <ExternalLink className="ml-auto h-3.5 w-3.5" style={{ color: "var(--soft)" }} /></a>
+              <a href="/how-it-works" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Wand2 className="h-4 w-4 opacity-70" /> How BUILDWE works <ExternalLink className="ml-auto h-3.5 w-3.5" style={{ color: "var(--soft)" }} /></a>
               <a href="/about" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Bot className="h-4 w-4 opacity-70" /> About BUILDWE <ExternalLink className="ml-auto h-3.5 w-3.5" style={{ color: "var(--soft)" }} /></a>
               <a href="/privacy" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Shield className="h-4 w-4 opacity-70" /> Privacy</a>
               <a href="/terms" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><FileCode2 className="h-4 w-4 opacity-70" /> Terms</a>
               <button type="button" onClick={() => setModal("plans")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><CreditCard className="h-4 w-4 opacity-70" /> Plan · {plan}</button>
               {loggedIn ? (
-                <button type="button" onClick={doLogout} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-red-600"><LogOut className="h-4 w-4" /> Log out</button>
+                <>
+                  <button type="button" onClick={doLogout} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-red-600"><LogOut className="h-4 w-4" /> Log out</button>
+                  <button type="button" onClick={doDeleteAccount} disabled={authBusy} className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-[12px] font-medium" style={{ color: "var(--err)" }}>
+                    <AlertTriangle className="h-3.5 w-3.5" /> {authBusy ? "Deleting…" : "Delete account (permanent)"}
+                  </button>
+                </>
               ) : (
                 <button type="button" onClick={() => setModal("auth")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><LogIn className="h-4 w-4 opacity-70" /> Log in</button>
               )}
@@ -1558,6 +3062,99 @@ function Dashboard() {
         </Sheet>
       )}
 
+      {modal === "byok" && (
+        <Sheet onClose={() => setModal(null)} title="Your API keys">
+          <p className="mb-3 text-sm" style={{ color: "var(--muted)" }}>
+            Bring your own key — your chats run on <strong>your</strong> free Groq / OpenRouter account. Keys are AES-encrypted server-side and never shown again.
+          </p>
+          {!loggedIn && (
+            <p className="mb-3 text-xs" style={{ color: "var(--accent)" }}>Sign in to save keys across sessions.</p>
+          )}
+          {(["groq", "openrouter"] as const).map((which) => (
+            <div key={which} className="mb-3">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-xs font-semibold">{which === "groq" ? "Groq (fast, free tier)" : "OpenRouter (fallback)"}</span>
+                {byokKeys[which] && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <code className="rounded-md px-1.5 py-0.5 text-[10px]" style={{ background: "var(--secondary)", color: "var(--muted)" }}>{byokKeys[which]}</code>
+                    <button type="button" className="text-[10px] font-semibold text-red-600" onClick={() => doSaveByok(which, true)} disabled={byokBusy}>remove</button>
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={byokDraft[which]}
+                  onChange={(e) => setByokDraft((d) => ({ ...d, [which]: e.target.value }))}
+                  placeholder={which === "groq" ? "gsk_…" : "sk-or-…"}
+                  type="password"
+                  className="h-10 flex-1 rounded-2xl border px-3 text-sm outline-none"
+                  style={{ borderColor: "var(--border)", background: "var(--bg)" }}
+                />
+                <Btn size="sm" disabled={!loggedIn || byokBusy || byokDraft[which].trim().length < 20} onClick={() => doSaveByok(which)}>
+                  {byokBusy ? "Saving…" : "Save"}
+                </Btn>
+              </div>
+            </div>
+          ))}
+          {byokNote && <p className="text-xs" style={{ color: "var(--accent)" }}>{byokNote}</p>}
+          <p className="mt-3 text-[11px]" style={{ color: "var(--soft)" }}>
+            Get a free Groq key at console.groq.com → API Keys. It powers Chat, Code, and Vision for your account only.
+          </p>
+        </Sheet>
+      )}
+
+      {modal === "teams" && (
+        <Sheet onClose={() => setModal(null)} title="Team workspaces">
+          <p className="mb-3 text-sm" style={{ color: "var(--muted)" }}>
+            Share chats with your crew — a team chat is visible to every member. Switch teams from the sidebar chips.
+          </p>
+          {!loggedIn && (
+            <p className="mb-3 text-xs" style={{ color: "var(--accent)" }}>Sign in to create or join teams.</p>
+          )}
+
+          <div className="space-y-1.5">
+            {teams.map((t) => (
+              <div key={t.id} className="flex items-center gap-3 rounded-2xl border px-3 py-2.5" style={{ borderColor: "var(--border)" }}>
+                <span className="flex h-9 w-9 items-center justify-center rounded-xl" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
+                  <Users className="h-4 w-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">{t.name}</div>
+                  <div className="text-[10px]" style={{ color: "var(--muted)" }}>
+                    {t.memberCount} member{t.memberCount > 1 ? "s" : ""} · you are {t.myRole}
+                  </div>
+                </div>
+                <Btn variant="icon" size="sm" aria-label="Invite" title="Copy invite link" onClick={() => doInvite(t.id)}><UserPlus className="h-3.5 w-3.5" /></Btn>
+                <Btn variant="icon" size="sm" aria-label="Leave team" title="Leave team" onClick={() => doLeaveTeam(t.id, t.name)}><LogOut className="h-3.5 w-3.5" /></Btn>
+              </div>
+            ))}
+            {!teams.length && loggedIn && (
+              <p className="text-xs" style={{ color: "var(--soft)" }}>No teams yet — create one or join with a code.</p>
+            )}
+          </div>
+
+          {teamNote && <p className="mt-2 text-xs" style={{ color: "var(--accent)" }}>{teamNote}</p>}
+
+          <div className="mt-4 flex gap-2">
+            <Btn size="sm" disabled={!loggedIn} onClick={doNewTeam}><Plus className="h-3.5 w-3.5" /> Create team</Btn>
+          </div>
+
+          <div className="mt-3 border-t pt-3" style={{ borderColor: "var(--border)" }}>
+            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Join with invite code</div>
+            <div className="flex gap-2">
+              <input
+                value={joinCode}
+                onChange={(e) => setJoinCode(e.target.value)}
+                placeholder="e.g. 7F3A9C2B or invite link"
+                className="h-10 flex-1 rounded-2xl border px-3 text-sm outline-none"
+                style={{ borderColor: "var(--border)", background: "var(--bg)" }}
+              />
+              <Btn size="sm" disabled={!loggedIn || !joinCode.trim()} onClick={doJoin}>Join</Btn>
+            </div>
+          </div>
+        </Sheet>
+      )}
+
       {modal === "profile" && me?.user && (
         <Sheet onClose={() => setModal(null)} title="Profile">
           <div className="flex items-center gap-3">
@@ -1589,26 +3186,113 @@ function AuthSheet(props: {
   setName: (v: string) => void;
   err: string;
   busy: boolean;
+  notice?: string;
   onSubmit: (e: React.FormEvent) => void;
   onClose: () => void;
 }) {
+  const [view, setView] = useState<"auth" | "forgot">("auth");
+  const [forgotEmail, setForgotEmail] = useState(props.email);
+  const [forgotBusy, setForgotBusy] = useState(false);
+  const [forgotNote, setForgotNote] = useState("");
+
+  const submitForgot = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setForgotBusy(true);
+    setForgotNote("");
+    try {
+      const r = await fetch("/api/auth/forgot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: forgotEmail }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "Couldn't start reset");
+      setForgotNote(j.message || "If that email has an account, a reset link is on its way.");
+      if (j.devLink) setForgotNote((n) => `${n} (dev link: ${j.devLink})`);
+    } catch (err) {
+      setForgotNote((err as Error).message);
+    } finally {
+      setForgotBusy(false);
+    }
+  };
+
   return (
     <Sheet onClose={props.onClose} title={props.tab === "login" ? "Welcome back" : "Create account"}>
-      <div className="mb-4 flex rounded-2xl border p-1" style={{ borderColor: "var(--border)" }}>
-        {(["login", "register"] as const).map((t) => (
-          <button key={t} type="button" onClick={() => props.setTab(t)} className="flex-1 rounded-xl py-2 text-sm font-medium capitalize" style={props.tab === t ? { background: "var(--ink)", color: "var(--bg)" } : { color: "var(--muted)" }}>{t}</button>
-        ))}
-      </div>
-      <form onSubmit={props.onSubmit} className="space-y-3">
-        {props.tab === "register" && (
-          <input value={props.name} onChange={(e) => props.setName(e.target.value)} placeholder="Name" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
-        )}
-        <input type="email" required value={props.email} onChange={(e) => props.setEmail(e.target.value)} placeholder="Email" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
-        <input type="password" required minLength={6} value={props.password} onChange={(e) => props.setPassword(e.target.value)} placeholder="Password (min 6)" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
-        {props.err && <p className="text-xs text-red-600">{props.err}</p>}
-        <Btn type="submit" className="w-full" size="lg" disabled={props.busy}>{props.busy ? "…" : props.tab === "login" ? "Log in" : "Sign up free"}</Btn>
-      </form>
-      <p className="mt-3 text-center text-[11px]" style={{ color: "var(--soft)" }}>Free account · your workspace, your history</p>
+      {view === "forgot" ? (
+        <div className="anim-sheet">
+          <p className="mb-3 text-sm" style={{ color: "var(--muted)" }}>
+            Enter your account email — we&apos;ll send a secure link to set a new password (valid 1 hour).
+          </p>
+          <form onSubmit={submitForgot} className="space-y-3">
+            <input
+              type="email"
+              required
+              value={forgotEmail}
+              onChange={(e) => setForgotEmail(e.target.value)}
+              placeholder="Your account email"
+              className="h-11 w-full rounded-2xl border px-3 text-sm outline-none"
+              style={{ borderColor: "var(--border)", background: "var(--bg)" }}
+            />
+            {forgotNote && <p className="text-xs" style={{ color: "var(--accent)" }}>{forgotNote}</p>}
+            <Btn type="submit" className="w-full" size="lg" disabled={forgotBusy}>
+              {forgotBusy ? "Sending…" : "Send reset link"}
+            </Btn>
+            <button type="button" className="w-full text-center text-xs font-semibold" style={{ color: "var(--muted)" }} onClick={() => setView("auth")}>
+              ← Back to log in
+            </button>
+          </form>
+        </div>
+      ) : (
+        <div className="anim-sheet">
+          <div className="grid grid-cols-2 gap-2">
+            <a
+              href="/api/auth/oauth/google"
+              className="flex h-11 items-center justify-center gap-2 rounded-2xl border text-sm font-medium transition hover:opacity-85"
+              style={{ borderColor: "var(--border)", background: "var(--card)" }}
+            >
+              <Chrome className="h-4 w-4" /> Google
+            </a>
+            <a
+              href="/api/auth/oauth/github"
+              className="flex h-11 items-center justify-center gap-2 rounded-2xl border text-sm font-medium transition hover:opacity-85"
+              style={{ borderColor: "var(--border)", background: "var(--card)" }}
+            >
+              <Github className="h-4 w-4" /> GitHub
+            </a>
+          </div>
+          <div className="my-3 flex items-center gap-2 text-[10px] uppercase tracking-wider" style={{ color: "var(--soft)" }}>
+            <span className="h-px flex-1" style={{ background: "var(--border)" }} /> or use email <span className="h-px flex-1" style={{ background: "var(--border)" }} />
+          </div>
+
+          <div className="mb-4 flex rounded-2xl border p-1" style={{ borderColor: "var(--border)" }}>
+            {(["login", "register"] as const).map((t) => (
+              <button key={t} type="button" onClick={() => props.setTab(t)} className="flex-1 rounded-xl py-2 text-sm font-medium capitalize" style={props.tab === t ? { background: "var(--ink)", color: "var(--bg)" } : { color: "var(--muted)" }}>{t === "login" ? "log in" : "sign up"}</button>
+            ))}
+          </div>
+          <form onSubmit={props.onSubmit} className="space-y-3">
+            {props.tab === "register" && (
+              <input value={props.name} onChange={(e) => props.setName(e.target.value)} placeholder="Name" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+            )}
+            <input type="email" required value={props.email} onChange={(e) => props.setEmail(e.target.value)} placeholder="Email" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+            <input type="password" required minLength={6} value={props.password} onChange={(e) => props.setPassword(e.target.value)} placeholder="Password (min 6)" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+            {props.tab === "login" && (
+              <button type="button" className="text-xs font-semibold" style={{ color: "var(--accent)" }} onClick={() => setView("forgot")}>
+                Forgot password?
+              </button>
+            )}
+            {(props.err || props.notice) && (
+              <p className="text-xs" style={{ color: "var(--err)" }}>{props.err || props.notice}</p>
+            )}
+            <Btn type="submit" className="w-full" size="lg" disabled={props.busy}>
+              {props.busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {props.busy ? "Just a sec…" : props.tab === "login" ? "Log in" : "Sign up free"}
+            </Btn>
+          </form>
+          <p className="mt-3 text-center text-[11px]" style={{ color: "var(--soft)" }}>
+            Guest = Try BUILDWE · Account = Own your workspace
+          </p>
+        </div>
+      )}
     </Sheet>
   );
 }

@@ -118,7 +118,13 @@ export async function streamAI(
 
   if (!r.ok) {
     const j = await readJson(r);
-    throw new Error(j.error || `Something went wrong (${r.status})`);
+    const err = new Error(j.error || `Something went wrong (${r.status})`) as Error & {
+      code?: string;
+      hint?: string;
+    };
+    if (j.code) err.code = j.code;
+    if (j.hint) err.hint = j.hint;
+    throw err;
   }
 
   if (!r.body) throw new Error("No response stream");
@@ -186,12 +192,146 @@ export async function generateAudio(text: string, voice: string, speed: number) 
   if (!r.ok) throw new Error(j.error || "Couldn’t generate voice. Try again.");
   return j as {
     id: string;
-    type: "browser-tts";
+    type: "mp3" | "browser-tts";
+    audioUrl?: string;
     text: string;
     voice: string;
     speed: number;
     model: string;
+    live: boolean;
   };
+}
+
+/* ── Verification (Update #1) ───────────────────────────── */
+
+export async function verifyApi(text: string) {
+  const r = await fetch("/api/ai/verify", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Verification failed");
+  return j as {
+    ok: boolean;
+    verdict: "verified" | "needs-verification" | "nothing-to-check";
+    message: string;
+    claims: {
+      claim: string;
+      kind: string;
+      verdict: "verified" | "uncertain";
+      source?: { title: string; url: string; host: string };
+    }[];
+  };
+}
+
+/* ── Multi-model comparison (Update #2 · P1 mix) ────────── */
+
+export async function codeActionApi(
+  code: string,
+  lang: string,
+  action: "fix" | "optimize" | "refactor" | "test"
+) {
+  const r = await fetch("/api/ai/code-action", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code, lang, action }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) {
+    const err = new Error(j.error || "Action failed") as Error & {
+      code?: string;
+      hint?: string;
+    };
+    if (j.code) err.code = j.code;
+    if (j.hint) err.hint = j.hint;
+    throw err;
+  }
+  return j as {
+    ok: boolean;
+    available?: boolean;
+    message?: string;
+    action?: string;
+    title?: string;
+    code?: string;
+    notes?: string;
+    raw?: string;
+  };
+}
+
+
+export async function compareApi(prompt: string) {
+  const r = await fetch("/api/ai/compare", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Comparison failed");
+  return j as {
+    ok: boolean;
+    available: boolean;
+    complexity: string;
+    lanes: { label: string; model: string; live: boolean; reply: string }[];
+    synthesis: string;
+  };
+}
+
+/* ── BYOK (bring your own key) ──────────────────────────── */
+
+export async function fetchByok() {
+  const r = await fetch("/api/user/keys", { credentials: "include" });
+  const j = await readJson(r);
+  return j as {
+    requireAuth?: boolean;
+    keys: { groq: string | null; openrouter: string | null };
+    active: boolean;
+  };
+}
+
+export async function saveByok(keys: { groq?: string; openrouter?: string }) {
+  const r = await fetch("/api/user/keys", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(keys),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t save keys");
+  return j as { keys: { groq: string | null; openrouter: string | null }; active: boolean };
+}
+
+/* ── Developer API keys ─────────────────────────────────── */
+
+export async function fetchDevKeys() {
+  const r = await fetch("/api/dev/keys", { credentials: "include" });
+  const j = await readJson(r);
+  return j as {
+    requireAuth?: boolean;
+    keys: { id: string; name: string; prefix: string; createdAt: string; lastUsedAt?: string }[];
+  };
+}
+
+export async function createDevKey(name: string) {
+  const r = await fetch("/api/dev/keys", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t create key");
+  return j as { key: { id: string; name: string; prefix: string }; secret: string };
+}
+
+export async function revokeDevKey(id: string) {
+  await fetch(`/api/dev/keys?id=${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
 }
 
 export async function detectAuto(prompt: string) {
@@ -202,6 +342,181 @@ export async function detectAuto(prompt: string) {
   });
   const j = await readJson(r);
   return j as { mode: string };
+}
+
+/* ── Web search ─────────────────────────────────────────── */
+
+export async function webSearchApi(query: string) {
+  const r = await fetch("/api/ai/search", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Search failed");
+  return j as {
+    ok: boolean;
+    results: { title: string; url: string; snippet: string; host: string }[];
+  };
+}
+
+/* ── Vision ─────────────────────────────────────────────── */
+
+export async function visionApi(imageDataUrl: string, prompt: string) {
+  const r = await fetch("/api/ai/vision", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image: imageDataUrl, prompt }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn't analyze that image");
+  return j as { ok: boolean; text: string; model: string; live: boolean };
+}
+
+/* ── File analysis ──────────────────────────────────────── */
+
+export async function analyzeFileApi(name: string, text: string) {
+  const r = await fetch("/api/ai/file", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, text }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn't analyze that file");
+  return j as { ok: boolean; name: string; summary: string };
+}
+
+/* ── Share links ────────────────────────────────────────── */
+
+export async function createShare(conversationId: string) {
+  const r = await fetch("/api/share", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ conversationId }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn't create share link");
+  return j as { ok: boolean; id: string; url: string };
+}
+
+/* ── Projects ───────────────────────────────────────────── */
+
+export async function fetchProjects() {
+  const r = await fetch("/api/projects", { credentials: "include" });
+  const j = await readJson(r);
+  return j as { projects: { id: string; name: string; createdAt: string }[] };
+}
+
+export async function createProject(name: string) {
+  const r = await fetch("/api/projects", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "create", name }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn't create project");
+  return j as { project: { id: string; name: string } };
+}
+
+export async function assignProject(conversationId: string, projectId: string | null) {
+  const r = await fetch("/api/projects", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "assign", conversationId, projectId }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn't move chat");
+  return j;
+}
+
+export async function deleteProjectApi(id: string) {
+  await fetch(`/api/projects?id=${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+}
+
+/* ── Teams (workspaces) ─────────────────────────────────── */
+
+export type TeamView = {
+  id: string;
+  name: string;
+  ownerId: string;
+  memberCount: number;
+  myRole: "owner" | "member";
+  createdAt: string;
+};
+
+export async function fetchTeams() {
+  const r = await fetch("/api/teams", { credentials: "include" });
+  const j = await readJson(r);
+  return j as { teams: TeamView[] };
+}
+
+export async function createTeam(name: string) {
+  const r = await fetch("/api/teams", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "create", name }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t create team");
+  return j as { team: TeamView };
+}
+
+export async function teamInvite(teamId: string) {
+  const r = await fetch("/api/teams", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "invite", teamId }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t get invite code");
+  return j as { code: string };
+}
+
+export async function joinTeam(code: string) {
+  const r = await fetch("/api/teams", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "join", code }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t join team");
+  return j as { team: TeamView };
+}
+
+export async function leaveTeamApi(teamId: string) {
+  const r = await fetch("/api/teams", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "leave", teamId }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t leave team");
+  return j as { ok: boolean; dissolved: boolean };
+}
+
+export async function assignTeam(conversationId: string, teamId: string | null) {
+  const r = await fetch("/api/teams", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "assign", conversationId, teamId }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t move chat");
+  return j;
 }
 
 export async function sendFeedback(kind: "up" | "down", note?: string) {

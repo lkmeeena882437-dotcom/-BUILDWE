@@ -2,9 +2,9 @@
  * BUILDWE AI runtime — live LLM first, smart offline only if providers fail.
  */
 
-import { AI_KEYS, AI_MODELS, APP, hasProviderKey } from "@/lib/config";
+import { AI_KEYS, AI_MODELS, APP } from "@/lib/config";
 import { SYSTEM_PROMPTS, publicModelLabel, type Plan } from "@/lib/ai/rules";
-import { pickModel } from "@/lib/ai/models-catalog";
+import { pickModel, estimateComplexity } from "@/lib/ai/models-catalog";
 import {
   buildMind,
   packMessagesForModel,
@@ -32,21 +32,29 @@ const GROQ_CODE_MODELS = [
   "gemma2-9b-it",
 ];
 
-async function groqStream(messages: ChatMessage[], model: string) {
-  if (!hasProviderKey("groq")) return null;
+export type ProviderKeys = { groq?: string; openrouter?: string };
+
+async function groqStream(
+  messages: ChatMessage[],
+  model: string,
+  userKeys?: ProviderKeys,
+  budget?: { maxTokens: number; temperature: number }
+) {
+  const key = userKeys?.groq || AI_KEYS.groq;
+  if (!key) return null;
   try {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${AI_KEYS.groq}`,
+        Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         model,
         messages,
-        temperature: 0.7,
+        temperature: budget?.temperature ?? 0.7,
         stream: true,
-        max_tokens: 4096,
+        max_tokens: budget?.maxTokens ?? 4096,
       }),
     });
     if (!res.ok || !res.body) {
@@ -62,22 +70,25 @@ async function groqStream(messages: ChatMessage[], model: string) {
 
 async function groqComplete(
   messages: ChatMessage[],
-  model: string
+  model: string,
+  userKeys?: ProviderKeys,
+  budget?: { maxTokens: number; temperature: number }
 ): Promise<string | null> {
-  if (!hasProviderKey("groq")) return null;
+  const key = userKeys?.groq || AI_KEYS.groq;
+  if (!key) return null;
   try {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${AI_KEYS.groq}`,
+        Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         model,
         messages,
-        temperature: 0.7,
+        temperature: budget?.temperature ?? 0.7,
         stream: false,
-        max_tokens: 4096,
+        max_tokens: budget?.maxTokens ?? 4096,
       }),
     });
     if (!res.ok) return null;
@@ -89,13 +100,19 @@ async function groqComplete(
   }
 }
 
-async function openRouterStream(messages: ChatMessage[], model: string) {
-  if (!hasProviderKey("openrouter")) return null;
+async function openRouterStream(
+  messages: ChatMessage[],
+  model: string,
+  userKeys?: ProviderKeys,
+  budget?: { maxTokens: number; temperature: number }
+) {
+  const key = userKeys?.openrouter || AI_KEYS.openrouter;
+  if (!key) return null;
   try {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${AI_KEYS.openrouter}`,
+        Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
         "HTTP-Referer": APP.url || "https://buildwe.vercel.app",
         "X-Title": APP.name || "BUILDWE",
@@ -105,8 +122,9 @@ async function openRouterStream(messages: ChatMessage[], model: string) {
           ? model
           : "meta-llama/llama-3.3-70b-instruct",
         messages,
-        temperature: 0.7,
+        temperature: budget?.temperature ?? 0.7,
         stream: true,
+        max_tokens: budget?.maxTokens ?? 4096,
       }),
     });
     if (!res.ok || !res.body) return null;
@@ -236,26 +254,67 @@ export async function streamChatOrCode(opts: {
   prefer?: string[];
   avoid?: string[];
   promptForRouting: string;
+  /** When set AND no provider is reachable, stream this text instead of the generic offline reply */
+  offlineOverrideText?: string;
+  /** user-supplied keys (BYOK) take precedence over platform keys */
+  userKeys?: ProviderKeys;
+  /** force ONE model id (multi-model comparison) — falls back to offline if it fails */
+  forceModel?: string;
+  /** skip the first N preferred models (manual "use another model") */
+  preferOffset?: number;
 }): Promise<{
   stream: ReadableStream<Uint8Array>;
   model: string;
   live: boolean;
   mind: MindProfile;
+  fallbackNote?: string;
 }> {
-  const turns: ChatTurn[] = opts.messages
+  const turnsAll: ChatTurn[] = opts.messages
     .filter((m) => m.role === "user" || m.role === "assistant")
     .map((m) => ({
       role: m.role as "user" | "assistant",
       content: String(m.content || ""),
     }));
 
+  // Long-conversation optimization (Update #2 P1): compress older turns into
+  // a summary instead of sending the entire history every request
+  const RECENT_TURNS = 14;
+  let turns = turnsAll;
+  let compressed = "";
+  if (turnsAll.length > RECENT_TURNS + 4) {
+    const older = turnsAll.slice(0, turnsAll.length - RECENT_TURNS);
+    turns = turnsAll.slice(-RECENT_TURNS);
+    const asks = older
+      .filter((t) => t.role === "user")
+      .map((t) => t.content.replace(/\s+/g, " ").slice(0, 90))
+      .slice(-6);
+    compressed = `EARLIER CONVERSATION (compressed for focus — ${older.length} older messages, first ask: "${asks[0] || "—"}"): ${asks.join(" → ")}. Use this as background; the user's latest messages below are authoritative.`;
+  }
+
+  // system messages (search grounding, style controls) are appended to the
+  // base system prompt — previously they were dropped in live mode
+  const extraSystem = [
+    compressed,
+    opts.messages
+      .filter((m) => m.role === "system")
+      .map((m) => String(m.content || ""))
+      .filter(Boolean)
+      .join("\n\n"),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
   const mind = buildMind(turns, opts.skills || [], {
     prefer: opts.prefer,
     avoid: opts.avoid,
   });
 
-  const baseSystem =
-    opts.mode === "code" ? SYSTEM_PROMPTS.code : SYSTEM_PROMPTS.chat;
+  const baseSystem = [
+    opts.mode === "code" ? SYSTEM_PROMPTS.code : SYSTEM_PROMPTS.chat,
+    extraSystem,
+  ]
+    .filter(Boolean)
+    .join("\n\n---\n\n");
 
   const packed = packMessagesForModel({
     baseSystem,
@@ -273,6 +332,13 @@ export async function streamChatOrCode(opts: {
     [...turns].reverse().find((m) => m.role === "user")?.content ||
     opts.promptForRouting ||
     "";
+
+  // ── Cost budgets (Update #2 P0): complexity decides compute ──
+  const complexity = estimateComplexity(opts.promptForRouting || lastUser);
+  const maxTokens =
+    complexity === "simple" ? 1024 : complexity === "complex" ? 4096 : 2048;
+  const temperature = opts.mode === "code" ? 0.45 : 0.7;
+  const budget = { maxTokens, temperature };
 
   const envModel =
     opts.plan === "pro"
@@ -294,40 +360,60 @@ export async function streamChatOrCode(opts: {
       ? [envModel, catalog.id, ...GROQ_CODE_MODELS]
       : [envModel, catalog.id, ...GROQ_CHAT_MODELS];
 
-  const tryModels = Array.from(new Set(preferred.filter(Boolean)));
+  let tryModels = Array.from(new Set(preferred.filter(Boolean)));
+  if (opts.forceModel) tryModels = [opts.forceModel];
+  if (opts.preferOffset && !opts.forceModel && tryModels.length > 1) {
+    tryModels = tryModels.slice(Math.min(opts.preferOffset, tryModels.length - 1));
+  }
+
+  let fallbackNote: string | undefined;
+  let triedPrimary = false;
 
   for (const model of tryModels) {
-    const body = await groqStream(messages, model);
+    const body = await groqStream(messages, model, opts.userKeys, budget);
     if (body) {
       return {
         stream: openAIStreamToTextSSE(body),
         model: publicModelLabel(model, opts.mode),
         live: true,
         mind,
+        ...(fallbackNote ? { fallbackNote } : {}),
       };
     }
+    triedPrimary = true;
+  }
+
+  if (triedPrimary) {
+    fallbackNote =
+      "The primary model was unavailable — BUILDWE switched to a backup automatically.";
   }
 
   for (const model of tryModels.slice(0, 3)) {
-    const body = await openRouterStream(messages, model);
+    const body = await openRouterStream(messages, model, opts.userKeys, budget);
     if (body) {
       return {
         stream: openAIStreamToTextSSE(body),
         model: publicModelLabel(model, opts.mode),
         live: true,
         mind,
+        fallbackNote:
+          fallbackNote ||
+          "Answered via the backup provider — the usual one was busy.",
       };
     }
   }
 
   for (const model of tryModels.slice(0, 4)) {
-    const text = await groqComplete(messages, model);
+    const text = await groqComplete(messages, model, opts.userKeys, budget);
     if (text) {
       return {
         stream: textToSSE(text),
         model: publicModelLabel(model, opts.mode),
         live: true,
         mind,
+        fallbackNote:
+          fallbackNote ||
+          "Streaming was unavailable — the complete answer was prepared in one piece.",
       };
     }
   }
@@ -338,10 +424,89 @@ export async function streamChatOrCode(opts: {
       : smartOfflineChat(lastUser, turns);
 
   return {
-    stream: textToSSE(offline),
+    stream: textToSSE(opts.offlineOverrideText || offline),
     model: publicModelLabel(undefined, opts.mode),
     live: false,
     mind,
+    fallbackNote: opts.offlineOverrideText
+      ? undefined
+      : "No live model is reachable right now — this is BUILDWE's offline mode (add a free key in Settings → API keys for full quality).",
+  };
+}
+
+/* ── Vision (image understanding) ─────────────────────────── */
+
+const VISION_MODELS = [
+  "meta-llama/llama-4-scout-17b-16e-instruct",
+  "llama-3.2-11b-vision-preview",
+];
+
+export async function visionComplete(opts: {
+  prompt: string;
+  imageDataUrl: string;
+  userKeys?: ProviderKeys;
+}): Promise<{ text: string; model: string; live: boolean }> {
+  const question =
+    opts.prompt.trim() || "Describe this image in detail. What's in it?";
+  const groqKey = opts.userKeys?.groq || AI_KEYS.groq;
+
+  for (const model of VISION_MODELS) {
+    if (!groqKey) break;
+    try {
+      const res = await fetch(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${groqKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            max_tokens: 900,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: question },
+                  {
+                    type: "image_url",
+                    image_url: { url: opts.imageDataUrl },
+                  },
+                ],
+              },
+            ],
+          }),
+        }
+      );
+      if (!res.ok) continue;
+      const data = await res.json();
+      const text: string | undefined =
+        data?.choices?.[0]?.message?.content || undefined;
+      if (text) return { text, model: "BUILDWE Vision AI", live: true };
+    } catch (e) {
+      console.error("[bw] vision fail", model, e);
+    }
+  }
+
+  // Offline fallback — honest, still useful
+  const approxBytes = Math.round((opts.imageDataUrl.length * 3) / 4);
+  return {
+    text: [
+      `**Image received** (~${(approxBytes / 1024).toFixed(0)} KB).`,
+      "",
+      question
+        ? `You asked: _${question.slice(0, 200)}_`
+        : "",
+      "",
+      "Full AI vision needs a `GROQ_API_KEY` (free at console.groq.com) set in `.env.local` — drop it in and image understanding goes live instantly.",
+      "",
+      "Till then: images are attached to this chat and will be sent with your question the moment a key is added.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    model: "BUILDWE Vision (preview)",
+    live: false,
   };
 }
 
@@ -422,6 +587,28 @@ export async function generateAudioPlan(opts: {
     speak = quotes.join(". ");
   }
 
+  // ── Real MP3 via Pollinations openai-audio (key-free) ────
+  const mp3 = await synthesizeSpeech({
+    text: speak,
+    voice: opts.voice,
+    speed: opts.speed,
+  });
+  if (mp3) {
+    return {
+      type: "mp3" as const,
+      audioUrl: mp3.dataUrl,
+      audioMs: mp3.estMs,
+      text: speak,
+      displayText: opts.text.slice(0, 4000),
+      voice: opts.voice,
+      speed: opts.speed,
+      model: "BUILDWE Voice Studio",
+      provider: "pollinations",
+      live: true,
+      charCount: speak.length,
+    };
+  }
+
   return {
     type: "browser-tts" as const,
     text: speak,
@@ -433,4 +620,120 @@ export async function generateAudioPlan(opts: {
     live: true,
     charCount: speak.length,
   };
+}
+
+/* ── Real speech synthesis (MP3) ──────────────────────────── */
+
+/** BUILDWE voice ids → openai-audio timbres */
+const TTS_VOICE_MAP: Record<string, string> = {
+  nova: "nova",
+  atlas: "onyx",
+  luna: "shimmer",
+  ember: "echo",
+  river: "fable",
+  aanya: "shimmer",
+  arjun: "onyx",
+  kiara: "nova",
+  vihaan: "echo",
+  meera: "alloy",
+  kabir: "fable",
+  saanvi: "shimmer",
+  ananya: "nova",
+  dev: "onyx",
+  isha: "alloy",
+  sofia: "shimmer",
+  luca: "echo",
+  amira: "nova",
+  yuki: "alloy",
+  chen: "onyx",
+};
+
+const DATA_AUDIO_RE = /data:audio\/[a-z0-9]+;base64,([A-Za-z0-9+/=]+)/;
+
+/**
+ * Key-free TTS via Pollinations `openai-audio`.
+ * GET when the script is short; POST /openai for longer scripts.
+ * Returns a data URL the browser can play/download directly.
+ */
+export async function synthesizeSpeech(opts: {
+  text: string;
+  voice: string;
+  speed: number;
+}): Promise<{ dataUrl: string; estMs: number } | null> {
+  const script = opts.text.trim().slice(0, 3500);
+  if (!script) return null;
+  const voice = TTS_VOICE_MAP[opts.voice] || "alloy";
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 45_000);
+
+  try {
+    // 1) POST /openai — handles long scripts cleanly
+    try {
+      const res = await fetch("https://text.pollinations.ai/openai", {
+        method: "POST",
+        signal: ctrl.signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "openai-audio",
+          voice,
+          speed: opts.speed,
+          messages: [
+            {
+              role: "user",
+              content: `Read this script aloud exactly, nothing else:\n\n${script}`,
+            },
+          ],
+        }),
+      });
+      if (res.ok) {
+        const raw = await res.text();
+        const m = raw.match(DATA_AUDIO_RE);
+        if (m) {
+          const b64 = m[1];
+          return {
+            dataUrl: `data:audio/mpeg;base64,${b64}`,
+            estMs: Math.round((b64.length * 3) / 4 / 24), // ~24KB/s mp3
+          };
+        }
+      }
+    } catch {
+      /* fall through to GET */
+    }
+
+    // 2) GET path — short scripts
+    if (encodeURIComponent(script).length < 1400) {
+      const res = await fetch(
+        `https://text.pollinations.ai/${encodeURIComponent(
+          `Read this script aloud exactly, nothing else:\n\n${script}`
+        )}?model=openai-audio&voice=${voice}`,
+        { signal: ctrl.signal }
+      );
+      if (res.ok) {
+        const ct = res.headers.get("content-type") || "";
+        if (ct.includes("audio")) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          if (buf.length > 1000) {
+            return {
+              dataUrl: `data:audio/mpeg;base64,${buf.toString("base64")}`,
+              estMs: Math.round(buf.length / 24),
+            };
+          }
+        }
+        // JSON body with embedded data URL
+        const m = (await res.text()).match(DATA_AUDIO_RE);
+        if (m) {
+          return {
+            dataUrl: `data:audio/mpeg;base64,${m[1]}`,
+            estMs: Math.round((m[1].length * 3) / 4 / 24),
+          };
+        }
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }

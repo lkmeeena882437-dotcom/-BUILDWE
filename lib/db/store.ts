@@ -7,7 +7,8 @@
  */
 import fs from "fs";
 import path from "path";
-import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { pullRemoteDb, pushRemoteDb, remoteDbEnabled } from "./remote";
 
 export type Plan = "free" | "pro";
 
@@ -18,8 +19,33 @@ export type User = {
   passwordHash: string;
   plan: Plan;
   skills: string[];
+  /** encrypted user-provided provider keys (BYOK) */
+  byok?: { groq?: string; openrouter?: string };
+  /** OAuth linkage (additive — email/password users have neither) */
+  provider?: "email" | "google" | "github";
+  oauthId?: string;
+  emailVerified?: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+export type PasswordReset = {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  expiresAt: string;
+  usedAt?: string | null;
+  createdAt: string;
+};
+
+export type ApiKey = {
+  id: string;
+  userId: string;
+  name: string;
+  keyHash: string;
+  prefix: string;
+  createdAt: string;
+  lastUsedAt?: string;
 };
 
 export type Message = {
@@ -36,8 +62,57 @@ export type Conversation = {
   mode: "auto" | "chat" | "code" | "image" | "audio";
   title: string;
   messages: Message[];
+  projectId?: string | null;
+  teamId?: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type Project = {
+  id: string;
+  userId: string;
+  name: string;
+  createdAt: string;
+};
+
+export type TeamMember = {
+  userId: string;
+  email?: string;
+  name?: string;
+  role: "owner" | "member";
+  joinedAt: string;
+};
+
+export type Team = {
+  id: string;
+  name: string;
+  ownerId: string;
+  members: TeamMember[];
+  invites: { code: string; createdAt: string }[];
+  createdAt: string;
+};
+
+export type Share = {
+  id: string;
+  conversationId: string;
+  userId: string;
+  title: string;
+  mode: Conversation["mode"];
+  messages: Message[];
+  views: number;
+  createdAt: string;
+};
+
+export type Payment = {
+  id: string;
+  userId: string;
+  orderId: string;
+  paymentId?: string;
+  amount: number;
+  currency: string;
+  status: "created" | "paid" | "failed";
+  demo: boolean;
+  createdAt: string;
 };
 
 export type Generation = {
@@ -60,11 +135,17 @@ export type UsageRow = {
   audio: number;
 };
 
-type DB = {
+export type DB = {
   users: User[];
   conversations: Conversation[];
   generations: Generation[];
   usage: UsageRow[];
+  projects: Project[];
+  shares: Share[];
+  payments: Payment[];
+  apiKeys: ApiKey[];
+  teams: Team[];
+  passwordResets: PasswordReset[];
 };
 
 const emptyDb = (): DB => ({
@@ -72,6 +153,12 @@ const emptyDb = (): DB => ({
   conversations: [],
   generations: [],
   usage: [],
+  projects: [],
+  shares: [],
+  payments: [],
+  apiKeys: [],
+  teams: [],
+  passwordResets: [],
 });
 
 /** Process-local fallback when disk is unavailable */
@@ -126,6 +213,7 @@ function getPath(): string | null {
 
 function read(): DB {
   const file = getPath();
+  bootRemote();
   if (!file) return memoryDb;
   try {
     const raw = fs.readFileSync(file, "utf8");
@@ -135,6 +223,12 @@ function read(): DB {
       conversations: parsed.conversations || [],
       generations: parsed.generations || [],
       usage: parsed.usage || [],
+      projects: parsed.projects || [],
+      shares: parsed.shares || [],
+      payments: parsed.payments || [],
+      apiKeys: parsed.apiKeys || [],
+      teams: parsed.teams || [],
+      passwordResets: parsed.passwordResets || [],
     };
     return memoryDb;
   } catch {
@@ -145,12 +239,68 @@ function read(): DB {
 function write(db: DB) {
   memoryDb = db;
   const file = getPath();
-  if (!file || !writable) return;
-  try {
-    fs.writeFileSync(file, JSON.stringify(db, null, 2), "utf8");
-  } catch {
-    writable = false;
+  if (file && writable) {
+    try {
+      // atomic: never leave a half-written store behind
+      const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(db, null, 2), "utf8");
+      fs.renameSync(tmp, file);
+    } catch {
+      writable = false;
+    }
   }
+  scheduleRemotePush(db);
+}
+
+/* ── Optional Supabase mirror (permanent DB) ─────────────── */
+
+let pushTimer: ReturnType<typeof setTimeout> | null = null;
+let latestDb: DB | null = null;
+let bootedRemote = false;
+
+function scheduleRemotePush(db: DB) {
+  if (!remoteDbEnabled()) return;
+  latestDb = db;
+  if (pushTimer) return; // debounced — one push per quiet window
+  pushTimer = setTimeout(async () => {
+    pushTimer = null;
+    const snapshot = latestDb;
+    latestDb = null;
+    if (snapshot) await pushRemoteDb(snapshot);
+  }, 1500);
+}
+
+/** One-time boot: adopt the remote snapshot when local storage is fresh. */
+function bootRemote() {
+  if (bootedRemote || !remoteDbEnabled()) return;
+  bootedRemote = true;
+  void (async () => {
+    const localHadData =
+      memoryDb.users.length > 0 || memoryDb.conversations.length > 0;
+    if (localHadData) return; // local wins on warm starts
+    const remote = await pullRemoteDb();
+    if (!remote) return;
+    memoryDb = {
+      users: remote.users || [],
+      conversations: remote.conversations || [],
+      generations: remote.generations || [],
+      usage: remote.usage || [],
+      projects: remote.projects || [],
+      shares: remote.shares || [],
+      payments: remote.payments || [],
+      apiKeys: remote.apiKeys || [],
+      teams: remote.teams || [],
+      passwordResets: remote.passwordResets || [],
+    };
+    const file = getPath();
+    if (file && writable) {
+      try {
+        fs.writeFileSync(file, JSON.stringify(memoryDb, null, 2), "utf8");
+      } catch {
+        /* */
+      }
+    }
+  })();
 }
 
 export function storageMode(): "disk" | "memory" {
@@ -223,7 +373,12 @@ export function createUser(input: {
 
 export function updateUser(
   id: string,
-  patch: Partial<Pick<User, "name" | "plan" | "skills">>
+  patch: Partial<
+    Pick<
+      User,
+      "name" | "plan" | "skills" | "byok" | "emailVerified" | "provider" | "oauthId"
+    >
+  >
 ) {
   const db = read();
   const i = db.users.findIndex((u) => u.id === id);
@@ -235,6 +390,116 @@ export function updateUser(
   };
   write(db);
   return db.users[i];
+}
+
+/* ── OAuth users ─────────────────────────────────────────── */
+
+export function findOrCreateOauthUser(input: {
+  provider: "google" | "github";
+  oauthId: string;
+  email?: string;
+  name?: string;
+}) {
+  const db = read();
+  const email = (input.email || "").trim().toLowerCase();
+  let u = db.users.find(
+    (x) => x.provider === input.provider && x.oauthId === input.oauthId
+  );
+  if (u) return u;
+
+  // link by verified email (no password conflict: keep existing hash)
+  if (email) {
+    u = db.users.find((x) => x.email === email);
+    if (u) {
+      u.provider = input.provider;
+      u.oauthId = input.oauthId;
+      u.emailVerified = true;
+      u.updatedAt = new Date().toISOString();
+      write(db);
+      return u;
+    }
+  }
+
+  const now = new Date().toISOString();
+  const user: User = {
+    id: uid("usr"),
+    email: email || `${input.provider}_${input.oauthId}@users.buildwe.online`,
+    name: (input.name || "").trim() || input.provider[0].toUpperCase() + " user",
+    passwordHash: hashPassword(randomBytes(24).toString("hex")), // unusable random
+    plan: "free",
+    skills: [],
+    provider: input.provider,
+    oauthId: input.oauthId,
+    emailVerified: Boolean(email),
+    createdAt: now,
+    updatedAt: now,
+  };
+  db.users.push(user);
+  write(db);
+  return user;
+}
+
+/* ── Password reset ──────────────────────────────────────── */
+
+export function createPasswordReset(userId: string) {
+  const db = read();
+  const token = randomBytes(24).toString("hex");
+  const row: PasswordReset = {
+    id: uid("rst"),
+    userId,
+    tokenHash: createHash("sha256").update(token).digest("hex"),
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(), // 1 hour
+    usedAt: null,
+    createdAt: new Date().toISOString(),
+  };
+  db.passwordResets.unshift(row);
+  db.passwordResets = db.passwordResets.slice(0, 100);
+  write(db);
+  return token;
+}
+
+export function consumePasswordReset(token: string, newPassword: string) {
+  const db = read();
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  const row = db.passwordResets.find((r) => r.tokenHash === tokenHash);
+  if (!row || row.usedAt || new Date(row.expiresAt).getTime() < Date.now()) {
+    return null;
+  }
+  const u = db.users.find((x) => x.id === row.userId);
+  if (!u) return null;
+  u.passwordHash = hashPassword(newPassword);
+  u.updatedAt = new Date().toISOString();
+  row.usedAt = new Date().toISOString();
+  write(db);
+  return u;
+}
+
+/* ── Account deletion (full cascade) ─────────────────────── */
+
+export function deleteUserCascade(userId: string) {
+  const db = read();
+  const ownedTeamIds = db.teams
+    .filter((t) => t.ownerId === userId)
+    .map((t) => t.id);
+  db.teams = db.teams.filter((t) => t.ownerId !== userId);
+  // detach chats from dissolved teams; remove membership from others
+  for (const c of db.conversations) {
+    if (c.teamId && ownedTeamIds.includes(c.teamId)) c.teamId = null;
+  }
+  for (const t of db.teams) {
+    t.members = t.members.filter((m) => m.userId !== userId);
+  }
+  db.users = db.users.filter((u) => u.id !== userId);
+  db.conversations = db.conversations.filter((c) => c.userId !== userId);
+  db.generations = db.generations.filter((g) => g.userId !== userId);
+  db.usage = db.usage.filter((u) => u.userId !== userId);
+  db.projects = db.projects.filter((p) => p.userId !== userId);
+  db.shares = db.shares.filter((s) => s.userId !== userId);
+  db.payments = db.payments.filter((p) => p.userId !== userId);
+  db.apiKeys = db.apiKeys.filter((k) => k.userId !== userId);
+  db.passwordResets = db.passwordResets.filter((r) => r.userId !== userId);
+  write(db);
+  return true;
 }
 
 /* ── Conversations ───────────────────────────────────────── */
@@ -256,6 +521,8 @@ export function createConversation(input: {
   mode: Conversation["mode"];
   title: string;
   messages?: Message[];
+  projectId?: string | null;
+  teamId?: string | null;
 }) {
   const db = read();
   const now = new Date().toISOString();
@@ -265,6 +532,8 @@ export function createConversation(input: {
     mode: input.mode,
     title: input.title.slice(0, 80) || "New chat",
     messages: input.messages || [],
+    projectId: input.projectId || null,
+    teamId: input.teamId || null,
     createdAt: now,
     updatedAt: now,
   };
@@ -287,6 +556,15 @@ export function appendMessages(
   let i = db.conversations.findIndex(
     (c) => c.id === conversationId && c.userId === userId
   );
+  if (i < 0) {
+    // team conversation — any member may append into it
+    i = db.conversations.findIndex(
+      (c) =>
+        c.id === conversationId &&
+        c.teamId &&
+        isTeamMember(c.teamId, userId)
+    );
+  }
   // If missing (new instance / lost memory), recreate shell
   if (i < 0) {
     const now = new Date().toISOString();
@@ -314,8 +592,341 @@ export function deleteConversation(id: string, userId: string) {
   db.conversations = db.conversations.filter(
     (c) => !(c.id === id && c.userId === userId)
   );
+  db.shares = db.shares.filter((s) => s.conversationId !== id);
   write(db);
   return db.conversations.length < before;
+}
+
+/* ── Projects ────────────────────────────────────────────── */
+
+export function listProjects(userId: string) {
+  return read()
+    .projects.filter((p) => p.userId === userId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export function createProject(userId: string, name: string) {
+  const db = read();
+  const p: Project = {
+    id: uid("proj"),
+    userId,
+    name: name.trim().slice(0, 40) || "New project",
+    createdAt: new Date().toISOString(),
+  };
+  db.projects.push(p);
+  write(db);
+  return p;
+}
+
+export function renameProject(id: string, userId: string, name: string) {
+  const db = read();
+  const p = db.projects.find((x) => x.id === id && x.userId === userId);
+  if (!p) return null;
+  p.name = name.trim().slice(0, 40) || p.name;
+  write(db);
+  return p;
+}
+
+export function deleteProject(id: string, userId: string) {
+  const db = read();
+  db.projects = db.projects.filter((p) => !(p.id === id && p.userId === userId));
+  // detach conversations from the deleted project
+  for (const c of db.conversations) {
+    if (c.projectId === id) c.projectId = null;
+  }
+  write(db);
+  return true;
+}
+
+export function setConversationProject(
+  conversationId: string,
+  userId: string,
+  projectId: string | null
+) {
+  const db = read();
+  const c = db.conversations.find(
+    (x) => x.id === conversationId && x.userId === userId
+  );
+  if (!c) return null;
+  if (projectId && !db.projects.some((p) => p.id === projectId && p.userId === userId)) {
+    return null;
+  }
+  c.projectId = projectId;
+  c.updatedAt = new Date().toISOString();
+  write(db);
+  return c;
+}
+
+/* ── Shares (public read-only links) ─────────────────────── */
+
+export function createShare(conversationId: string, userId: string) {
+  const db = read();
+  const c = db.conversations.find(
+    (x) => x.id === conversationId && x.userId === userId
+  );
+  if (!c) return null;
+  // reuse an existing share for the same conversation
+  const existing = db.shares.find((s) => s.conversationId === conversationId);
+  if (existing) {
+    existing.messages = c.messages;
+    existing.title = c.title;
+    existing.mode = c.mode;
+    write(db);
+    return existing;
+  }
+  const s: Share = {
+    id: randomBytes(8).toString("base64url"),
+    conversationId,
+    userId,
+    title: c.title,
+    mode: c.mode,
+    messages: c.messages,
+    views: 0,
+    createdAt: new Date().toISOString(),
+  };
+  db.shares.unshift(s);
+  db.shares = db.shares.slice(0, 200);
+  write(db);
+  return s;
+}
+
+export function getShare(id: string) {
+  return read().shares.find((s) => s.id === id) || null;
+}
+
+export function bumpShareViews(id: string) {
+  const db = read();
+  const s = db.shares.find((x) => x.id === id);
+  if (!s) return;
+  s.views += 1;
+  write(db);
+}
+
+export function deleteSharesForConversation(conversationId: string) {
+  const db = read();
+  db.shares = db.shares.filter((s) => s.conversationId !== conversationId);
+  write(db);
+}
+
+/* ── Payments ────────────────────────────────────────────── */
+
+export function addPayment(input: Omit<Payment, "id" | "createdAt">) {
+  const db = read();
+  const row: Payment = {
+    ...input,
+    id: uid("pay"),
+    createdAt: new Date().toISOString(),
+  };
+  db.payments.unshift(row);
+  db.payments = db.payments.slice(0, 300);
+  write(db);
+  return row;
+}
+
+export function findPaymentByOrder(orderId: string) {
+  return read().payments.find((p) => p.orderId === orderId) || null;
+}
+
+export function updatePayment(
+  id: string,
+  patch: Partial<Pick<Payment, "status" | "paymentId">>
+) {
+  const db = read();
+  const i = db.payments.findIndex((p) => p.id === id);
+  if (i < 0) return null;
+  db.payments[i] = { ...db.payments[i], ...patch };
+  write(db);
+  return db.payments[i];
+}
+
+/* ── API keys (developer platform) ───────────────────────── */
+
+export function listApiKeys(userId: string) {
+  return read()
+    .apiKeys.filter((k) => k.userId === userId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export function addApiKey(input: Omit<ApiKey, "id" | "createdAt">) {
+  const db = read();
+  const row: ApiKey = {
+    ...input,
+    id: uid("key"),
+    createdAt: new Date().toISOString(),
+  };
+  db.apiKeys.unshift(row);
+  if (db.apiKeys.filter((k) => k.userId === input.userId).length > 10) {
+    // keep newest 10 per user
+    const mine = db.apiKeys.filter((k) => k.userId === input.userId);
+    const oldest = mine[mine.length - 1];
+    db.apiKeys = db.apiKeys.filter((k) => k.id !== oldest.id);
+  }
+  write(db);
+  return row;
+}
+
+export function deleteApiKey(id: string, userId: string) {
+  const db = read();
+  db.apiKeys = db.apiKeys.filter((k) => !(k.id === id && k.userId === userId));
+  write(db);
+  return true;
+}
+
+export function findApiKeyByHash(keyHash: string) {
+  return read().apiKeys.find((k) => k.keyHash === keyHash) || null;
+}
+
+export function touchApiKey(id: string) {
+  const db = read();
+  const k = db.apiKeys.find((x) => x.id === id);
+  if (k) {
+    k.lastUsedAt = new Date().toISOString();
+    write(db);
+  }
+}
+
+/* ── Teams (workspaces) ──────────────────────────────────── */
+
+export function listTeams(userId: string) {
+  return read()
+    .teams.filter((t) => t.members.some((m) => m.userId === userId))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export function getTeam(id: string) {
+  return read().teams.find((t) => t.id === id) || null;
+}
+
+export function isTeamMember(teamId: string, userId: string) {
+  const t = getTeam(teamId);
+  return Boolean(t?.members.some((m) => m.userId === userId));
+}
+
+export function createTeam(input: {
+  userId: string;
+  name: string;
+  email?: string;
+  userName?: string;
+}) {
+  const db = read();
+  const now = new Date().toISOString();
+  const team: Team = {
+    id: uid("team"),
+    name: input.name.trim().slice(0, 40) || "New team",
+    ownerId: input.userId,
+    members: [
+      {
+        userId: input.userId,
+        email: input.email,
+        name: input.userName,
+        role: "owner",
+        joinedAt: now,
+      },
+    ],
+    invites: [],
+    createdAt: now,
+  };
+  db.teams.push(team);
+  write(db);
+  return team;
+}
+
+export function findTeamByInviteCode(code: string) {
+  const c = code.trim().toUpperCase();
+  return read().teams.find((t) => t.invites.some((i) => i.code === c)) || null;
+}
+
+export function joinTeamByCode(
+  code: string,
+  member: { userId: string; email?: string; name?: string }
+) {
+  const db = read();
+  const c = code.trim().toUpperCase();
+  // look up inside the SAME db object we later write (avoid stale-reference bug)
+  const team = db.teams.find((t) => t.invites.some((i) => i.code === c));
+  if (!team) return { error: "Invalid or expired invite code." as const };
+  if (team.members.some((m) => m.userId === member.userId)) {
+    return { error: "You are already in this team." as const };
+  }
+  team.members.push({
+    userId: member.userId,
+    email: member.email,
+    name: member.name,
+    role: "member",
+    joinedAt: new Date().toISOString(),
+  });
+  write(db);
+  return { team };
+}
+
+export function newTeamInvite(teamId: string, userId: string) {
+  const db = read();
+  const team = db.teams.find(
+    (t) => t.id === teamId && t.members.some((m) => m.userId === userId)
+  );
+  if (!team) return null;
+  // reuse the freshest invite if one exists
+  if (team.invites.length) return team.invites[team.invites.length - 1].code;
+  const code = randomBytes(4).toString("hex").toUpperCase();
+  team.invites.push({ code, createdAt: new Date().toISOString() });
+  team.invites = team.invites.slice(-3);
+  write(db);
+  return code;
+}
+
+export function leaveTeam(teamId: string, userId: string) {
+  const db = read();
+  const team = db.teams.find((t) => t.id === teamId);
+  if (!team) return { error: "Team not found." as const };
+  if (!team.members.some((m) => m.userId === userId)) {
+    return { error: "You are not in this team." as const };
+  }
+  if (team.ownerId === userId) {
+    // owner leaving dissolves the team; team chats stay with their creators
+    db.teams = db.teams.filter((t) => t.id !== teamId);
+    for (const c of db.conversations) {
+      if (c.teamId === teamId) c.teamId = null;
+    }
+    write(db);
+    return { dissolved: true as const };
+  }
+  team.members = team.members.filter((m) => m.userId !== userId);
+  write(db);
+  return { left: true as const };
+}
+
+export function setConversationTeam(
+  conversationId: string,
+  userId: string,
+  teamId: string | null
+) {
+  const db = read();
+  const c = db.conversations.find((x) => x.id === conversationId);
+  if (!c) return null;
+  // only the chat owner (or same-team member) may move it
+  const isOwner = c.userId === userId;
+  const isSameTeam = c.teamId ? isTeamMember(c.teamId, userId) : false;
+  if (!isOwner && !isSameTeam) return null;
+  if (teamId && !isTeamMember(teamId, userId)) return null;
+  c.teamId = teamId;
+  c.updatedAt = new Date().toISOString();
+  write(db);
+  return c;
+}
+
+/** Conversations visible to a user: own + their teams' */
+export function listVisibleConversations(userId: string) {
+  const db = read();
+  const teamIds = new Set(
+    db.teams
+      .filter((t) => t.members.some((m) => m.userId === userId))
+      .map((t) => t.id)
+  );
+  return db.conversations
+    .filter(
+      (c) => c.userId === userId || (c.teamId && teamIds.has(c.teamId))
+    )
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 /* ── Generations ─────────────────────────────────────────── */

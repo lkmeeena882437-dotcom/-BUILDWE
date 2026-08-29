@@ -1,5 +1,47 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { PwaRegister } from "@/components/PwaRegister";
+import { CookieConsent } from "@/components/CookieConsent";
+
+const SITE = process.env.NEXT_PUBLIC_APP_URL || "https://buildwe.online";
+
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      name: "BUILDWE",
+      url: SITE,
+      logo: `${SITE}/icon-512.png`,
+      contactPoint: [
+        {
+          "@type": "ContactPoint",
+          email: "support@buildwe.online",
+          contactType: "customer support",
+        },
+      ],
+    },
+    {
+      "@type": "WebSite",
+      name: "BUILDWE.ONLINE",
+      url: SITE,
+      description: "One free AI workspace — Chat, Code, Vision, Voice.",
+    },
+    {
+      "@type": "SoftwareApplication",
+      name: "BUILDWE",
+      applicationCategory: "BusinessApplication",
+      operatingSystem: "Web, Android, iOS (PWA)",
+      description:
+        "AI that understands the work. Chat, code, images, and voice in one free workspace with web search and file understanding.",
+      url: SITE,
+      offers: [
+        { "@type": "Offer", name: "Free", price: "0", priceCurrency: "INR" },
+        { "@type": "Offer", name: "PRO", price: "500", priceCurrency: "INR" },
+      ],
+    },
+  ],
+};
 
 export const metadata: Metadata = {
   title: {
@@ -7,9 +49,10 @@ export const metadata: Metadata = {
     template: "%s · BUILDWE",
   },
   description:
-    "Chat, code, create images, and generate audio — one AI workspace. Start free. PRO $5/mo.",
+    "Chat, code, create images, and generate audio — one free AI workspace with web search and vision. Start free. PRO $5/mo.",
   applicationName: "BUILDWE.ONLINE",
-  keywords: ["AI", "chat", "code", "image", "audio", "BUILDWE"],
+  manifest: "/manifest.webmanifest",
+  keywords: ["AI", "chat", "code", "image", "audio", "web search", "vision", "BUILDWE"],
   openGraph: {
     title: "BUILDWE.ONLINE",
     description: "Build anything. Create everything.",
@@ -50,6 +93,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         style={{ fontFamily: "Inter, system-ui, sans-serif" }}
       >
         {children}
+        <PwaRegister />
+        <CookieConsent />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        />
       </body>
     </html>
   );
