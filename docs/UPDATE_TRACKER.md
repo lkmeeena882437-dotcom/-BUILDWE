@@ -7,8 +7,38 @@ Boss bhejte hue updates yahan track hote hain. Public changelog page hata diya g
 | Update | Source | Status |
 |---|---|---|
 | Update #1 — Product Audit & AI Intelligence Roadmap | boss (chat paste) | ✅ Implemented (v1.5.0) — P0 complete, P1 partial (see below) |
-| Update #2 — (pending) | boss will send | ⏳ awaiting |
+| Update #2 — Next Big Update (latency/cost/security/fallback/verification/errors + smart-execution rules) | boss (chat paste) | ✅ Implemented (v1.6.0) — see below |
 | Update #3 — Product/UX/Brand/Trust plan | boss (chat paste) | ✅ Implemented earlier (v1.4.0) |
+
+## Update #2 — kya implement hua (v1.6.0)
+
+Boss ne "mix" scope chuna (Update #2 + Update #1 ke pending P1: multi-model compare + convert-to-deliverable) + manual "Use another model" button errors par visible.
+
+### P0
+- **Latency & budgets** (`lib/ai/providers.ts`): complexity-based compute — simple 1024 / medium 2048 / complex 4096 max_tokens; temp code 0.45 / chat 0.7; budget sab stream fns me threaded
+- **Long-context**: >18 turns → last 14 + purani user asks ka ek compressed background line (blind full-history nahi)
+- **Security headers** (`next.config.js`): CSP-lite (script/style/img/connect/frame directives, Razorpay allowlist), X-Frame-Options SAMEORIGIN, nosniff, Referrer-Policy, Permissions-Policy
+- **Provider fallback + transparency**: har stage par `fallbackNote` (openrouter backup / groq one-piece / offline key-hint) → SSE meta → UI me amber "Model switched" banner
+- **Manual model switch**: errors par recovery panel — **Try Again** + **Use another model** (`altModel` 1–3 → `preferOffset`, user choice visible per boss decision)
+- **Error handling**: errors ab `code` + `hint` carry karte hain (RATE_LIMIT pehle) → UI me useful explanation + tip
+- **Verification reliability**: verify route ab **primary/official sources ko preference** deta hai (docs/developer/gov/edu/claim-keyword hosts score) + `official` flag; compare UI me "agreement is not proof" note
+- **Prompt-injection**: search context pehle se UNTRUSTED-marked tha (v1.4) — confirmed intact
+
+### P1
+- **Surgical editing**: "make only section 2 shorter" regex-detect → system hint (purana answer reproduce, sirf named part change)
+- **Correction loop**: "no that's not what I meant" detect → one-line wrong-assumption naming + corrected answer, restart nahi
+- **Multi-model comparison**: composer me Layers button → modal → 3 seats (llama-3.3-70b reasoning / 3.1-8b speed / gemma2-9b writing) + judge synthesis (agreement ≠ truth honesty) → `POST /api/ai/compare` (10/min, offline par honest unavailable)
+- **Convert-to-deliverable**: quick actions **Document / Table / Report** — answer ko structured deliverable me convert + existing Save/Download
+- **Version history**: code canvas V1/V2/V3 + Restore pehle se tha (v1.3) — intact
+- **Citation UX**: sources chips pehle se the; verify me official-source badge add hua
+
+### P2
+- **Honest limits**: prompt rule 13 — kabhi bluff nahi, alternative offer
+- **Formatting discipline**: rule 14 — formatting comprehension ke liye, decoration ke liye nahi
+- **Streaming UX / a11y**: Understanding…→Writing… phases existing; reduced-motion + aria-labels existing — verified intact
+
+### Anti-bloat
+Koi naya mode/nav item nahi — sab intelligence existing UI ke andar (composer button, quick actions, banners). "Keep the interface simple; intelligence behind the interface."
 
 ## Update #1 — kya implement hua (v1.5.0)
 
@@ -27,9 +57,9 @@ Boss bhejte hue updates yahan track hote hain. Public changelog page hata diya g
 ### P1 (partial — baaki Update #2 me karunga jab boss bhejega/bole)
 - ✅ Model transparency (tag + understood chip)
 - ✅ Suggested prompts per mode (existing)
-- ⏳ Multi-model comparison (5.1) — needs multi-provider fan-out UI
-- ⏳ Consensus/Judge system (5.2)
-- ⏳ Convert-to-deliverable (Document/Table/Report/Spreadsheet) (6)
+- ✅ Multi-model comparison (5.1) — done in v1.6.0 (3 seats + judge synthesis)
+- ✅ Consensus/Judge system (5.2) — done in v1.6.0 (compare synthesis)
+- ✅ Convert-to-deliverable (6) — done in v1.6.0 (Document/Table/Report quick actions)
 - ⏳ Advanced Code Canvas actions Run/Test/Fix/Optimize/Refactor (8)
 - ⏳ File intelligence PDF/DOCX/XLSX (7) — CSV/TXT/images done
 

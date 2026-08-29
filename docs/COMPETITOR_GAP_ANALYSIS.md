@@ -89,3 +89,23 @@
 - ✅ New quick actions: Example, Verify, Use-as-prompt (plus Simplify/Shorten/Expand/Explain/Save/Copy/Regenerate)
 - ✅ Understanding layer wired into chat AND code routes
 - 🔁 Public /changelog page removed per product decision (history stays in docs)
+
+---
+
+## UPDATE #2 (v1.6.0) — Next Big Update (speed/cost/safety/reliability + smart execution)
+
+Scope per boss's "mix" decision: Update #2 + Update #1's pending P1 (multi-model compare, convert-to-deliverable) + visible manual "Use another model" button.
+
+- ✅ Complexity compute budgets: max_tokens 1024/2048/4096 (simple/medium/complex), temp 0.45 code / 0.7 chat — threaded through groqStream/groqComplete/openRouterStream
+- ✅ Long-context compression: >18 turns → last 14 kept + one background line of older user asks
+- ✅ Security headers (CSP-lite, frameguard, nosniff, Referrer-Policy, Permissions-Policy) via next.config.js — original images.remotePatterns preserved
+- ✅ Provider fallback transparency: fallbackNote per stage (openrouter/groq/offline) → SSE meta → UI amber banner "Model switched: …"
+- ✅ Error recovery panel: real explanation + Try Again / Use another model (altModel 1–3 → preferOffset) + contextual tip; API errors carry code+hint (RATE_LIMIT first)
+- ✅ Verification reliability: primary/official source preference (docs/developer/gov/edu + claim-keyword host scoring), official flag on sources
+- ✅ Surgical editing + correction loop detection in understanding layer (system hints; correction never restarts, names the wrong assumption in one line)
+- ✅ Multi-model comparison: /api/ai/compare — 3 seats (llama-3.3-70b / 3.1-8b / gemma2-9b) + judge synthesis, honest offline, 10/min rate limit; composer Layers button + lanes/synthesis modal UI
+- ✅ Convert-to-deliverable quick actions: Document / Table / Report
+- ✅ Prompt rules 13 (honest limits) & 14 (formatting serves comprehension)
+- ✅ No new surface area — anti-bloat principle respected (intelligence behind the interface)
+
+**QA**: TS clean, build pass, live regression — security headers present on /, /changelog 404, chat/code SSE with fallbackNote+understood meta, compare offline-honest + 429 RATE_LIMIT (with session cookie), surgical/correction intents detected, altModel accepted, home/status 200.

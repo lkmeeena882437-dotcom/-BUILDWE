@@ -46,10 +46,34 @@ export async function POST(req: NextRequest) {
     // verify the top claims against live sources (key-free)
     const results = await Promise.all(
       claims.slice(0, 3).map(async (c) => {
-        const found = await webSearch(c.text.slice(0, 120), { max: 3, timeoutMs: 7000 });
+        let found = await webSearch(c.text.slice(0, 120), { max: 4, timeoutMs: 7000 });
+        // Verification reliability (Update #2): prefer PRIMARY/official sources —
+        // docs sites, vendor domains related to the claim, gov/edu — over random pages
+        const keywords = Array.from(
+          new Set(
+            (c.text.toLowerCase().match(/[a-z][a-z0-9-]{3,}/g) || []).filter(
+              (w) =>
+                !/^(this|that|with|from|have|been|will|your|their|about|which|while|there|these|those|would|could|should|more|most|than|also|into|only|very|just|like|make|made|take|gives?|according|reports?|says?|said|over|under|between|after|before)/.test(
+                  w
+                )
+            )
+          )
+        );
+        const officialScore = (host: string) => {
+          const h = host.toLowerCase();
+          let score = 0;
+          if (/\.(gov|edu|nic\.in)$/i.test(h) || /^docs?\./i.test(h) || /developer|docs|official/i.test(h)) score += 3;
+          if (keywords.some((k) => h.includes(k))) score += 4;
+          return score;
+        };
+        found = found
+          .map((r) => ({ r, score: officialScore(r.host) }))
+          .sort((a, b) => b.score - a.score)
+          .map((x) => x.r);
+
         const keyNums = (c.text.match(/\d+(\.\d+)?/g) || []).map(Number);
         let verdict: "verified" | "uncertain" = "uncertain";
-        let source: { title: string; url: string; host: string } | undefined;
+        let source: { title: string; url: string; host: string; official?: boolean } | undefined;
 
         for (const r of found) {
           const snippetNums = (r.snippet.match(/\d+(\.\d+)?/g) || []).map(Number);
@@ -59,7 +83,12 @@ export async function POST(req: NextRequest) {
           const sharesTerms = contentOverlap(c.text, r.snippet) >= 2;
           if (sharesNumber || sharesTerms) {
             verdict = "verified";
-            source = { title: r.title, url: r.url, host: r.host };
+            source = {
+              title: r.title,
+              url: r.url,
+              host: r.host,
+              official: officialScore(r.host) >= 4,
+            };
             break;
           }
         }

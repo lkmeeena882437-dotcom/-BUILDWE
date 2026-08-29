@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
     const rl = rateLimit(`ai:code:${session.userId}:${ip}`, 30, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
-        { error: "Too many requests — wait a moment." },
+        { error: "Too many requests — wait a moment.", code: "RATE_LIMIT", hint: "Thoda ruk ke Try again dabao — 1 minute me limit reset ho jaati hai." },
         { status: 429 }
       );
     }
@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
       ? [{ role: "system", content: understood.systemHint }, ...body.messages]
       : body.messages;
 
-    const { stream, model, live } = await streamChatOrCode({
+    const { stream, model, live, fallbackNote } = await streamChatOrCode({
       mode: "code",
       messages: codeMessages,
       plan: session.plan,
@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
         try {
           controller.enqueue(
             encoder.encode(
-              `data: ${JSON.stringify({ meta: { conversationId, model, live } })}\n\n`
+              `data: ${JSON.stringify({ meta: { conversationId, model, live, ...(fallbackNote ? { fallbackNote } : {}) } })}\n\n`
             )
           );
           while (true) {

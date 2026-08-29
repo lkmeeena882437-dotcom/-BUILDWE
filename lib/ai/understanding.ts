@@ -33,6 +33,10 @@ export type Understanding = {
   systemHint: string;
   /** human-readable line for the UI chip */
   summary: string;
+  /** user asked to change only a specific part (Update #2) */
+  surgical: boolean;
+  /** user corrected a previous misunderstanding (Update #2) */
+  correction: boolean;
 };
 
 const PLATFORMS =
@@ -80,6 +84,10 @@ export function understandPrompt(raw: string): Understanding {
   const style = Object.entries(STYLES).find(([, re]) => re.test(raw))?.[0];
   const lang = raw.match(LANG_HINT)?.[1];
   const subject = findSubject(raw);
+
+  // ── Smart-execution modes (Update #2) ────────────────────
+  const surgical = /(only|just|sirf|bas)\s+(the\s+)?(section|part|para|paragraph|cta|heading|title|line|button|color)|change\s+(only|just)|make\s+(only|just)|shorten\s+(only|just|section)|replace\s+(only|just)|section\s*\d/i.test(raw);
+  const correction = /(not what i meant|that'?s not what|wrong assumption|galat|galti|ulte|ulta|ye nahi|matlab tha|i meant|misunderstood|matlab maine|dusra|doosra chahiye)/i.test(raw);
 
   const missing: string[] = [];
   const defaultsUsed: string[] = [];
@@ -138,10 +146,20 @@ export function understandPrompt(raw: string): Understanding {
   const hintLines = [
     "PROMPT UNDERSTANDING (internal — use, don't recite):",
     ...parts.map((l) => `- ${l}`),
+    surgical
+      ? "- SURGICAL EDIT: the user wants ONLY a specific part changed. Reproduce the previous answer EXACTLY as-is, changing only the part they named. Do not rewrite, reorder, or 'improve' anything else."
+      : "",
+    correction
+      ? "- USER CORRECTION: your previous answer was based on a wrong assumption. (1) Name the wrong assumption in ONE short line. (2) Deliver the corrected answer immediately. Do NOT restart the whole task from zero."
+      : "",
     missing.length ? `- Materially missing: ${missing.join(", ")} → FIRST deliver a best-effort version with sensible defaults, THEN ask at most ONE short question about: ${missing[0]}.` :
       "- Nothing critical missing — do not ask questions, just deliver.",
     defaultsUsed.length ? `- Defaults you may assume: ${defaultsUsed.join("; ")}` : "",
   ].filter(Boolean);
+
+  const summaryParts = [...parts];
+  if (surgical) summaryParts.push("surgical edit");
+  if (correction) summaryParts.push("correction");
 
   return {
     intent,
@@ -153,6 +171,8 @@ export function understandPrompt(raw: string): Understanding {
     defaultsUsed,
     clarifier,
     systemHint: hintLines.join("\n"),
-    summary: parts.join(" · ") + (defaultsUsed.length ? ` · defaults: ${defaultsUsed.join(", ")}` : ""),
+    summary: summaryParts.join(" · ") + (defaultsUsed.length ? ` · defaults: ${defaultsUsed.join(", ")}` : ""),
+    surgical,
+    correction,
   };
 }

@@ -4,7 +4,7 @@
 
 import { AI_KEYS, AI_MODELS, APP } from "@/lib/config";
 import { SYSTEM_PROMPTS, publicModelLabel, type Plan } from "@/lib/ai/rules";
-import { pickModel } from "@/lib/ai/models-catalog";
+import { pickModel, estimateComplexity } from "@/lib/ai/models-catalog";
 import {
   buildMind,
   packMessagesForModel,
@@ -34,7 +34,12 @@ const GROQ_CODE_MODELS = [
 
 export type ProviderKeys = { groq?: string; openrouter?: string };
 
-async function groqStream(messages: ChatMessage[], model: string, userKeys?: ProviderKeys) {
+async function groqStream(
+  messages: ChatMessage[],
+  model: string,
+  userKeys?: ProviderKeys,
+  budget?: { maxTokens: number; temperature: number }
+) {
   const key = userKeys?.groq || AI_KEYS.groq;
   if (!key) return null;
   try {
@@ -47,9 +52,9 @@ async function groqStream(messages: ChatMessage[], model: string, userKeys?: Pro
       body: JSON.stringify({
         model,
         messages,
-        temperature: 0.7,
+        temperature: budget?.temperature ?? 0.7,
         stream: true,
-        max_tokens: 4096,
+        max_tokens: budget?.maxTokens ?? 4096,
       }),
     });
     if (!res.ok || !res.body) {
@@ -66,7 +71,8 @@ async function groqStream(messages: ChatMessage[], model: string, userKeys?: Pro
 async function groqComplete(
   messages: ChatMessage[],
   model: string,
-  userKeys?: ProviderKeys
+  userKeys?: ProviderKeys,
+  budget?: { maxTokens: number; temperature: number }
 ): Promise<string | null> {
   const key = userKeys?.groq || AI_KEYS.groq;
   if (!key) return null;
@@ -80,9 +86,9 @@ async function groqComplete(
       body: JSON.stringify({
         model,
         messages,
-        temperature: 0.7,
+        temperature: budget?.temperature ?? 0.7,
         stream: false,
-        max_tokens: 4096,
+        max_tokens: budget?.maxTokens ?? 4096,
       }),
     });
     if (!res.ok) return null;
@@ -94,7 +100,12 @@ async function groqComplete(
   }
 }
 
-async function openRouterStream(messages: ChatMessage[], model: string, userKeys?: ProviderKeys) {
+async function openRouterStream(
+  messages: ChatMessage[],
+  model: string,
+  userKeys?: ProviderKeys,
+  budget?: { maxTokens: number; temperature: number }
+) {
   const key = userKeys?.openrouter || AI_KEYS.openrouter;
   if (!key) return null;
   try {
@@ -111,8 +122,9 @@ async function openRouterStream(messages: ChatMessage[], model: string, userKeys
           ? model
           : "meta-llama/llama-3.3-70b-instruct",
         messages,
-        temperature: 0.7,
+        temperature: budget?.temperature ?? 0.7,
         stream: true,
+        max_tokens: budget?.maxTokens ?? 4096,
       }),
     });
     if (!res.ok || !res.body) return null;
@@ -246,24 +258,49 @@ export async function streamChatOrCode(opts: {
   offlineOverrideText?: string;
   /** user-supplied keys (BYOK) take precedence over platform keys */
   userKeys?: ProviderKeys;
+  /** force ONE model id (multi-model comparison) — falls back to offline if it fails */
+  forceModel?: string;
+  /** skip the first N preferred models (manual "use another model") */
+  preferOffset?: number;
 }): Promise<{
   stream: ReadableStream<Uint8Array>;
   model: string;
   live: boolean;
   mind: MindProfile;
+  fallbackNote?: string;
 }> {
-  const turns: ChatTurn[] = opts.messages
+  const turnsAll: ChatTurn[] = opts.messages
     .filter((m) => m.role === "user" || m.role === "assistant")
     .map((m) => ({
       role: m.role as "user" | "assistant",
       content: String(m.content || ""),
     }));
 
+  // Long-conversation optimization (Update #2 P1): compress older turns into
+  // a summary instead of sending the entire history every request
+  const RECENT_TURNS = 14;
+  let turns = turnsAll;
+  let compressed = "";
+  if (turnsAll.length > RECENT_TURNS + 4) {
+    const older = turnsAll.slice(0, turnsAll.length - RECENT_TURNS);
+    turns = turnsAll.slice(-RECENT_TURNS);
+    const asks = older
+      .filter((t) => t.role === "user")
+      .map((t) => t.content.replace(/\s+/g, " ").slice(0, 90))
+      .slice(-6);
+    compressed = `EARLIER CONVERSATION (compressed for focus — ${older.length} older messages, first ask: "${asks[0] || "—"}"): ${asks.join(" → ")}. Use this as background; the user's latest messages below are authoritative.`;
+  }
+
   // system messages (search grounding, style controls) are appended to the
   // base system prompt — previously they were dropped in live mode
-  const extraSystem = opts.messages
-    .filter((m) => m.role === "system")
-    .map((m) => String(m.content || ""))
+  const extraSystem = [
+    compressed,
+    opts.messages
+      .filter((m) => m.role === "system")
+      .map((m) => String(m.content || ""))
+      .filter(Boolean)
+      .join("\n\n"),
+  ]
     .filter(Boolean)
     .join("\n\n");
 
@@ -296,6 +333,13 @@ export async function streamChatOrCode(opts: {
     opts.promptForRouting ||
     "";
 
+  // ── Cost budgets (Update #2 P0): complexity decides compute ──
+  const complexity = estimateComplexity(opts.promptForRouting || lastUser);
+  const maxTokens =
+    complexity === "simple" ? 1024 : complexity === "complex" ? 4096 : 2048;
+  const temperature = opts.mode === "code" ? 0.45 : 0.7;
+  const budget = { maxTokens, temperature };
+
   const envModel =
     opts.plan === "pro"
       ? opts.mode === "code"
@@ -316,40 +360,60 @@ export async function streamChatOrCode(opts: {
       ? [envModel, catalog.id, ...GROQ_CODE_MODELS]
       : [envModel, catalog.id, ...GROQ_CHAT_MODELS];
 
-  const tryModels = Array.from(new Set(preferred.filter(Boolean)));
+  let tryModels = Array.from(new Set(preferred.filter(Boolean)));
+  if (opts.forceModel) tryModels = [opts.forceModel];
+  if (opts.preferOffset && !opts.forceModel && tryModels.length > 1) {
+    tryModels = tryModels.slice(Math.min(opts.preferOffset, tryModels.length - 1));
+  }
+
+  let fallbackNote: string | undefined;
+  let triedPrimary = false;
 
   for (const model of tryModels) {
-    const body = await groqStream(messages, model, opts.userKeys);
+    const body = await groqStream(messages, model, opts.userKeys, budget);
     if (body) {
       return {
         stream: openAIStreamToTextSSE(body),
         model: publicModelLabel(model, opts.mode),
         live: true,
         mind,
+        ...(fallbackNote ? { fallbackNote } : {}),
       };
     }
+    triedPrimary = true;
+  }
+
+  if (triedPrimary) {
+    fallbackNote =
+      "The primary model was unavailable — BUILDWE switched to a backup automatically.";
   }
 
   for (const model of tryModels.slice(0, 3)) {
-    const body = await openRouterStream(messages, model, opts.userKeys);
+    const body = await openRouterStream(messages, model, opts.userKeys, budget);
     if (body) {
       return {
         stream: openAIStreamToTextSSE(body),
         model: publicModelLabel(model, opts.mode),
         live: true,
         mind,
+        fallbackNote:
+          fallbackNote ||
+          "Answered via the backup provider — the usual one was busy.",
       };
     }
   }
 
   for (const model of tryModels.slice(0, 4)) {
-    const text = await groqComplete(messages, model, opts.userKeys);
+    const text = await groqComplete(messages, model, opts.userKeys, budget);
     if (text) {
       return {
         stream: textToSSE(text),
         model: publicModelLabel(model, opts.mode),
         live: true,
         mind,
+        fallbackNote:
+          fallbackNote ||
+          "Streaming was unavailable — the complete answer was prepared in one piece.",
       };
     }
   }
@@ -364,6 +428,9 @@ export async function streamChatOrCode(opts: {
     model: publicModelLabel(undefined, opts.mode),
     live: false,
     mind,
+    fallbackNote: opts.offlineOverrideText
+      ? undefined
+      : "No live model is reachable right now — this is BUILDWE's offline mode (add a free key in Settings → API keys for full quality).",
   };
 }
 

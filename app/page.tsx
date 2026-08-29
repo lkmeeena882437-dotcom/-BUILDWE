@@ -46,6 +46,7 @@ import {
   ArrowRight,
   FileCode2,
   Loader2,
+  ArrowRightLeft,
   RotateCcw,
   SquarePen,
   ThumbsUp,
@@ -105,6 +106,7 @@ import {
   leaveTeamApi,
   assignTeam,
   verifyApi,
+  compareApi,
   type TeamView,
   type MeResponse,
 } from "@/lib/client/api";
@@ -125,10 +127,19 @@ type Msg = {
   understood?: string;
   clarifier?: string;
   quality?: { label: "good" | "review"; notes: string[] };
+  fallbackNote?: string;
+  recovery?: {
+    text: string;
+    mode: "chat" | "code";
+    useSearch: boolean;
+    altModel?: number;
+    code?: string;
+    hint?: string;
+  };
   verified?: {
     verdict: string;
     message: string;
-    claims: { claim: string; kind: string; verdict: string; source?: { title: string; url: string; host: string } }[];
+    claims: { claim: string; kind: string; verdict: string; source?: { title: string; url: string; host: string; official?: boolean } }[];
   };
 };
 
@@ -417,7 +428,7 @@ function Dashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [drawer, setDrawer] = useState(false);
   const [modal, setModal] = useState<
-    null | "auth" | "settings" | "plans" | "profile" | "models" | "skills" | "byok" | "teams"
+    null | "auth" | "settings" | "plans" | "profile" | "models" | "skills" | "byok" | "teams" | "compare"
   >(null);
   const [authTab, setAuthTab] = useState<"login" | "register">("login");
   const [themePref, setThemePref] = useState<ThemePref>("system");
@@ -472,6 +483,9 @@ function Dashboard() {
 
   // web search + vision attachment
   const [webSearchOn, setWebSearchOn] = useState(false);
+  const [comparePrompt, setComparePrompt] = useState("");
+  const [compareBusy, setCompareBusy] = useState(false);
+  const [compareResult, setCompareResult] = useState<Awaited<ReturnType<typeof compareApi>> | null>(null);
   const [attachment, setAttachment] = useState<{ dataUrl: string; name: string } | null>(null);
   const [visionBusy, setVisionBusy] = useState(false);
 
@@ -777,6 +791,28 @@ function Dashboard() {
     }
   };
 
+  const doCompare = async () => {
+    const p = comparePrompt.trim();
+    if (!p || compareBusy) return;
+    setCompareBusy(true);
+    setError("");
+    try {
+      const r = await compareApi(p);
+      setCompareResult(r);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setCompareBusy(false);
+    }
+  };
+
+  const openCompare = () => {
+    const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content || "";
+    setComparePrompt(input.trim() || lastUser.slice(0, 500));
+    setCompareResult(null);
+    setModal("compare");
+  };
+
   const pushCanvasVersion = (code: string, lang: string) => {
     setCanvasVersions((vs) => {
       if (vs.length && vs[0].code === code) return vs;
@@ -1013,7 +1049,10 @@ function Dashboard() {
   };
 
 
-  const send = async (override?: string) => {
+  const send = async (
+    override?: string,
+    retry?: { altModel?: number; baseMessages?: Msg[] }
+  ) => {
     const text = (override ?? input).trim();
     if ((!text && !attachment) || streaming || visionBusy) return;
     setError("");
@@ -1094,13 +1133,19 @@ function Dashboard() {
 
     // chat or code stream
     const endpoint = resolved === "code" ? "/api/ai/code" : "/api/ai/chat";
+    const history = retry?.baseMessages ?? messages;
     const userMsg: Msg = { id: rid(), role: "user", content: text };
     const aId = rid();
-    const nextMessages = [
-      ...messages,
-      userMsg,
-      { id: aId, role: "assistant" as const, content: "", streaming: true },
-    ];
+    const nextMessages = retry?.baseMessages
+      ? [
+          ...retry.baseMessages,
+          { id: aId, role: "assistant" as const, content: "", streaming: true },
+        ]
+      : [
+          ...messages,
+          userMsg,
+          { id: aId, role: "assistant" as const, content: "", streaming: true },
+        ];
     setMessages(nextMessages);
     setStreaming(true);
     lastPrompt.current = effectiveText;
@@ -1118,16 +1163,19 @@ function Dashboard() {
       await streamAI(
         endpoint,
         {
-          messages: [
-            ...messages.map((m) => ({ role: m.role, content: m.content })),
-            { role: "user", content: effectiveText },
-          ],
+          messages: retry?.baseMessages
+            ? retry.baseMessages.map((m) => ({ role: m.role, content: m.content }))
+            : [
+                ...messages.map((m) => ({ role: m.role, content: m.content })),
+                { role: "user", content: effectiveText },
+              ],
           conversationId: convId,
           webSearch: useSearch,
           projectId: convProjectId ?? activeProject ?? null,
           teamId: convTeamId ?? activeTeam ?? null,
           depth,
           tone,
+          ...(retry?.altModel ? { altModel: retry.altModel } : {}),
         },
         (ev) => {
           if (ev.meta && typeof ev.meta === "object") {
@@ -1138,10 +1186,11 @@ function Dashboard() {
               sources?: Msg["sources"];
               understood?: string;
               clarifier?: string;
+              fallbackNote?: string;
             };
             if (meta.conversationId) setConvId(meta.conversationId);
             if (meta.model) setModelTag(String(meta.model));
-            if (meta.understood || meta.sources?.length) {
+            if (meta.understood || meta.sources?.length || meta.fallbackNote) {
               setMessages((ms) =>
                 ms.map((m) =>
                   m.id === aId
@@ -1150,6 +1199,7 @@ function Dashboard() {
                         ...(meta.understood ? { understood: meta.understood } : {}),
                         ...(meta.clarifier ? { clarifier: meta.clarifier } : {}),
                         ...(meta.sources?.length ? { sources: meta.sources } : {}),
+                        ...(meta.fallbackNote ? { fallbackNote: meta.fallbackNote } : {}),
                       }
                     : m
                 )
@@ -1176,7 +1226,29 @@ function Dashboard() {
               }
             }
           }
-          if (ev.error) setError(ev.error);
+          if (ev.error) {
+            const errEv = ev as { error?: string; code?: string; hint?: string };
+            // error handling (Update #2 P0): useful explanation + recovery actions
+            setMessages((ms) =>
+              ms.map((m) =>
+                m.id === aId
+                  ? {
+                      ...m,
+                      content: errEv.error || "Something went wrong. Try again.",
+                      streaming: false,
+                      recovery: {
+                        text: effectiveText,
+                        mode: resolved === "code" ? "code" : "chat",
+                        useSearch,
+                        altModel: (retry?.altModel || 0) + 1,
+                        ...(errEv.code ? { code: errEv.code } : {}),
+                        ...(errEv.hint ? { hint: errEv.hint } : {}),
+                      },
+                    }
+                  : m
+              )
+            );
+          }
           if (ev.done) {
             const q = (ev as { quality?: Msg["quality"] }).quality;
             setMessages((ms) =>
@@ -1201,14 +1273,23 @@ function Dashboard() {
       }
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
-        setError((e as Error).message);
+        const err = e as Error & { code?: string; hint?: string };
+        // show a useful error + recovery actions instead of a dead bubble
         setMessages((ms) =>
           ms.map((m) =>
             m.id === aId
               ? {
                   ...m,
-                  content: m.content || "Something went wrong. Try again.",
+                  content: err.message || "Something went wrong. Try again.",
                   streaming: false,
+                  recovery: {
+                    text: effectiveText,
+                    mode: resolved === "code" ? "code" : "chat",
+                    useSearch,
+                    altModel: (retry?.altModel || 0) + 1,
+                    ...(err.code ? { code: err.code } : {}),
+                    ...(err.hint ? { hint: err.hint } : {}),
+                  },
                 }
               : m
           )
@@ -1221,6 +1302,14 @@ function Dashboard() {
       streamPhaseRef.current = "";
       if (phaseTimer.current) clearTimeout(phaseTimer.current);
     }
+  };
+
+  const retrySend = async (rec: NonNullable<Msg["recovery"]>) => {
+    if (streaming || visionBusy) return;
+    const last = messages[messages.length - 1];
+    const base = last?.role === "assistant" && last.recovery ? messages.slice(0, -1) : messages;
+    setMode(rec.mode);
+    await send(rec.text, { altModel: rec.altModel, baseMessages: base });
   };
 
   const onAuth = async (e: React.FormEvent) => {
@@ -1933,7 +2022,50 @@ function Dashboard() {
                                   </div>
                                 )}
                               </div>
-                              {!isUser && m.content && !m.streaming && (
+                              {!isUser && m.fallbackNote && !m.streaming && (
+                                <p
+                                  className="mt-1.5 flex items-start gap-1.5 rounded-xl px-2.5 py-1.5 text-[11px]"
+                                  style={{ background: "var(--warn-soft)", color: "var(--warn)" }}
+                                  title="Provider transparency — what happened behind the scenes"
+                                >
+                                  <span aria-hidden>⚙</span>
+                                  <span>
+                                    <strong className="font-semibold">Model switched:</strong> {m.fallbackNote}
+                                  </span>
+                                </p>
+                              )}
+                              {!isUser && m.recovery && !m.streaming && (
+                                <div
+                                  className="mt-1.5 rounded-2xl border px-3 py-2"
+                                  style={{ borderColor: "var(--warn)", background: "var(--warn-soft)" }}
+                                  role="alert"
+                                >
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <Btn
+                                      size="sm"
+                                      onClick={() => retrySend(m.recovery!)}
+                                      disabled={streaming || visionBusy}
+                                    >
+                                      <RotateCcw className="h-3.5 w-3.5" /> Try Again
+                                    </Btn>
+                                    <Btn
+                                      size="sm"
+                                      variant="ghost"
+                                      onClick={() => retrySend({ ...m.recovery!, altModel: Math.min((m.recovery!.altModel || 0) + 1, 3) })}
+                                      disabled={streaming || visionBusy}
+                                      title="Send the same request to a different AI model"
+                                    >
+                                      <ArrowRightLeft className="h-3.5 w-3.5" /> Use another model
+                                    </Btn>
+                                  </div>
+                                  {m.recovery.hint && (
+                                    <p className="mt-1.5 text-[11px]" style={{ color: "var(--muted)" }}>
+                                      Tip: {m.recovery.hint}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                              {!isUser && m.content && !m.streaming && !m.recovery && (
                                 <div className="mt-1 flex gap-0.5">
                                   <Btn variant="icon" size="sm" aria-label="Copy" onClick={() => copy(m.content, m.id)}>
                                     {copied === m.id ? <Check className="h-3.5 w-3.5" style={{ color: "var(--accent)" }} /> : <Copy className="h-3.5 w-3.5" />}
@@ -1997,6 +2129,9 @@ function Dashboard() {
                                     ["Expand", "Expand your previous answer with more detail and useful examples — keep it accurate."],
                                     ["Explain", "Explain your previous answer step by step like I'm new to this topic."],
                                     ["Example", "Give one concrete example for your previous answer."],
+                                    ["Document", "Turn your previous answer into a clean shareable document: a clear title, short intro, well-organised sections with headings, and a one-line summary at the end. Keep every fact exactly as stated."],
+                                    ["Table", "Turn your previous answer into a markdown table with clear column headers — one row per item. Keep every fact exactly as stated, and add a one-line note under the table."],
+                                    ["Report", "Turn your previous answer into a short professional report: Title, Key findings (bullets), Details, Risks or caveats, and Recommended next steps. Keep every fact exactly as stated."],
                                   ].map(([label, instruction]) => (
                                     <button
                                       key={label}
@@ -2249,6 +2384,17 @@ function Dashboard() {
                           <Globe className="h-4 w-4" />
                         </Btn>
                       )}
+                      {(mode === "chat" || mode === "auto") && (
+                        <Btn
+                          variant="icon"
+                          size="sm"
+                          aria-label="Compare models"
+                          title="Compare models — ask 3 AIs the same question"
+                          onClick={openCompare}
+                        >
+                          <Layers className="h-4 w-4" />
+                        </Btn>
+                      )}
                       <Btn variant="icon" size="sm" aria-label="Attach image" title="Attach image — AI vision" onClick={() => imgAttachRef.current?.click()}><ImagePlus className="h-4 w-4" /></Btn>
                       <Btn variant="icon" size="sm" aria-label="Upload file" title="Attach text/CSV file" onClick={() => fileRef.current?.click()}><Paperclip className="h-4 w-4" /></Btn>
                       <Btn
@@ -2469,6 +2615,87 @@ function Dashboard() {
             }
           }}
         />
+      )}
+
+      {modal === "compare" && (
+        <Sheet onClose={() => setModal(null)} title="Compare models">
+          <div className="space-y-3">
+            <p className="text-[12px]" style={{ color: "var(--muted)" }}>
+              Ask the same question to 3 different AI models at once — then read the combined
+              synthesis. Same prompt, three perspectives, one answer.
+            </p>
+            <textarea
+              value={comparePrompt}
+              onChange={(e) => setComparePrompt(e.target.value)}
+              placeholder="Type the question you want to compare…"
+              rows={3}
+              className="w-full resize-none rounded-2xl border px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+              style={{ borderColor: "var(--border)", background: "var(--secondary)", color: "inherit" }}
+            />
+            <div className="flex items-center gap-2">
+              <Btn size="sm" onClick={doCompare} disabled={!comparePrompt.trim() || compareBusy}>
+                {compareBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Layers className="h-3.5 w-3.5" />}
+                {compareBusy ? "Asking 3 models…" : "Run comparison"}
+              </Btn>
+              {compareResult && (
+                <Btn
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setInput(comparePrompt);
+                    requestAnimationFrame(grow);
+                    setModal(null);
+                    taRef.current?.focus();
+                  }}
+                >
+                  <SquarePen className="h-3.5 w-3.5" /> Continue in chat
+                </Btn>
+              )}
+            </div>
+
+            {compareResult && !compareResult.available && (
+              <div className="rounded-2xl border px-3 py-3 text-[12px]" style={{ borderColor: "var(--border)", background: "var(--secondary)", color: "var(--muted)" }}>
+                {compareResult.synthesis}
+              </div>
+            )}
+
+            {compareResult?.available && (
+              <>
+                <div className="grid gap-2">
+                  {compareResult.lanes.map((l) => (
+                    <div key={l.label} className="rounded-2xl border p-3" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
+                      <div className="mb-1.5 flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-bold uppercase tracking-wide" style={{ color: "var(--accent)" }}>
+                          {l.label}
+                        </span>
+                        <span className="flex items-center gap-1.5">
+                          <span className="text-[10px]" style={{ color: "var(--soft)" }}>{l.model}</span>
+                          <Btn variant="icon" size="sm" aria-label={`Copy ${l.label}`} onClick={() => copy(l.reply, `cmp-${l.label}`)}>
+                            {copied === `cmp-${l.label}` ? <Check className="h-3.5 w-3.5" style={{ color: "var(--ok)" }} /> : <Copy className="h-3.5 w-3.5" />}
+                          </Btn>
+                        </span>
+                      </div>
+                      <p className="max-h-44 overflow-y-auto whitespace-pre-wrap text-[12px] leading-relaxed" style={{ color: "var(--muted)" }}>
+                        {l.reply.trim() ? l.reply : "— offline (no live provider for this seat) —"}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                <div className="rounded-2xl border p-3" style={{ borderColor: "var(--accent)", background: "var(--accent-soft)" }}>
+                  <div className="mb-1 text-[11px] font-bold uppercase tracking-wide" style={{ color: "var(--accent)" }}>
+                    Best combined answer
+                  </div>
+                  <p className="max-h-60 overflow-y-auto whitespace-pre-wrap text-[13px] leading-relaxed">
+                    {compareResult.synthesis}
+                  </p>
+                </div>
+                <p className="text-center text-[10px]" style={{ color: "var(--soft)" }}>
+                  Model agreement is not proof — verify important facts with the ✓ Verify button.
+                </p>
+              </>
+            )}
+          </div>
+        </Sheet>
       )}
 
       {modal === "settings" && (

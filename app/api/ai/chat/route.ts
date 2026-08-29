@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
     const rl = rateLimit(`ai:chat:${session.userId}:${ip}`, 60, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
-        { error: "Too many requests — wait a moment." },
+        { error: "Too many requests — wait a moment.", code: "RATE_LIMIT", hint: "Thoda ruk ke Try again dabao — 1 minute me limit reset ho jaati hai." },
         { status: 429 }
       );
     }
@@ -146,7 +146,9 @@ export async function POST(req: NextRequest) {
       openrouter: byok.openrouter ? decryptSecret(byok.openrouter) : undefined,
     };
 
-    const { stream, model, live } = await streamChatOrCode({
+    const altModel = Number(body.altModel) > 0 && Number(body.altModel) < 4 ? Number(body.altModel) : 0;
+
+    const { stream, model, live, fallbackNote } = await streamChatOrCode({
       mode: "chat",
       messages: apiMessages,
       plan: session.plan,
@@ -155,6 +157,7 @@ export async function POST(req: NextRequest) {
       avoid,
       promptForRouting: String(userText),
       userKeys,
+      ...(altModel ? { preferOffset: altModel } : {}),
       // when offline + search on, stream the composed sourced answer instead
       ...(wantSearch && searchResults.length
         ? { offlineOverrideText: composeSearchAnswer(userText, searchResults) }
@@ -213,6 +216,7 @@ export async function POST(req: NextRequest) {
                   conversationId,
                   model: wantSearch && searchResults.length && !live ? "buildwe-search" : model,
                   live,
+                  ...(fallbackNote ? { fallbackNote } : {}),
                   understood: understood.summary,
                   ...(understood.clarifier ? { clarifier: understood.clarifier } : {}),
                   ...(searchResults.length

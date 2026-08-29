@@ -118,7 +118,13 @@ export async function streamAI(
 
   if (!r.ok) {
     const j = await readJson(r);
-    throw new Error(j.error || `Something went wrong (${r.status})`);
+    const err = new Error(j.error || `Something went wrong (${r.status})`) as Error & {
+      code?: string;
+      hint?: string;
+    };
+    if (j.code) err.code = j.code;
+    if (j.hint) err.hint = j.hint;
+    throw err;
   }
 
   if (!r.body) throw new Error("No response stream");
@@ -217,6 +223,26 @@ export async function verifyApi(text: string) {
       verdict: "verified" | "uncertain";
       source?: { title: string; url: string; host: string };
     }[];
+  };
+}
+
+/* ── Multi-model comparison (Update #2 · P1 mix) ────────── */
+
+export async function compareApi(prompt: string) {
+  const r = await fetch("/api/ai/compare", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Comparison failed");
+  return j as {
+    ok: boolean;
+    available: boolean;
+    complexity: string;
+    lanes: { label: string; model: string; live: boolean; reply: string }[];
+    synthesis: string;
   };
 }
 
