@@ -259,13 +259,25 @@ export async function streamChatOrCode(opts: {
       content: String(m.content || ""),
     }));
 
+  // system messages (search grounding, style controls) are appended to the
+  // base system prompt — previously they were dropped in live mode
+  const extraSystem = opts.messages
+    .filter((m) => m.role === "system")
+    .map((m) => String(m.content || ""))
+    .filter(Boolean)
+    .join("\n\n");
+
   const mind = buildMind(turns, opts.skills || [], {
     prefer: opts.prefer,
     avoid: opts.avoid,
   });
 
-  const baseSystem =
-    opts.mode === "code" ? SYSTEM_PROMPTS.code : SYSTEM_PROMPTS.chat;
+  const baseSystem = [
+    opts.mode === "code" ? SYSTEM_PROMPTS.code : SYSTEM_PROMPTS.chat,
+    extraSystem,
+  ]
+    .filter(Boolean)
+    .join("\n\n---\n\n");
 
   const packed = packMessagesForModel({
     baseSystem,

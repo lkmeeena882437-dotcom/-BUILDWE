@@ -58,3 +58,21 @@
 
 ## BUILDWE unique wedge
 **One free place for the 4 jobs** people open 4 tabs for — Chat, Code, Image, Audio — with Auto routing and an improving Mind.
+
+---
+
+## UPDATE 3 (v1.4.0) — Product, UX, Brand, Trust & AI Experience
+
+**P0 items**
+- ✅ Auth foundation: OAuth Google + GitHub (graceful until keys set), forgot-password with single-use hashed 1-hour reset links, password reset page, account deletion with full cascade, guest nudge ("Guest = Try · Account = Own"), animated auth sheet with loading states
+- ✅ Visual design system: semantic success/warning/error/info states, motion tokens (fast/subtle), entrance animations, focus-visible rings, prefers-reduced-motion support, micro-interactions
+- ✅ Human-language rule: outcome-first hero ("AI that understands the work. Not just the words."), natural-language placeholders, "BUILDWE picks the tool" helper, no syntax required anywhere
+- ✅ Trust & transparency: /how-it-works, /security, /acceptable-use, /changelog, /status (live health), /help (FAQ), /contact, JSON-LD (Organization + WebSite + SoftwareApplication), robots.txt, sitemap.xml, honest ₹500 pricing display, cookie consent notice
+- ✅ Performance & reliability: Understanding → Writing progress states, Try-again recovery, provider isolation (existing), complexity budgets (existing)
+- ✅ Security: untrusted-content guards (web results + files marked as data, instructions inside ignored), live-mode search-grounding fix (system messages were dropped before)
+
+**P1 items**
+- ✅ Brand architecture: BUILDWE Chat / Code / Vision / Voice with taglines
+- ✅ Answer controls: Short/Balanced/Detailed/Deep + Simple/Standard/Expert; quick actions Simplify/Shorten/Expand/Explain/Save; canvas version history (12 snapshots)
+
+**QA**: reset/replay/delete lifecycle, wrong-password delete block, cascade verification (teams/projects), depth+tone regression, all pages + sitemap + robots 200, TS clean, build pass.

@@ -15,7 +15,7 @@ Creators juggle ChatGPT + coding tools + image + TTS apps. BUILDWE is one worksp
 | Layer | Tech |
 |-------|------|
 | Frontend | Next.js 14, Tailwind, cream design system, PWA |
-| Auth | Guest cookie + email/password (scrypt), JWT httpOnly |
+| Auth | Guest mode + email/password (scrypt) + OAuth (Google/GitHub) · JWT httpOnly · reset links · account deletion |
 | Database | Local JSON file DB (`/data`, atomic writes) — optional Supabase mirror for multi-instance |
 | Chat / Code | Groq free tier → OpenRouter → smart demo fallback |
 | Web search | **DuckDuckGo HTML** (no API key) — grounded answers with sources |
@@ -31,7 +31,7 @@ Creators juggle ChatGPT + coding tools + image + TTS apps. BUILDWE is one worksp
 | Share | Public read-only links `/s/{id}` |
 | Billing | Razorpay real checkout (demo until keys set) |
 | Limits | Server-side daily counters |
-| Docs | `/about` model matrix, `/privacy`, `/terms`, `/pricing` |
+| Docs & trust | `/how-it-works` `/security` `/acceptable-use` `/changelog` `/status` `/help` `/contact` + JSON-LD/sitemap |
 
 ## Quick start
 

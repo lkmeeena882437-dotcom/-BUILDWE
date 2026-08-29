@@ -94,16 +94,31 @@ export async function POST(req: NextRequest) {
       .filter((s: string) => s.startsWith("avoid:"))
       .map((s: string) => s.slice(6));
 
-    // Inject search context as a system message before the user's turns
+    // Inject search context + response-style controls as system messages
     const contextBlock = searchContextBlock(searchResults);
-    const apiMessages = contextBlock
-      ? [
-          {
-            role: "system",
-            content: `${contextBlock}\n\nAnswer using these results where relevant. Cite sources inline as [1], [2]. If the results don't cover it, say so and answer from your own knowledge.`,
-          },
-          ...body.messages,
-        ]
+    const depth = String(body.depth || "balanced");
+    const tone = String(body.tone || "standard");
+    const styleLines: string[] = [];
+    if (depth === "short") {
+      styleLines.push("LENGTH: Answer in 1–3 sentences. No lists, no preamble.");
+    } else if (depth === "detailed") {
+      styleLines.push("LENGTH: Thorough answer with clear sections and key details.");
+    } else if (depth === "deep") {
+      styleLines.push("LENGTH: Comprehensive deep-dive — structured sections, examples, edge cases, and a short summary at the end.");
+    }
+    if (tone === "simple") {
+      styleLines.push("LANGUAGE: Plain, simple words a beginner understands. No jargon; explain any necessary term in one line.");
+    } else if (tone === "expert") {
+      styleLines.push("LANGUAGE: Expert-level precision. Technical terminology is welcome.");
+    }
+    const systemParts = [
+      styleLines.length ? styleLines.join("\n") : "",
+      contextBlock
+        ? `${contextBlock}\n\nAnswer using these results where relevant. Cite sources inline as [1], [2]. If the results don't cover it, say so and answer from your own knowledge.`
+        : "",
+    ].filter(Boolean);
+    const apiMessages = systemParts.length
+      ? [{ role: "system", content: systemParts.join("\n\n") }, ...body.messages]
       : body.messages;
 
     // BYOK — the user's own keys take precedence

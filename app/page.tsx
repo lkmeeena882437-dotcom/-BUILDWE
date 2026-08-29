@@ -64,6 +64,12 @@ import {
   Printer,
   Users,
   UserPlus,
+  SlidersHorizontal,
+  Chrome,
+  Github,
+  HelpCircle,
+  AlertTriangle,
+  Wand2,
 } from "lucide-react";
 import clsx from "clsx";
 import {
@@ -149,31 +155,31 @@ const MODE_META: {
     id: "chat",
     label: "Chat",
     icon: MessageSquare,
-    headline: "Clarity under pressure.",
+    headline: "Think. Write. Understand.",
     sub: "Decide faster. Write sharper. Learn without noise.",
-    power: "BUILDWE AI",
+    power: "BUILDWE Chat",
   },
   {
     id: "code",
     label: "Code",
     icon: Code2,
-    headline: "From brief to working build.",
+    headline: "Build. Debug. Ship.",
     sub: "Scaffold, fix, and ship — without leaving the workspace.",
     power: "BUILDWE Code",
   },
   {
     id: "image",
-    label: "Image",
+    label: "Vision",
     icon: ImageIcon,
-    headline: "Describe it. See it.",
+    headline: "Imagine. Create. Transform.",
     sub: "Brand frames, product shots, and scenes on demand.",
     power: "BUILDWE Vision",
   },
   {
     id: "audio",
-    label: "Audio",
+    label: "Voice",
     icon: Mic2,
-    headline: "Script in. Voice out.",
+    headline: "Speak. Listen. Create.",
     sub: "Natural speech for briefs, stories, and product copy.",
     power: "BUILDWE Voice",
   },
@@ -446,6 +452,7 @@ function Dashboard() {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [authErr, setAuthErr] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [skillDraft, setSkillDraft] = useState("");
   const [skillList, setSkillList] = useState<string[]>([]);
@@ -472,6 +479,18 @@ function Dashboard() {
 
   // canvas
   const [canvasTab, setCanvasTab] = useState<"code" | "preview">("code");
+  const [canvasVersions, setCanvasVersions] = useState<
+    { ts: number; code: string; lang: string }[]
+  >([]);
+  const [verMenu, setVerMenu] = useState(false);
+
+  // response style (human-language controls)
+  const [depth, setDepth] = useState<"short" | "balanced" | "detailed" | "deep">("balanced");
+  const [tone, setTone] = useState<"simple" | "standard" | "expert">("standard");
+  const [styleMenu, setStyleMenu] = useState(false);
+  const [streamPhase, setStreamPhase] = useState("");
+  const lastPrompt = useRef("");
+  const phaseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // share
   const [shareNote, setShareNote] = useState("");
@@ -625,6 +644,32 @@ function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // OAuth redirects: /?oauth=setup|failed|unknown or /?welcome=1
+  const oauthTried = useRef(false);
+  useEffect(() => {
+    if (oauthTried.current) return;
+    oauthTried.current = true;
+    const q = new URLSearchParams(window.location.search);
+    const oauth = q.get("oauth");
+    if (q.get("welcome")) {
+      window.history.replaceState({}, "", window.location.pathname);
+      refreshMe();
+      setTeamNote("Logged in ✓ — welcome to your workspace");
+      setTimeout(() => setTeamNote(""), 3500);
+      return;
+    }
+    if (!oauth) return;
+    window.history.replaceState({}, "", window.location.pathname);
+    setAuthTab("login");
+    setModal("auth");
+    setAuthNotice(
+      oauth === "setup"
+        ? "Social sign-in needs provider keys on the server — use email for now (it works great)."
+        : "Sign-in with that provider didn't complete. Try again or use email."
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const grow = () => {
     const el = taRef.current;
     if (!el) return;
@@ -690,6 +735,7 @@ function Dashboard() {
         if (blocks.length) {
           setCodePanel(blocks[blocks.length - 1].code);
           setCodeLang(blocks[blocks.length - 1].lang);
+          pushCanvasVersion(blocks[blocks.length - 1].code, blocks[blocks.length - 1].lang);
         }
       }
     } catch (e) {
@@ -701,6 +747,15 @@ function Dashboard() {
     abortRef.current?.abort();
     abortRef.current = null;
     setStreaming(false);
+  };
+
+  const streamPhaseRef = useRef("");
+
+  const pushCanvasVersion = (code: string, lang: string) => {
+    setCanvasVersions((vs) => {
+      if (vs.length && vs[0].code === code) return vs;
+      return [{ ts: Date.now(), code, lang }, ...vs].slice(0, 12);
+    });
   };
 
   const doShare = async () => {
@@ -1022,6 +1077,12 @@ function Dashboard() {
     ];
     setMessages(nextMessages);
     setStreaming(true);
+    lastPrompt.current = effectiveText;
+
+    // progress states: Understanding → Writing
+    setStreamPhase("Understanding…");
+    if (phaseTimer.current) clearTimeout(phaseTimer.current);
+    phaseTimer.current = setTimeout(() => setStreamPhase("Writing…"), 1100);
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -1039,6 +1100,8 @@ function Dashboard() {
           webSearch: useSearch,
           projectId: convProjectId ?? activeProject ?? null,
           teamId: convTeamId ?? activeTeam ?? null,
+          depth,
+          tone,
         },
         (ev) => {
           if (ev.meta && typeof ev.meta === "object") {
@@ -1057,6 +1120,11 @@ function Dashboard() {
             }
           }
           if (ev.token) {
+            if (streamPhaseRef.current !== "Writing…") {
+              streamPhaseRef.current = "Writing…";
+              setStreamPhase("Writing…");
+              if (phaseTimer.current) clearTimeout(phaseTimer.current);
+            }
             acc += ev.token;
             setMessages((ms) =>
               ms.map((m) =>
@@ -1082,6 +1150,13 @@ function Dashboard() {
       );
       refreshMe();
       refreshHistory();
+      // keep a version snapshot for the canvas
+      if (resolved === "code") {
+        const blocks = extractCode(acc);
+        if (blocks.length) {
+          pushCanvasVersion(blocks[blocks.length - 1].code, blocks[blocks.length - 1].lang);
+        }
+      }
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
         setError((e as Error).message);
@@ -1100,6 +1175,9 @@ function Dashboard() {
     } finally {
       setStreaming(false);
       abortRef.current = null;
+      setStreamPhase("");
+      streamPhaseRef.current = "";
+      if (phaseTimer.current) clearTimeout(phaseTimer.current);
     }
   };
 
@@ -1125,6 +1203,42 @@ function Dashboard() {
     await apiLogout();
     await refreshMe();
     setModal(null);
+  };
+
+  const doDeleteAccount = async () => {
+    const user = me?.user;
+    const isOauth = (user as unknown as { provider?: string })?.provider === "google" ||
+      (user as unknown as { provider?: string })?.provider === "github";
+    const answer = window.prompt(
+      isOauth
+        ? `This PERMANENTLY deletes your account, chats, projects, teams, and keys. Type DELETE to confirm:`
+        : `This PERMANENTLY deletes your account, chats, projects, teams, and keys.\nEnter your password to confirm:`
+    );
+    if (!answer) return;
+    setAuthBusy(true);
+    try {
+      const r = await fetch("/api/auth/delete", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          isOauth ? { confirm: answer } : { password: answer }
+        ),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "Couldn't delete account");
+      newChat();
+      setHistory([]);
+      setTeams([]);
+      setProjects([]);
+      setModal(null);
+      await refreshMe();
+      setTeamNote("Account deleted. We're sorry to see you go.");
+    } catch (e) {
+      window.alert((e as Error).message);
+    } finally {
+      setAuthBusy(false);
+    }
   };
 
   const copy = async (t: string, id: string) => {
@@ -1153,9 +1267,11 @@ function Dashboard() {
             </div>
           </div>
           <nav className="hidden items-center gap-6 text-sm md:flex" style={{ color: "var(--muted)" }}>
+            <Link href="/how-it-works" className="hover:opacity-80">How it works</Link>
             <Link href="/about" className="hover:opacity-80">About</Link>
             <Link href="/pricing" className="hover:opacity-80">Pricing</Link>
-            <Link href="/privacy" className="hover:opacity-80">Privacy</Link>
+            <Link href="/security" className="hover:opacity-80">Security</Link>
+            <Link href="/status" className="hover:opacity-80">Status</Link>
           </nav>
           <div className="flex items-center gap-2">
             <Btn variant="ghost" size="sm" onClick={() => { setAuthTab("login"); setModal("auth"); }}>
@@ -1173,23 +1289,30 @@ function Dashboard() {
               className="mb-5 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium"
               style={{ borderColor: "var(--border)", background: "var(--card)", color: "var(--accent)" }}
             >
-              <Sparkles className="h-3.5 w-3.5" /> Free for everyone · Ad-supported
+              <Sparkles className="h-3.5 w-3.5" /> BUILDWE · Free AI workspace
             </div>
             <h1 className="text-4xl font-semibold tracking-tight sm:text-6xl sm:leading-[1.05]">
-              Four AI problems.
+              AI that understands the work.
               <br />
-              <span style={{ color: "var(--accent)" }}>One platform.</span>
+              <span style={{ color: "var(--accent)" }}>Not just the words.</span>
             </h1>
             <p className="mx-auto mt-5 max-w-xl text-base sm:text-lg" style={{ color: "var(--muted)" }}>
-              Chat. Code. Image. Audio. BUILDWE is the free workspace that keeps creation in one place — so more people can build, and the platform grows with you.
+              Tell BUILDWE what you want in plain language. It picks the right tool, does the work, checks the result, and hands you the answer — chat, code, images, and voice in one calm workspace.
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
               <Btn size="lg" onClick={() => setView("app")}>
-                Enter BUILDWE <ArrowRight className="h-4 w-4" />
+                Start free — no signup needed <ArrowRight className="h-4 w-4" />
               </Btn>
-              <Btn variant="ghost" size="lg" onClick={() => setModal("plans")}>
-                Free &amp; PRO
-              </Btn>
+              <Link
+                href="/how-it-works"
+                className="inline-flex h-12 items-center rounded-2xl border px-5 text-[15px] font-medium"
+                style={{ borderColor: "var(--border)", background: "var(--card)", color: "var(--ink)" }}
+              >
+                How it works
+              </Link>
+            </div>
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[11px]" style={{ color: "var(--soft)" }}>
+              <span>Free forever plan</span>·<span>Guest mode</span>·<span>Works on mobile</span>·<span>Installable app</span>·<span>No card needed</span>
             </div>
           </div>
 
@@ -1250,17 +1373,43 @@ function Dashboard() {
               <div className="rounded-2xl border p-4" style={{ borderColor: "var(--border)", background: "var(--bg)" }}>
                 <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Inside the workspace</div>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {["Auto route", "Streaming chat", "Code canvas", "Vision", "Voice", "History", "Guest mode"].map((label) => (
+                  {["Auto route", "Streaming chat", "Web search", "File analysis", "Code canvas", "Vision", "Voice", "Projects & teams", "Share links", "History", "Guest mode"].map((label) => (
                     <span key={label} className="rounded-full border px-3 py-1 text-xs font-medium" style={{ borderColor: "var(--border)", background: "var(--card)" }}>{label}</span>
                   ))}
                 </div>
-                <Link href="/about" className="mt-4 inline-flex items-center gap-1 text-sm font-medium" style={{ color: "var(--accent)" }}>
-                  How BUILDWE works <ExternalLink className="h-3.5 w-3.5" />
-                </Link>
+                <div className="mt-4 flex flex-wrap gap-4 text-sm font-medium">
+                  <Link href="/how-it-works" className="inline-flex items-center gap-1" style={{ color: "var(--accent)" }}>
+                    How it works <ExternalLink className="h-3.5 w-3.5" />
+                  </Link>
+                  <Link href="/help" className="inline-flex items-center gap-1" style={{ color: "var(--accent)" }}>
+                    Help &amp; FAQ <ExternalLink className="h-3.5 w-3.5" />
+                  </Link>
+                  <Link href="/security" className="inline-flex items-center gap-1" style={{ color: "var(--accent)" }}>
+                    Security <ExternalLink className="h-3.5 w-3.5" />
+                  </Link>
+                </div>
               </div>
             </div>
           </div>
         </main>
+
+        <footer className="border-t px-4 py-6" style={{ borderColor: "var(--border)" }}>
+          <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-[11px]" style={{ color: "var(--soft)" }}>
+            <span className="font-semibold" style={{ color: "var(--muted)" }}>BUILDWE.ONLINE</span>
+            <Link href="/how-it-works" className="hover:opacity-80">How it works</Link>
+            <Link href="/about" className="hover:opacity-80">About</Link>
+            <Link href="/pricing" className="hover:opacity-80">Pricing</Link>
+            <Link href="/security" className="hover:opacity-80">Security</Link>
+            <Link href="/status" className="hover:opacity-80">Status</Link>
+            <Link href="/changelog" className="hover:opacity-80">Changelog</Link>
+            <Link href="/help" className="hover:opacity-80">Help</Link>
+            <Link href="/contact" className="hover:opacity-80">Contact</Link>
+            <Link href="/privacy" className="hover:opacity-80">Privacy</Link>
+            <Link href="/terms" className="hover:opacity-80">Terms</Link>
+            <Link href="/acceptable-use" className="hover:opacity-80">Acceptable use</Link>
+            <Link href="/developers" className="hover:opacity-80">Developers</Link>
+          </div>
+        </footer>
 
         {modal === "auth" && (
           <AuthSheet
@@ -1433,6 +1582,22 @@ function Dashboard() {
                   </button>
                 </div>
               </div>
+              {me?.kind === "guest" && !!history.length && (
+                <div className="anim-rise mx-2 mb-2 rounded-2xl border p-2.5" style={{ borderColor: "var(--border)", background: "var(--secondary)" }}>
+                  <div className="text-[11px] font-semibold">Guest = Try · Account = Own</div>
+                  <p className="mt-0.5 text-[10px] leading-snug" style={{ color: "var(--muted)" }}>
+                    History is saved on this device only. Log in to own your workspace, sync devices, and unlock PRO &amp; your own API keys.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => { setAuthTab("register"); setModal("auth"); }}
+                    className="mt-1.5 w-full rounded-xl py-1.5 text-[11px] font-semibold text-white"
+                    style={{ background: "var(--accent)" }}
+                  >
+                    Create free account
+                  </button>
+                </div>
+              )}
               <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
                 {filteredHistory.map((h) => (
                   <div key={h.id} className="group flex items-center rounded-xl" style={h.id === convId ? { background: "var(--secondary)" } : undefined}>
@@ -1766,6 +1931,39 @@ function Dashboard() {
                                   >
                                     <ThumbsDown className="h-3.5 w-3.5" />
                                   </Btn>
+                                  <span className="mx-1 h-3 w-px" style={{ background: "var(--border)" }} />
+                                  {[
+                                    ["Simplify", "Rewrite your previous answer in simple, beginner-friendly language — keep every fact."],
+                                    ["Shorten", "Rewrite your previous answer much shorter — only the essentials, keep it accurate."],
+                                    ["Expand", "Expand your previous answer with more detail and useful examples — keep it accurate."],
+                                    ["Explain", "Explain your previous answer step by step like I'm new to this topic."],
+                                  ].map(([label, instruction]) => (
+                                    <button
+                                      key={label}
+                                      type="button"
+                                      disabled={streaming}
+                                      onClick={() => send(instruction)}
+                                      className="rounded-lg px-1.5 py-1 text-[10px] font-semibold transition hover:opacity-80 disabled:opacity-40"
+                                      style={{ background: "var(--secondary)", color: "var(--muted)" }}
+                                    >
+                                      {label}
+                                    </button>
+                                  ))}
+                                  <Btn
+                                    variant="icon"
+                                    size="sm"
+                                    aria-label="Save answer"
+                                    title="Save this answer to a file"
+                                    onClick={() => {
+                                      const blob = new Blob([m.content], { type: "text/plain" });
+                                      const a = document.createElement("a");
+                                      a.href = URL.createObjectURL(blob);
+                                      a.download = "buildwe-answer.txt";
+                                      a.click();
+                                    }}
+                                  >
+                                    <Download className="h-3.5 w-3.5" />
+                                  </Btn>
                                 </div>
                               )}
                             </div>
@@ -1783,11 +1981,21 @@ function Dashboard() {
               <div className="shrink-0 border-t px-3 py-2.5 sm:px-5" style={{ borderColor: "var(--border)", background: "color-mix(in srgb, var(--bg-elevated) 95%, transparent)" }}>
                 <div className="mx-auto max-w-2xl">
                   {error && (
-                    <div className="mb-2 rounded-xl px-3 py-2 text-xs" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
-                      {error}
-                      {/limit|PRO/i.test(error) && (
-                        <button type="button" className="ml-2 font-semibold underline" onClick={() => setModal("plans")}>Upgrade</button>
-                      )}
+                    <div className="anim-rise mb-2 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2 text-xs" style={{ background: "var(--err-soft)", color: "var(--err)" }}>
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                      <span className="min-w-0 flex-1">{error}</span>
+                      {/limit|PRO/i.test(error) ? (
+                        <button type="button" className="font-semibold underline" onClick={() => setModal("plans")}>Upgrade</button>
+                      ) : lastPrompt.current ? (
+                        <button type="button" className="font-semibold underline" onClick={() => { setError(""); send(lastPrompt.current); }}>Try again</button>
+                      ) : null}
+                    </div>
+                  )}
+                  {streaming && (
+                    <div className="anim-rise mb-1.5 flex items-center gap-1.5 px-1 text-[11px]" style={{ color: "var(--muted)" }}>
+                      <Loader2 className="h-3 w-3 animate-spin" style={{ color: "var(--accent)" }} />
+                      {streamPhase || "Working…"}
+                      <span className="ml-1" style={{ color: "var(--soft)" }}>· you can stop anytime, the partial answer is saved</span>
                     </div>
                   )}
 
@@ -1811,10 +2019,12 @@ function Dashboard() {
                       rows={1}
                       placeholder={
                         mode === "auto"
-                          ? "What are we making?"
+                          ? "What do you want to do? e.g. “plan my launch”, “build a quiz app”, “make a logo”"
                           : mode === "code"
-                            ? "Describe the build…"
-                            : "Message BUILDWE"
+                            ? "Describe what you want to build — BUILDWE handles the code"
+                            : mode === "chat"
+                              ? "Ask anything — plain language works best"
+                              : "Message BUILDWE"
                       }
                       onChange={(e) => {
                         setInput(e.target.value);
@@ -1871,6 +2081,43 @@ function Dashboard() {
                         e.target.value = "";
                       }} />
                       {(mode === "chat" || mode === "auto") && (
+                        <div className="relative">
+                          <Btn
+                            variant="icon"
+                            size="sm"
+                            aria-label="Answer style"
+                            title="Answer style — length & language"
+                            onClick={() => setStyleMenu((v) => !v)}
+                            style={depth !== "balanced" || tone !== "standard" ? { background: "var(--accent-soft)", color: "var(--accent)" } : undefined}
+                          >
+                            <SlidersHorizontal className="h-4 w-4" />
+                          </Btn>
+                          {styleMenu && (
+                            <>
+                              <button type="button" className="fixed inset-0 z-40 cursor-default" aria-label="Close style menu" onClick={() => setStyleMenu(false)} />
+                              <div className="anim-rise absolute bottom-10 left-0 z-50 w-60 rounded-2xl border p-3 shadow-lg" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
+                                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Answer length</div>
+                                <div className="mb-3 flex flex-wrap gap-1">
+                                  {(["short", "balanced", "detailed", "deep"] as const).map((d) => (
+                                    <button key={d} type="button" onClick={() => setDepth(d)} className="rounded-full px-2 py-1 text-[11px] font-semibold capitalize" style={depth === d ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}>
+                                      {d}
+                                    </button>
+                                  ))}
+                                </div>
+                                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Language</div>
+                                <div className="flex flex-wrap gap-1">
+                                  {(["simple", "standard", "expert"] as const).map((t) => (
+                                    <button key={t} type="button" onClick={() => setTone(t)} className="rounded-full px-2 py-1 text-[11px] font-semibold capitalize" style={tone === t ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}>
+                                      {t}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                      {(mode === "chat" || mode === "auto") && (
                         <Btn
                           variant="icon"
                           size="sm"
@@ -1921,7 +2168,8 @@ function Dashboard() {
                     </div>
                   </div>
                   <p className="mt-1.5 text-center text-[10px]" style={{ color: "var(--soft)" }}>
-                    {me?.kind === "guest" ? "Browsing free · sign in to sync across devices" : me?.user?.email}
+                    BUILDWE picks the right tool — no commands or code needed, just type naturally
+                    {me?.kind === "guest" ? " · guest mode" : ` · ${me?.user?.email}`}
                     {plan === "free" ? " · Free plan" : " · PRO"}
                     {byokActive ? " · Own key ⚡" : ""}
                   </p>
@@ -1950,6 +2198,39 @@ function Dashboard() {
                         <Eye className="h-3.5 w-3.5" /> Preview
                       </button>
                     ) : null}
+                    {canvasVersions.length > 1 && (
+                      <div className="relative ml-1">
+                        <button
+                          type="button"
+                          onClick={() => setVerMenu((v) => !v)}
+                          className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-white/45 hover:bg-white/10"
+                        >
+                          <RotateCcw className="h-3 w-3" /> History · {canvasVersions.length}
+                        </button>
+                        {verMenu && (
+                          <>
+                            <button type="button" className="fixed inset-0 z-40 cursor-default" aria-label="Close history" onClick={() => setVerMenu(false)} />
+                            <div className="absolute left-0 z-50 mt-2 max-h-56 w-56 overflow-y-auto rounded-2xl border border-white/10 bg-[#1e1b18] p-1.5 shadow-lg">
+                              {canvasVersions.map((v, vi) => (
+                                <button
+                                  key={v.ts}
+                                  type="button"
+                                  onClick={() => {
+                                    setCodePanel(v.code);
+                                    setCodeLang(v.lang);
+                                    setVerMenu(false);
+                                  }}
+                                  className="flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-left text-[11px] text-white/80 hover:bg-white/10"
+                                >
+                                  <span>{v.code === codePanel ? "Current" : `Version ${canvasVersions.length - vi}`}</span>
+                                  <span className="text-white/40">{new Date(v.ts).toLocaleTimeString()}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div className="flex gap-1">
                     <button type="button" className="rounded-lg px-2 py-1 text-[11px] text-white/55 hover:bg-white/10" onClick={() => copy(codePanel, "code")}>{copied === "code" ? "Copied" : "Copy"}</button>
@@ -2046,9 +2327,10 @@ function Dashboard() {
           name={name}
           setName={setName}
           err={authErr}
+          notice={authNotice}
           busy={authBusy}
           onSubmit={onAuth}
-          onClose={() => setModal(null)}
+          onClose={() => { setModal(null); setAuthNotice(""); }}
         />
       )}
 
@@ -2117,12 +2399,19 @@ function Dashboard() {
               <button type="button" onClick={() => setModal("byok")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><KeyRound className="h-4 w-4 opacity-70" /> API keys <span className="ml-auto text-[10px] font-semibold" style={{ color: byokActive ? "var(--accent)" : "var(--soft)" }}>{byokActive ? "Own key ⚡" : "BYOK"}</span></button>
               <button type="button" onClick={() => setModal("teams")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Users className="h-4 w-4 opacity-70" /> Teams <span className="ml-auto text-[10px] font-semibold" style={{ color: teams.length ? "var(--accent)" : "var(--soft)" }}>{teams.length ? `${teams.length} active` : "Share chats"}</span></button>
               <a href="/developers" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Terminal className="h-4 w-4 opacity-70" /> Developer API <ExternalLink className="ml-auto h-3.5 w-3.5" style={{ color: "var(--soft)" }} /></a>
+              <a href="/help" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><HelpCircle className="h-4 w-4 opacity-70" /> Help &amp; FAQ <ExternalLink className="ml-auto h-3.5 w-3.5" style={{ color: "var(--soft)" }} /></a>
+              <a href="/how-it-works" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Wand2 className="h-4 w-4 opacity-70" /> How BUILDWE works <ExternalLink className="ml-auto h-3.5 w-3.5" style={{ color: "var(--soft)" }} /></a>
               <a href="/about" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Bot className="h-4 w-4 opacity-70" /> About BUILDWE <ExternalLink className="ml-auto h-3.5 w-3.5" style={{ color: "var(--soft)" }} /></a>
               <a href="/privacy" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Shield className="h-4 w-4 opacity-70" /> Privacy</a>
               <a href="/terms" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><FileCode2 className="h-4 w-4 opacity-70" /> Terms</a>
               <button type="button" onClick={() => setModal("plans")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><CreditCard className="h-4 w-4 opacity-70" /> Plan · {plan}</button>
               {loggedIn ? (
-                <button type="button" onClick={doLogout} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-red-600"><LogOut className="h-4 w-4" /> Log out</button>
+                <>
+                  <button type="button" onClick={doLogout} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-red-600"><LogOut className="h-4 w-4" /> Log out</button>
+                  <button type="button" onClick={doDeleteAccount} disabled={authBusy} className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-[12px] font-medium" style={{ color: "var(--err)" }}>
+                    <AlertTriangle className="h-3.5 w-3.5" /> {authBusy ? "Deleting…" : "Delete account (permanent)"}
+                  </button>
+                </>
               ) : (
                 <button type="button" onClick={() => setModal("auth")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><LogIn className="h-4 w-4 opacity-70" /> Log in</button>
               )}
@@ -2300,26 +2589,113 @@ function AuthSheet(props: {
   setName: (v: string) => void;
   err: string;
   busy: boolean;
+  notice?: string;
   onSubmit: (e: React.FormEvent) => void;
   onClose: () => void;
 }) {
+  const [view, setView] = useState<"auth" | "forgot">("auth");
+  const [forgotEmail, setForgotEmail] = useState(props.email);
+  const [forgotBusy, setForgotBusy] = useState(false);
+  const [forgotNote, setForgotNote] = useState("");
+
+  const submitForgot = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setForgotBusy(true);
+    setForgotNote("");
+    try {
+      const r = await fetch("/api/auth/forgot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: forgotEmail }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "Couldn't start reset");
+      setForgotNote(j.message || "If that email has an account, a reset link is on its way.");
+      if (j.devLink) setForgotNote((n) => `${n} (dev link: ${j.devLink})`);
+    } catch (err) {
+      setForgotNote((err as Error).message);
+    } finally {
+      setForgotBusy(false);
+    }
+  };
+
   return (
     <Sheet onClose={props.onClose} title={props.tab === "login" ? "Welcome back" : "Create account"}>
-      <div className="mb-4 flex rounded-2xl border p-1" style={{ borderColor: "var(--border)" }}>
-        {(["login", "register"] as const).map((t) => (
-          <button key={t} type="button" onClick={() => props.setTab(t)} className="flex-1 rounded-xl py-2 text-sm font-medium capitalize" style={props.tab === t ? { background: "var(--ink)", color: "var(--bg)" } : { color: "var(--muted)" }}>{t}</button>
-        ))}
-      </div>
-      <form onSubmit={props.onSubmit} className="space-y-3">
-        {props.tab === "register" && (
-          <input value={props.name} onChange={(e) => props.setName(e.target.value)} placeholder="Name" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
-        )}
-        <input type="email" required value={props.email} onChange={(e) => props.setEmail(e.target.value)} placeholder="Email" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
-        <input type="password" required minLength={6} value={props.password} onChange={(e) => props.setPassword(e.target.value)} placeholder="Password (min 6)" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
-        {props.err && <p className="text-xs text-red-600">{props.err}</p>}
-        <Btn type="submit" className="w-full" size="lg" disabled={props.busy}>{props.busy ? "…" : props.tab === "login" ? "Log in" : "Sign up free"}</Btn>
-      </form>
-      <p className="mt-3 text-center text-[11px]" style={{ color: "var(--soft)" }}>Free account · your workspace, your history</p>
+      {view === "forgot" ? (
+        <div className="anim-sheet">
+          <p className="mb-3 text-sm" style={{ color: "var(--muted)" }}>
+            Enter your account email — we&apos;ll send a secure link to set a new password (valid 1 hour).
+          </p>
+          <form onSubmit={submitForgot} className="space-y-3">
+            <input
+              type="email"
+              required
+              value={forgotEmail}
+              onChange={(e) => setForgotEmail(e.target.value)}
+              placeholder="Your account email"
+              className="h-11 w-full rounded-2xl border px-3 text-sm outline-none"
+              style={{ borderColor: "var(--border)", background: "var(--bg)" }}
+            />
+            {forgotNote && <p className="text-xs" style={{ color: "var(--accent)" }}>{forgotNote}</p>}
+            <Btn type="submit" className="w-full" size="lg" disabled={forgotBusy}>
+              {forgotBusy ? "Sending…" : "Send reset link"}
+            </Btn>
+            <button type="button" className="w-full text-center text-xs font-semibold" style={{ color: "var(--muted)" }} onClick={() => setView("auth")}>
+              ← Back to log in
+            </button>
+          </form>
+        </div>
+      ) : (
+        <div className="anim-sheet">
+          <div className="grid grid-cols-2 gap-2">
+            <a
+              href="/api/auth/oauth/google"
+              className="flex h-11 items-center justify-center gap-2 rounded-2xl border text-sm font-medium transition hover:opacity-85"
+              style={{ borderColor: "var(--border)", background: "var(--card)" }}
+            >
+              <Chrome className="h-4 w-4" /> Google
+            </a>
+            <a
+              href="/api/auth/oauth/github"
+              className="flex h-11 items-center justify-center gap-2 rounded-2xl border text-sm font-medium transition hover:opacity-85"
+              style={{ borderColor: "var(--border)", background: "var(--card)" }}
+            >
+              <Github className="h-4 w-4" /> GitHub
+            </a>
+          </div>
+          <div className="my-3 flex items-center gap-2 text-[10px] uppercase tracking-wider" style={{ color: "var(--soft)" }}>
+            <span className="h-px flex-1" style={{ background: "var(--border)" }} /> or use email <span className="h-px flex-1" style={{ background: "var(--border)" }} />
+          </div>
+
+          <div className="mb-4 flex rounded-2xl border p-1" style={{ borderColor: "var(--border)" }}>
+            {(["login", "register"] as const).map((t) => (
+              <button key={t} type="button" onClick={() => props.setTab(t)} className="flex-1 rounded-xl py-2 text-sm font-medium capitalize" style={props.tab === t ? { background: "var(--ink)", color: "var(--bg)" } : { color: "var(--muted)" }}>{t === "login" ? "log in" : "sign up"}</button>
+            ))}
+          </div>
+          <form onSubmit={props.onSubmit} className="space-y-3">
+            {props.tab === "register" && (
+              <input value={props.name} onChange={(e) => props.setName(e.target.value)} placeholder="Name" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+            )}
+            <input type="email" required value={props.email} onChange={(e) => props.setEmail(e.target.value)} placeholder="Email" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+            <input type="password" required minLength={6} value={props.password} onChange={(e) => props.setPassword(e.target.value)} placeholder="Password (min 6)" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+            {props.tab === "login" && (
+              <button type="button" className="text-xs font-semibold" style={{ color: "var(--accent)" }} onClick={() => setView("forgot")}>
+                Forgot password?
+              </button>
+            )}
+            {(props.err || props.notice) && (
+              <p className="text-xs" style={{ color: "var(--err)" }}>{props.err || props.notice}</p>
+            )}
+            <Btn type="submit" className="w-full" size="lg" disabled={props.busy}>
+              {props.busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {props.busy ? "Just a sec…" : props.tab === "login" ? "Log in" : "Sign up free"}
+            </Btn>
+          </form>
+          <p className="mt-3 text-center text-[11px]" style={{ color: "var(--soft)" }}>
+            Guest = Try BUILDWE · Account = Own your workspace
+          </p>
+        </div>
+      )}
     </Sheet>
   );
 }

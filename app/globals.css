@@ -228,3 +228,138 @@ body.lock-scroll {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ════════════════════════════════════════════════════════════
+   BUILDWE Design System (Update 3 — additive layer)
+   Semantic states · motion language · accessibility · typography
+   ════════════════════════════════════════════════════════════ */
+
+:root {
+  /* semantic states */
+  --ok: #1f7a3d;
+  --ok-soft: #e3f2e7;
+  --warn: #9a6700;
+  --warn-soft: #fdf3d7;
+  --err: #c0392b;
+  --err-soft: #fdeae7;
+  --info: #2557a7;
+  --info-soft: #e8effb;
+  /* motion tokens — fast, subtle, purposeful */
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --dur-slow: 280ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.3, 1);
+  --shadow-1: 0 1px 2px rgb(20 17 15 / 0.05);
+  --shadow-2: 0 8px 28px rgb(20 17 15 / 0.12);
+}
+
+.dark {
+  --ok: #4caf76;
+  --ok-soft: #14301f;
+  --warn: #e0b34c;
+  --warn-soft: #33290f;
+  --err: #e57368;
+  --err-soft: #39190f;
+  --info: #7ca7f0;
+  --info-soft: #16233d;
+}
+
+/* ── Focus visibility (keyboard users) ─────────────────── */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ── Micro-interactions ─────────────────────────────────── */
+button,
+a,
+input,
+textarea,
+select {
+  transition:
+    background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease),
+    opacity var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+/* ── Entrance animations (fast, subtle) ─────────────────── */
+@keyframes bw-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+.anim-sheet {
+  animation: bw-sheet-in var(--dur-slow) var(--ease) both;
+}
+
+@keyframes bw-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.anim-rise {
+  animation: bw-rise var(--dur) var(--ease) both;
+}
+
+/* ── Typography helpers ─────────────────────────────────── */
+.bw-eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.bw-caption {
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* ── Semantic text/badges ───────────────────────────────── */
+.bw-ok { color: var(--ok); }
+.bw-err { color: var(--err); }
+.bw-warn { color: var(--warn); }
+.bw-info { color: var(--info); }
+.bw-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.bw-badge-ok { background: var(--ok-soft); color: var(--ok); }
+.bw-badge-err { background: var(--err-soft); color: var(--err); }
+.bw-badge-warn { background: var(--warn-soft); color: var(--warn); }
+.bw-badge-info { background: var(--info-soft); color: var(--info); }
+
+/* ── Reduced motion: respect the user ───────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

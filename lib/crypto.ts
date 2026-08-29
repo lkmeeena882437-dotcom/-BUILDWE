@@ -56,3 +56,33 @@ export function sha256Hex(s: string): string {
 export function newApiKey(): string {
   return `bw_sk_${crypto.randomBytes(20).toString("hex")}`;
 }
+
+/* ── Stateless email-verification tokens ─────────────────── */
+
+function hmac(s: string): string {
+  const secret =
+    process.env.SESSION_SECRET || "buildwe-dev-secret-change-me-in-production-32b";
+  return crypto.createHmac("sha256", secret).update(s).digest("base64url");
+}
+
+export function signVerifyToken(userId: string, email: string, minutes = 48 * 60) {
+  const exp = Date.now() + minutes * 60_000;
+  const payload = Buffer.from(`${userId}|${email}|${exp}`).toString("base64url");
+  return `${payload}.${hmac(payload)}`;
+}
+
+export function verifyVerifyToken(
+  token: string
+): { userId: string; email: string } | null {
+  const [payload, sig] = token.split(".");
+  if (!payload || !sig || hmac(payload) !== sig) return null;
+  try {
+    const [userId, email, exp] = Buffer.from(payload, "base64url")
+      .toString("utf8")
+      .split("|");
+    if (!userId || !email || Number(exp) < Date.now()) return null;
+    return { userId, email };
+  } catch {
+    return null;
+  }
+}

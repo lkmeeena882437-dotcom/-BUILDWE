@@ -7,7 +7,7 @@
  */
 import fs from "fs";
 import path from "path";
-import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import { pullRemoteDb, pushRemoteDb, remoteDbEnabled } from "./remote";
 
 export type Plan = "free" | "pro";
@@ -21,8 +21,21 @@ export type User = {
   skills: string[];
   /** encrypted user-provided provider keys (BYOK) */
   byok?: { groq?: string; openrouter?: string };
+  /** OAuth linkage (additive — email/password users have neither) */
+  provider?: "email" | "google" | "github";
+  oauthId?: string;
+  emailVerified?: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+export type PasswordReset = {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  expiresAt: string;
+  usedAt?: string | null;
+  createdAt: string;
 };
 
 export type ApiKey = {
@@ -132,6 +145,7 @@ export type DB = {
   payments: Payment[];
   apiKeys: ApiKey[];
   teams: Team[];
+  passwordResets: PasswordReset[];
 };
 
 const emptyDb = (): DB => ({
@@ -144,6 +158,7 @@ const emptyDb = (): DB => ({
   payments: [],
   apiKeys: [],
   teams: [],
+  passwordResets: [],
 });
 
 /** Process-local fallback when disk is unavailable */
@@ -213,6 +228,7 @@ function read(): DB {
       payments: parsed.payments || [],
       apiKeys: parsed.apiKeys || [],
       teams: parsed.teams || [],
+      passwordResets: parsed.passwordResets || [],
     };
     return memoryDb;
   } catch {
@@ -274,6 +290,7 @@ function bootRemote() {
       payments: remote.payments || [],
       apiKeys: remote.apiKeys || [],
       teams: remote.teams || [],
+      passwordResets: remote.passwordResets || [],
     };
     const file = getPath();
     if (file && writable) {
@@ -356,7 +373,12 @@ export function createUser(input: {
 
 export function updateUser(
   id: string,
-  patch: Partial<Pick<User, "name" | "plan" | "skills" | "byok">>
+  patch: Partial<
+    Pick<
+      User,
+      "name" | "plan" | "skills" | "byok" | "emailVerified" | "provider" | "oauthId"
+    >
+  >
 ) {
   const db = read();
   const i = db.users.findIndex((u) => u.id === id);
@@ -368,6 +390,116 @@ export function updateUser(
   };
   write(db);
   return db.users[i];
+}
+
+/* ── OAuth users ─────────────────────────────────────────── */
+
+export function findOrCreateOauthUser(input: {
+  provider: "google" | "github";
+  oauthId: string;
+  email?: string;
+  name?: string;
+}) {
+  const db = read();
+  const email = (input.email || "").trim().toLowerCase();
+  let u = db.users.find(
+    (x) => x.provider === input.provider && x.oauthId === input.oauthId
+  );
+  if (u) return u;
+
+  // link by verified email (no password conflict: keep existing hash)
+  if (email) {
+    u = db.users.find((x) => x.email === email);
+    if (u) {
+      u.provider = input.provider;
+      u.oauthId = input.oauthId;
+      u.emailVerified = true;
+      u.updatedAt = new Date().toISOString();
+      write(db);
+      return u;
+    }
+  }
+
+  const now = new Date().toISOString();
+  const user: User = {
+    id: uid("usr"),
+    email: email || `${input.provider}_${input.oauthId}@users.buildwe.online`,
+    name: (input.name || "").trim() || input.provider[0].toUpperCase() + " user",
+    passwordHash: hashPassword(randomBytes(24).toString("hex")), // unusable random
+    plan: "free",
+    skills: [],
+    provider: input.provider,
+    oauthId: input.oauthId,
+    emailVerified: Boolean(email),
+    createdAt: now,
+    updatedAt: now,
+  };
+  db.users.push(user);
+  write(db);
+  return user;
+}
+
+/* ── Password reset ──────────────────────────────────────── */
+
+export function createPasswordReset(userId: string) {
+  const db = read();
+  const token = randomBytes(24).toString("hex");
+  const row: PasswordReset = {
+    id: uid("rst"),
+    userId,
+    tokenHash: createHash("sha256").update(token).digest("hex"),
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(), // 1 hour
+    usedAt: null,
+    createdAt: new Date().toISOString(),
+  };
+  db.passwordResets.unshift(row);
+  db.passwordResets = db.passwordResets.slice(0, 100);
+  write(db);
+  return token;
+}
+
+export function consumePasswordReset(token: string, newPassword: string) {
+  const db = read();
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  const row = db.passwordResets.find((r) => r.tokenHash === tokenHash);
+  if (!row || row.usedAt || new Date(row.expiresAt).getTime() < Date.now()) {
+    return null;
+  }
+  const u = db.users.find((x) => x.id === row.userId);
+  if (!u) return null;
+  u.passwordHash = hashPassword(newPassword);
+  u.updatedAt = new Date().toISOString();
+  row.usedAt = new Date().toISOString();
+  write(db);
+  return u;
+}
+
+/* ── Account deletion (full cascade) ─────────────────────── */
+
+export function deleteUserCascade(userId: string) {
+  const db = read();
+  const ownedTeamIds = db.teams
+    .filter((t) => t.ownerId === userId)
+    .map((t) => t.id);
+  db.teams = db.teams.filter((t) => t.ownerId !== userId);
+  // detach chats from dissolved teams; remove membership from others
+  for (const c of db.conversations) {
+    if (c.teamId && ownedTeamIds.includes(c.teamId)) c.teamId = null;
+  }
+  for (const t of db.teams) {
+    t.members = t.members.filter((m) => m.userId !== userId);
+  }
+  db.users = db.users.filter((u) => u.id !== userId);
+  db.conversations = db.conversations.filter((c) => c.userId !== userId);
+  db.generations = db.generations.filter((g) => g.userId !== userId);
+  db.usage = db.usage.filter((u) => u.userId !== userId);
+  db.projects = db.projects.filter((p) => p.userId !== userId);
+  db.shares = db.shares.filter((s) => s.userId !== userId);
+  db.payments = db.payments.filter((p) => p.userId !== userId);
+  db.apiKeys = db.apiKeys.filter((k) => k.userId !== userId);
+  db.passwordResets = db.passwordResets.filter((r) => r.userId !== userId);
+  write(db);
+  return true;
 }
 
 /* ── Conversations ───────────────────────────────────────── */

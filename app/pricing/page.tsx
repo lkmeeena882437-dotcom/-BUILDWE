@@ -107,7 +107,7 @@ export default function PricingPage() {
               PRO
             </div>
             <div className="mt-1 flex items-baseline gap-1">
-              <span className="text-4xl font-semibold">$5</span>
+              <span className="text-4xl font-semibold">₹500</span>
               <span className="text-sm text-[#6B6560]">/ month</span>
             </div>
             <p className="mt-2 text-sm text-[#6B6560]">
