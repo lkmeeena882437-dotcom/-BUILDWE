@@ -1,79 +1,66 @@
 /**
- * BUILDWE AI operating rules
- * ─────────────────────────
- * HOW THE PLATFORM WORKS
- *
- * 1. MODES
- *    - chat  → Q&A, writing, brainstorm (feels unlimited; fair-use server-side)
- *    - code  → multi-file projects, canvas, optional clarifying Qs if complex
- *    - image → text-to-image
- *    - audio → text-to-speech
- *    - auto  → router reads prompt + intent keywords → picks mode, then runs
- *
- * 2. MODEL TIERS
- *    FREE  → fast / cheaper models (AI_MODELS.free.*)
- *    PRO   → higher quality / priority (AI_MODELS.pro.*)
- *    BYOK  → user pastes their own provider key (encrypted at rest later)
- *
- * 3. ROUTING ORDER (server)
- *    a. If user BYOK for that capability → use their key + their model preference
- *    b. Else if plan=pro → AI_MODELS.pro + priority queue
- *    c. Else → AI_MODELS.free + standard queue
- *    d. On provider error → fallback chain (groq → openrouter → demo)
- *
- * 4. CAPABILITIES BY PLAN
- *    FREE: chat full (fair use), limited code/image/audio (hidden counters)
- *    PRO:  higher limits, priority, better models, no daily image/audio hard cap
- *
- * 5. PRIVACY
- *    - Keys never leave server (except NEXT_PUBLIC_*)
- *    - Don't log full prompts in production without consent
- *    - See /privacy and /terms
+ * BUILDWE intelligence layer — public-facing product rules.
+ * Internal provider names never leak to end users.
  */
 
 export type AIMode = "chat" | "code" | "image" | "audio" | "auto";
 export type Plan = "free" | "pro";
 
 export const SYSTEM_PROMPTS = {
-  chat: `You are BUILDWE AI — clear, accurate, concise.
-Prioritize correctness. Use markdown when useful. Match the user's language.
-Do not invent facts. Give actionable answers.`,
+  chat: `You are BUILDWE — the AI workspace inside buildwe.online.
+Voice: modern, sharp, confident, warm. Short paragraphs. No filler.
+You help people think, write, learn, decide, and create.
+Rules:
+- Lead with the answer, then structure.
+- Use markdown only when it helps scanability.
+- Match the user's language (Hindi/English/Hinglish OK).
+- Never invent APIs, prices, or facts. Say when unsure.
+- Never mention underlying model vendors, API keys, demo mode, or infrastructure.
+- Never say you are ChatGPT, Claude, Gemini, Llama, or Groq.
+- You are BUILDWE. If asked what powers you: "BUILDWE's AI stack."
+- Be actionable. End with a clear next step when useful.`,
 
-  code: `You are BUILDWE CODE — senior engineer.
-Ship production-quality, simple code. State assumptions. Prefer complete files.
-Structure: brief approach → code → how to run (only when needed).`,
+  code: `You are BUILDWE Code — senior product engineer inside buildwe.online.
+Ship clean, production-minded code. Prefer simple over clever.
+Rules:
+- Complete working snippets in fenced blocks with language tags.
+- State assumptions briefly.
+- For apps: give files users can run (HTML/CSS/JS or React/Next as asked).
+- Call out security/perf only when it matters.
+- Never mention model vendors, keys, or demo mode.
+- You are BUILDWE Code, not Cursor/Copilot/ChatGPT.`,
 
-  image: `Enhance image prompts for clarity, lighting, composition. Keep user intent.`,
+  image: `Enhance image prompts for clarity and composition while preserving user intent.
+Keep language visual and specific. Do not mention image vendors.`,
 
-  audio: `Prepare text for natural TTS. Keep punctuation clear. Do not alter meaning.`,
+  audio: `Prepare text for natural speech. Preserve meaning. Clear punctuation.
+Do not mention TTS vendors.`,
 
-  auto: `You are BUILDWE router+assistant. Detect if the user wants chat help, code, an image, or audio. Then solve it.`,
+  auto: `You route and solve. Detect chat vs code vs image vs audio intent, then deliver.`,
 } as const;
 
-/** Keyword intent for Auto mode (client + server can share) */
-export function detectIntent(
-  prompt: string
-): Exclude<AIMode, "auto"> {
+export function detectIntent(prompt: string): Exclude<AIMode, "auto"> {
   const p = prompt.toLowerCase();
 
   if (
-    /(generate|create|draw|render|imagine).*(image|picture|logo|poster|art|photo)/i.test(
+    /(generate|create|draw|render|imagine).*(image|picture|logo|poster|art|photo|thumbnail)/i.test(
       p
     ) ||
-    /\b(image|logo|thumbnail|illustration|wallpaper)\b/.test(p)
+    /\b(image|logo|thumbnail|illustration|wallpaper|banner)\b/.test(p)
   ) {
     return "image";
   }
 
   if (
-    /(speak|voice|tts|narrat|read aloud|text to speech|audio)/i.test(p) ||
-    /\b(podcast|voiceover)\b/.test(p)
+    /(speak|voice|tts|narrat|read aloud|text to speech|audio|podcast|voiceover)/i.test(
+      p
+    )
   ) {
     return "audio";
   }
 
   if (
-    /(code|function|component|api|bug|debug|refactor|typescript|python|react|next\.?js|html|css|build (a|an|the)|landing page|website|app|game)/i.test(
+    /(code|function|component|api|bug|debug|refactor|typescript|python|react|next\.?js|html|css|sql|build (a|an|the)|landing page|website|app|game|script)/i.test(
       p
     ) ||
     /```/.test(prompt)
@@ -101,4 +88,25 @@ export function isComplexCodePrompt(text: string): boolean {
     "clone",
   ];
   return words >= 8 || signals.some((s) => t.includes(s));
+}
+
+/** User-safe model labels (never expose vendor ids in UI) */
+export function publicModelLabel(internal?: string, mode?: string): string {
+  if (!internal) {
+    if (mode === "code") return "BUILDWE Code";
+    if (mode === "image") return "BUILDWE Vision";
+    if (mode === "audio") return "BUILDWE Voice";
+    return "BUILDWE AI";
+  }
+  const s = internal.toLowerCase();
+  if (s.includes("demo")) return "BUILDWE AI";
+  if (s.includes("code") || s.includes("qwen") || s.includes("deepseek-coder"))
+    return "BUILDWE Code";
+  if (s.includes("image") || s.includes("flux") || s.includes("pollination") || s.includes("sdxl"))
+    return "BUILDWE Vision";
+  if (s.includes("audio") || s.includes("tts") || s.includes("browser"))
+    return "BUILDWE Voice";
+  if (s.includes("pro") || s.includes("claude") || s.includes("gpt-4"))
+    return "BUILDWE Pro";
+  return "BUILDWE AI";
 }

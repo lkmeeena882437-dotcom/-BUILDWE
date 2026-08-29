@@ -2,66 +2,86 @@
 
 **Build anything. Create everything.**
 
-Next.js 14 + Tailwind AI workspace: **Auto · Chat · Code · Image · Audio**
+100% free-stack AI workspace: **Auto · Chat · Code · Image · Audio**
+
+Cream Gen-Z UI (not dark) + real backend APIs.
+
+## Why it exists
+
+Creators juggle ChatGPT + coding tools + image + TTS apps. BUILDWE is one workspace so students, founders, and builders can think, ship code, make visuals, and speak text — without tab chaos.
+
+## Free stack (A→Z)
+
+| Layer | Tech |
+|-------|------|
+| Frontend | Next.js 14, Tailwind, cream design system |
+| Auth | Guest cookie + email/password (scrypt), JWT httpOnly |
+| Database | Local JSON file DB (`/data`) — zero paid SaaS |
+| Chat / Code | Groq free tier → OpenRouter → smart demo fallback |
+| Images | **Pollinations.ai** (no API key) |
+| Audio | **Web Speech API** (browser TTS) |
+| Limits | Server-side daily counters |
+| Docs | `/about` model matrix, `/privacy`, `/terms`, `/pricing` |
 
 ## Quick start
 
 ```bash
-cp .env.example .env.local   # fill keys later
+cp .env.example .env.local
+# optional: GROQ_API_KEY=...  OPENROUTER_API_KEY=...
 npm install
 npm run dev
 ```
 
 Open http://localhost:3000
 
-## Pages
+- Landing → **Start free** → workspace  
+- Guest works immediately (history via cookie)  
+- Register free for named account  
 
-| Route | Purpose |
-|-------|---------|
-| `/` | App dashboard |
-| `/about` | Product, AI models, rules, policy links |
-| `/pricing` | Free vs PRO comparison |
-| `/privacy` | Privacy Policy |
-| `/terms` | Terms + AI acceptable use |
-| `docs/AI_BACKEND.md` | How auto model routing works |
-| `/api/checkout/order` | Create Razorpay order (demo-safe) |
-| `/api/checkout/verify` | Verify payment signature (demo-safe) |
+## Live AI without keys
 
-## Env keys (replace later)
+- **Image** works out of the box (Pollinations)  
+- **Audio** uses browser voices  
+- **Chat/Code** stream demo text until you add `GROQ_API_KEY` or `OPENROUTER_API_KEY`  
 
-See **`.env.example`**. Important groups:
-
-- `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `FAL_KEY`, … — AI providers (server only)
-- `NEXT_PUBLIC_RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` — payments
-- `FREE_*_LIMIT` / `PRO_*_LIMIT` — plan limits
-- `AI_*_MODEL` — model IDs per tier
-
-`NEXT_PUBLIC_DEMO_MODE=true` keeps safe demo AI + demo checkout without real charges.
-
-## AI architecture
+Set in `.env.local`:
 
 ```
-lib/ai/rules.ts      → intent, system prompts, plan rules
-lib/ai/gateway.ts    → provider calls (demo until keys set)
-lib/config.ts        → all env reads
-lib/payments/razorpay.ts → order + verify stubs
+NEXT_PUBLIC_DEMO_MODE=false
+GROQ_API_KEY=gsk_...
 ```
 
-**How routing works**
+## API map
 
-1. User plan = `free` by default  
-2. **Auto** mode → `detectIntent()` → chat | code | image | audio  
-3. Server prefers: user BYOK → PRO models → FREE models → demo fallback  
-4. Limits enforced server-side (UI hides free image/audio counters)
+| Route | Role |
+|-------|------|
+| `POST /api/auth/register` | Free signup |
+| `POST /api/auth/login` | Login |
+| `POST /api/auth/logout` | Logout |
+| `GET  /api/auth/me` | Session + usage |
+| `GET/POST/DELETE /api/history` | Conversations |
+| `POST /api/ai/chat` | SSE chat stream |
+| `POST /api/ai/code` | SSE code stream |
+| `POST /api/ai/image` | Image URL |
+| `POST /api/ai/audio` | TTS plan |
+| `POST /api/ai/auto` | Intent detect |
+| `GET  /api/health` | Provider status |
 
-## PRO checkout flow
+## Brain / architecture
 
-1. User clicks **Switch to PRO**  
-2. Must be logged in  
-3. Checkout sheet: amount · UPI/Card/NetBank · agree Terms/Privacy  
-4. `POST /api/checkout/order` → order id  
-5. (Prod) Razorpay Checkout.js  
-6. `POST /api/checkout/verify` → set `plan=pro`  
+See `docs/PROJECT_BRAIN.md` and `docs/AI_BACKEND.md`.
+
+```
+Prompt → auth → rate limit → auto intent → pickModel → provider → save history
+```
+
+## Model capability headlines (UI)
+
+- **Auto** — One prompt. The right tool.  
+- **Chat** — Think deeper. Write clearer.  
+- **Code** — Idea → working files.  
+- **Image** — Text becomes visual.  
+- **Audio** — Words become voice.  
 
 ## Scripts
 

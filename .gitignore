@@ -38,3 +38,9 @@ buildwe-main.bundle
 .git-askpass.sh
 .git-credentials
 
+
+# free local db
+/data
+*.db
+.env.local
+

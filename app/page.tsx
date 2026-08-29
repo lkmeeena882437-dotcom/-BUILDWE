@@ -1,15 +1,14 @@
 "use client";
 
 import React, {
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  Suspense,
 } from "react";
 import Link from "next/link";
-import { useSearchParams, useRouter } from "next/navigation";
 import {
   MessageSquare,
   Code2,
@@ -19,8 +18,6 @@ import {
   Square,
   Copy,
   Check,
-  Download,
-  RotateCcw,
   Plus,
   Search,
   Trash2,
@@ -31,312 +28,199 @@ import {
   X,
   Menu,
   Zap,
-  Play,
-  Pause,
-  Volume2,
-  Maximize2,
   Paperclip,
   Mic,
   MicOff,
-  Share2,
-  FileCode2,
-  FolderOpen,
-  Presentation,
   LogOut,
   LogIn,
   CreditCard,
-  HelpCircle,
-  MessageCircle,
   Sun,
   Moon,
   Monitor,
   Star,
   PanelLeftClose,
   PanelLeft,
-  ArrowUpRight,
-  RefreshCw,
   Bot,
   Shield,
   ExternalLink,
+  ArrowRight,
+  FileCode2,
+  Loader2,
+  RotateCcw,
+  SquarePen,
 } from "lucide-react";
 import clsx from "clsx";
-import { detectIntent, isComplexCodePrompt } from "@/lib/ai/rules";
-import { streamDemoText } from "@/lib/ai/gateway";
-
-/* ─────────────────────────────────────────────────────────────
-   BUILDWE.ONLINE — Fast · Mobile-first · Free→PRO checkout
-   ───────────────────────────────────────────────────────────── */
+import {
+  detectAuto,
+  deleteHistory,
+  fetchHistory,
+  fetchMe,
+  generateAudio,
+  generateImage,
+  loadConversation,
+  login as apiLogin,
+  logout as apiLogout,
+  register as apiRegister,
+  streamAI,
+  type MeResponse,
+} from "@/lib/client/api";
 
 type Mode = "auto" | "chat" | "code" | "image" | "audio";
-type Plan = "free" | "pro";
 type ThemePref = "system" | "light" | "dark";
-type CodeView = "files" | "slides";
 
-interface Message {
+type Msg = {
   id: string;
   role: "user" | "assistant";
   content: string;
-  createdAt: number;
   streaming?: boolean;
-}
-
-interface Activity {
-  id: string;
-  title: string;
-  mode: Mode;
-  preview: string;
-  messages: Message[];
-  updatedAt: number;
-  /** optional attachments from other modes */
-  meta?: Record<string, unknown>;
-}
-
-interface CodeFile {
-  id: string;
-  name: string;
-  language: string;
-  content: string;
-}
-
-interface Slide {
-  id: string;
-  title: string;
-  body: string;
-}
-
-interface ImageGen {
-  id: string;
-  prompt: string;
-  aspect: string;
-  url: string;
-  createdAt: number;
-  status: "done" | "loading";
-}
-
-interface AudioGen {
-  id: string;
-  text: string;
-  voice: string;
-  speed: number;
-  duration: number;
-  createdAt: number;
-  status: "done" | "loading";
-  playing?: boolean;
-}
-
-const MODES: { id: Mode; label: string; icon: React.ElementType; hint: string }[] = [
-  { id: "auto", label: "Auto", icon: Bot, hint: "AI picks the tool" },
-  { id: "chat", label: "Chat", icon: MessageSquare, hint: "Ask anything" },
-  { id: "code", label: "Code", icon: Code2, hint: "Build & ship" },
-  { id: "image", label: "Image", icon: ImageIcon, hint: "Create visuals" },
-  { id: "audio", label: "Audio", icon: Mic2, hint: "Make voice" },
-];
-
-const CHAT_HEADLINES = [
-  "What can we build today?",
-  "What's on your mind?",
-  "Ready to build?",
-  "What do you want to create?",
-];
-
-const SUGGESTIONS: Record<string, string[]> = {
-  auto: [
-    "Build a landing page for my app",
-    "Explain quantum computing simply",
-    "Image: cream workspace morning light",
-    "Read this welcome script aloud",
-  ],
-  chat: ["Explain this simply", "Brainstorm 5 ideas", "Write a short draft", "Help me decide"],
-  code: ["Landing page for a SaaS", "Todo app with local save", "Quiz game in browser"],
-  image: ["Soft cream workspace", "Minimal AI logo", "Cozy reading nook"],
-  audio: ["Welcome to BUILDWE.ONLINE", "Your daily brief in 30 seconds"],
 };
 
-const ASPECTS = [
-  { id: "1:1", label: "1:1", w: 1, h: 1 },
-  { id: "16:9", label: "16:9", w: 16, h: 9 },
-  { id: "9:16", label: "9:16", w: 9, h: 16 },
-  { id: "4:3", label: "4:3", w: 4, h: 3 },
+type HistItem = {
+  id: string;
+  title: string;
+  mode: string;
+  updatedAt: string;
+  preview: string;
+};
+
+const MODE_META: {
+  id: Mode;
+  label: string;
+  icon: React.ElementType;
+  headline: string;
+  sub: string;
+  power: string;
+}[] = [
+  {
+    id: "auto",
+    label: "Auto",
+    icon: Bot,
+    headline: "Ask once. BUILDWE routes it.",
+    sub: "One box for thinking, building, visuals, and voice.",
+    power: "Smart routing",
+  },
+  {
+    id: "chat",
+    label: "Chat",
+    icon: MessageSquare,
+    headline: "Clarity under pressure.",
+    sub: "Decide faster. Write sharper. Learn without noise.",
+    power: "BUILDWE AI",
+  },
+  {
+    id: "code",
+    label: "Code",
+    icon: Code2,
+    headline: "From brief to working build.",
+    sub: "Scaffold, fix, and ship — without leaving the workspace.",
+    power: "BUILDWE Code",
+  },
+  {
+    id: "image",
+    label: "Image",
+    icon: ImageIcon,
+    headline: "Describe it. See it.",
+    sub: "Brand frames, product shots, and scenes on demand.",
+    power: "BUILDWE Vision",
+  },
+  {
+    id: "audio",
+    label: "Audio",
+    icon: Mic2,
+    headline: "Script in. Voice out.",
+    sub: "Natural speech for briefs, stories, and product copy.",
+    power: "BUILDWE Voice",
+  },
 ];
 
-const VOICES: { id: string; label: string; lang: string; region: string; tone: string }[] = [
-  // English
-  { id: "nova", label: "Nova", lang: "English", region: "US", tone: "Warm" },
-  { id: "atlas", label: "Atlas", lang: "English", region: "US", tone: "Deep" },
-  { id: "luna", label: "Luna", lang: "English", region: "UK", tone: "Soft" },
-  { id: "ember", label: "Ember", lang: "English", region: "US", tone: "Expressive" },
-  { id: "river", label: "River", lang: "English", region: "AU", tone: "Clear" },
-  // Hindi / Indian
-  { id: "aanya", label: "Aanya", lang: "Hindi", region: "IN", tone: "Warm" },
-  { id: "arjun", label: "Arjun", lang: "Hindi", region: "IN", tone: "Steady" },
-  { id: "kiara", label: "Kiara", lang: "Hindi", region: "IN", tone: "Bright" },
-  { id: "vihaan", label: "Vihaan", lang: "Hindi", region: "IN", tone: "Deep" },
-  { id: "meera", label: "Meera", lang: "English", region: "IN", tone: "Soft" },
-  { id: "kabir", label: "Kabir", lang: "English", region: "IN", tone: "Clear" },
-  { id: "saanvi", label: "Saanvi", lang: "Hindi", region: "IN", tone: "Gentle" },
-  { id: "ananya_bn", label: "Ananya", lang: "Bengali", region: "IN", tone: "Warm" },
-  { id: "dev_ta", label: "Dev", lang: "Tamil", region: "IN", tone: "Clear" },
-  { id: "isha_te", label: "Isha", lang: "Telugu", region: "IN", tone: "Soft" },
-  // World
-  { id: "sofia", label: "Sofia", lang: "Spanish", region: "ES", tone: "Bright" },
-  { id: "luca", label: "Luca", lang: "Italian", region: "IT", tone: "Warm" },
-  { id: "amira", label: "Amira", lang: "Arabic", region: "AE", tone: "Clear" },
-  { id: "yuki", label: "Yuki", lang: "Japanese", region: "JP", tone: "Soft" },
-  { id: "chen", label: "Chen", lang: "Mandarin", region: "CN", tone: "Steady" },
+const SUGGEST: Record<Mode, string[]> = {
+  auto: [
+    "Build a cream landing page for my SaaS",
+    "Explain transformers simply",
+    "Image: cozy studio desk, soft light",
+    "Speak: Welcome to BUILDWE.ONLINE",
+  ],
+  chat: [
+    "Brainstorm 5 creator startup ideas",
+    "Rewrite this colder and clearer",
+    "Study plan for learning TypeScript",
+  ],
+  code: [
+    "React todo with localStorage",
+    "Next.js API rate limiter",
+    "Quiz game in plain HTML/JS",
+  ],
+  image: [
+    "Minimal AI logo, terracotta on cream",
+    "Product shot ceramic mug morning light",
+    "Abstract mesh gradient poster 16:9",
+  ],
+  audio: [
+    "Welcome to BUILDWE — build anything.",
+    "Your daily brief: three priorities.",
+  ],
+};
+
+const ASPECTS = ["1:1", "16:9", "9:16", "4:3", "3:4"];
+
+const VOICES = [
+  { id: "nova", label: "Nova", lang: "EN-US", tone: "Warm" },
+  { id: "atlas", label: "Atlas", lang: "EN-US", tone: "Deep" },
+  { id: "luna", label: "Luna", lang: "EN-UK", tone: "Soft" },
+  { id: "ember", label: "Ember", lang: "EN-US", tone: "Bright" },
+  { id: "river", label: "River", lang: "EN-AU", tone: "Clear" },
+  { id: "aanya", label: "Aanya", lang: "HI", tone: "Warm" },
+  { id: "arjun", label: "Arjun", lang: "HI", tone: "Steady" },
+  { id: "kiara", label: "Kiara", lang: "HI", tone: "Bright" },
+  { id: "vihaan", label: "Vihaan", lang: "HI", tone: "Deep" },
+  { id: "meera", label: "Meera", lang: "IN-EN", tone: "Soft" },
+  { id: "kabir", label: "Kabir", lang: "IN-EN", tone: "Clear" },
+  { id: "saanvi", label: "Saanvi", lang: "HI", tone: "Gentle" },
+  { id: "ananya", label: "Ananya", lang: "BN", tone: "Warm" },
+  { id: "dev", label: "Dev", lang: "TA", tone: "Clear" },
+  { id: "isha", label: "Isha", lang: "TE", tone: "Soft" },
+  { id: "sofia", label: "Sofia", lang: "ES", tone: "Bright" },
+  { id: "luca", label: "Luca", lang: "IT", tone: "Warm" },
+  { id: "amira", label: "Amira", lang: "AR", tone: "Clear" },
+  { id: "yuki", label: "Yuki", lang: "JP", tone: "Soft" },
+  { id: "chen", label: "Chen", lang: "ZH", tone: "Steady" },
 ];
 
-const VOICE_PREVIEW_COUNT = 6;
-
-const SKILL_PRESETS = [
-  "Web development",
-  "Python",
-  "Design",
-  "Marketing",
-  "Writing",
-  "Student",
-  "Founder",
-];
-
-const FREE_LIMITS = { code: 15, image: 5, audio: 5 };
-
-function uid(p = "id") {
-  return `${p}_${Math.random().toString(36).slice(2, 9)}${Date.now().toString(36).slice(-3)}`;
+function rid() {
+  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 }
 
-function formatTime(ts: number) {
-  const d = new Date(ts);
-  const now = new Date();
-  if (
-    d.getDate() === now.getDate() &&
-    d.getMonth() === now.getMonth() &&
-    d.getFullYear() === now.getFullYear()
-  ) {
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  }
-  return d.toLocaleDateString([], { month: "short", day: "numeric" });
-}
-
-function formatDuration(s: number) {
-  const n = Math.max(0, Math.floor(s));
-  return `${Math.floor(n / 60)}:${(n % 60).toString().padStart(2, "0")}`;
-}
-
-function roughMarkdown(text: string): string {
-  let html = text
+function md(text: string) {
+  let h = text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
-  html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (_m, lang, code) => {
+  h = h.replace(/```(\w+)?\n([\s\S]*?)```/g, (_m, lang, code) => {
     return `<pre data-lang="${lang || ""}"><code>${code.replace(/\n$/, "")}</code></pre>`;
   });
-  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/^(?:- |\* )(.+)$/gm, "<li>$1</li>");
-  html = html.replace(/(<li>[\s\S]*?<\/li>)(?:\n<li>[\s\S]*?<\/li>)*/g, (m) => `<ul>${m}</ul>`);
-  return html
+  h = h.replace(/`([^`]+)`/g, "<code>$1</code>");
+  h = h.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  h = h.replace(/^(?:- |\* )(.+)$/gm, "<li>$1</li>");
+  h = h.replace(/(<li>[\s\S]*?<\/li>)(?:\n<li>[\s\S]*?<\/li>)*/g, (m) => `<ul>${m}</ul>`);
+  return h
     .split(/\n{2,}/)
     .map((b) =>
-      b.startsWith("<pre") || b.startsWith("<ul") ? b : `<p>${b.replace(/\n/g, "<br/>")}</p>`
+      b.startsWith("<pre") || b.startsWith("<ul")
+        ? b
+        : `<p>${b.replace(/\n/g, "<br/>")}</p>`
     )
     .join("");
 }
 
-function titleFrom(text: string) {
-  const t = text.replace(/\s+/g, " ").trim();
-  return t.slice(0, 48) + (t.length > 48 ? "…" : "");
-}
-
-function buildProject(prompt: string): { files: CodeFile[]; slides: Slide[]; summary: string } {
-  const p = prompt.toLowerCase();
-  const isGame = /game|quiz/.test(p);
-  const name =
-    prompt.match(/name[:\s]+([^\n,]+)/i)?.[1]?.trim() ||
-    (isGame ? "Quiz Game" : /landing|saas|website/.test(p) ? "Landing" : "App");
-
-  if (isGame) {
-    return {
-      summary: `${name} — browser quiz`,
-      slides: [
-        { id: uid("s"), title: name, body: "Playable quiz\nScore tracking\nClean UI" },
-      ],
-      files: [
-        {
-          id: uid("f"),
-          name: "index.html",
-          language: "html",
-          content: `<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8"/>\n<meta name="viewport" content="width=device-width,initial-scale=1"/>\n<title>${name}</title>\n<link rel="stylesheet" href="styles.css"/>\n</head>\n<body>\n<main class="app"><h1>${name}</h1><p id="q"></p><div id="choices"></div><p id="score">Score: 0</p></main>\n<script src="app.js"></script>\n</body>\n</html>\n`,
-        },
-        {
-          id: uid("f"),
-          name: "styles.css",
-          language: "css",
-          content: `body{margin:0;font-family:system-ui,sans-serif;background:#F8F6F1;display:grid;place-items:center;min-height:100vh}\n.app{width:min(400px,92vw);background:#fff;border:1px solid #E5E1D8;border-radius:16px;padding:24px}\nbutton{display:block;width:100%;margin:8px 0;padding:12px;border-radius:12px;border:1px solid #E5E1D8;background:#FDFCFA;cursor:pointer;text-align:left}\n`,
-        },
-        {
-          id: uid("f"),
-          name: "app.js",
-          language: "javascript",
-          content: `const qs=[{q:"2+2?",a:["3","4","5"],c:1},{q:"AI means?",a:["Artificial Intelligence","Auto Input"],c:0}];\nlet i=0,score=0;\nconst q=document.getElementById("q"),ch=document.getElementById("choices"),sc=document.getElementById("score");\nfunction render(){if(i>=qs.length){q.textContent="Done!";ch.innerHTML="";return;}const c=qs[i];q.textContent=c.q;ch.innerHTML="";c.a.forEach((t,idx)=>{const b=document.createElement("button");b.textContent=t;b.onclick=()=>{if(idx===c.c)score++;i++;sc.textContent="Score: "+score;render();};ch.appendChild(b);});}\nrender();\n`,
-        },
-        {
-          id: uid("f"),
-          name: "README.md",
-          language: "markdown",
-          content: `# ${name}\n\nOpen index.html\n\nBuilt with BUILDWE CODE.\n`,
-        },
-      ],
-    };
+function extractCode(text: string) {
+  const blocks: { lang: string; code: string }[] = [];
+  const re = /```(\w+)?\n([\s\S]*?)```/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    blocks.push({ lang: m[1] || "txt", code: m[2].replace(/\n$/, "") });
   }
-
-  return {
-    summary: `${name} — starter project`,
-    slides: [
-      { id: uid("s"), title: name, body: "Hero + structure\nMobile ready\nEdit in canvas" },
-    ],
-    files: [
-      {
-        id: uid("f"),
-        name: "index.html",
-        language: "html",
-        content: `<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8"/>\n<meta name="viewport" content="width=device-width,initial-scale=1"/>\n<title>${name}</title>\n<link rel="stylesheet" href="styles.css"/>\n</head>\n<body>\n<header class="nav"><strong>${name}</strong><a href="#cta">Start</a></header>\n<section class="hero"><h1>Build better.</h1><p>${prompt.slice(0, 120)}</p><a class="btn" id="cta" href="#">Get started</a></section>\n</body>\n</html>\n`,
-      },
-      {
-        id: uid("f"),
-        name: "styles.css",
-        language: "css",
-        content: `*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#F8F6F1;color:#1C1C1C}\n.nav{display:flex;justify-content:space-between;padding:16px 24px;border-bottom:1px solid #E5E1D8}\n.hero{max-width:640px;margin:0 auto;padding:64px 24px;text-align:center}\nh1{font-size:clamp(2rem,5vw,3rem);letter-spacing:-.02em}\n.btn{display:inline-block;margin-top:16px;padding:12px 18px;border-radius:12px;background:#C45C26;color:#fff;text-decoration:none;font-weight:600}\n`,
-      },
-      {
-        id: uid("f"),
-        name: "README.md",
-        language: "markdown",
-        content: `# ${name}\n\nPrompt: ${prompt.slice(0, 200)}\n\nOpen index.html\n`,
-      },
-    ],
-  };
+  return blocks;
 }
-
-function demoReply(mode: Mode, prompt: string, skills: string[]): string {
-  const skill =
-    skills.length > 0 ? `\n\n_Tuned for: **${skills.slice(0, 3).join(", ")}**_` : "";
-  if (mode === "code") {
-    return `Built a clean starter for “${prompt.slice(0, 60)}”.\n\nOpen **Files** in the canvas — edit, copy, or download.\n\nWhat should we change next?${skill}`;
-  }
-  if (mode === "image") return `Creating visual for: ${prompt.slice(0, 100)}${skill}`;
-  if (mode === "audio") return prompt;
-  return `Got it.\n\n**Clear path**\n- Outcome first\n- Smallest useful version\n- One next action\n\nShare constraints and I’ll go concrete.${skill}`;
-}
-
-function downloadText(filename: string, content: string, type = "text/plain") {
-  const blob = new Blob([content], { type });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
-
-/* ── atoms ────────────────────────────────────────────────── */
 
 function Btn({
   children,
@@ -345,35 +229,36 @@ function Btn({
   variant = "primary",
   size = "md",
   className,
-  "aria-label": ariaLabel,
   type = "button",
+  "aria-label": al,
 }: {
   children: React.ReactNode;
   onClick?: () => void;
   disabled?: boolean;
-  variant?: "primary" | "ghost" | "ink" | "icon";
+  variant?: "primary" | "ghost" | "ink" | "icon" | "soft";
   size?: "sm" | "md" | "lg";
   className?: string;
-  "aria-label"?: string;
   type?: "button" | "submit";
+  "aria-label"?: string;
 }) {
   return (
     <button
       type={type}
       onClick={onClick}
       disabled={disabled}
-      aria-label={ariaLabel}
-      title={ariaLabel}
+      aria-label={al}
+      title={al}
       className={clsx(
         "inline-flex items-center justify-center gap-1.5 font-medium transition active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40",
-        variant === "primary" && "rounded-xl text-white",
-        variant === "ghost" && "rounded-xl border",
-        variant === "ink" && "rounded-xl",
-        variant === "icon" && "rounded-lg",
-        size === "sm" && variant !== "icon" && "h-9 px-3 text-sm",
+        variant === "primary" && "rounded-2xl text-white shadow-sm",
+        variant === "ghost" && "rounded-2xl border",
+        variant === "ink" && "rounded-2xl",
+        variant === "soft" && "rounded-2xl",
+        variant === "icon" && "rounded-xl",
+        size === "sm" && variant !== "icon" && "h-9 px-3.5 text-sm",
         size === "md" && variant !== "icon" && "h-10 px-4 text-sm",
-        size === "lg" && variant !== "icon" && "h-11 px-5 text-[15px]",
-        variant === "icon" && (size === "sm" ? "h-8 w-8" : "h-9 w-9"),
+        size === "lg" && variant !== "icon" && "h-12 px-5 text-[15px]",
+        variant === "icon" && (size === "sm" ? "h-8 w-8" : "h-10 w-10"),
         className
       )}
       style={
@@ -381,13 +266,15 @@ function Btn({
           ? { background: "var(--accent)" }
           : variant === "ink"
             ? { background: "var(--ink)", color: "var(--bg)" }
-            : variant === "ghost"
-              ? {
-                  borderColor: "var(--border)",
-                  background: "var(--card)",
-                  color: "var(--ink)",
-                }
-              : { color: "var(--muted)" }
+            : variant === "soft"
+              ? { background: "var(--accent-soft)", color: "var(--accent)" }
+              : variant === "ghost"
+                ? {
+                    borderColor: "var(--border)",
+                    background: "var(--card)",
+                    color: "var(--ink)",
+                  }
+                : { color: "var(--muted)" }
       }
     >
       {children}
@@ -407,73 +294,45 @@ function Sheet({
   wide?: boolean;
 }) {
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
+    const k = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", k);
     document.body.classList.add("lock-scroll");
     return () => {
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", k);
       document.body.classList.remove("lock-scroll");
     };
   }, [onClose]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
-      <button
-        type="button"
-        className="absolute inset-0 bg-black/40"
-        aria-label="Close"
-        onClick={onClose}
-      />
+      <button type="button" className="absolute inset-0 bg-black/35" aria-label="Close" onClick={onClose} />
       <div
         role="dialog"
-        aria-modal="true"
+        aria-modal
         className={clsx(
-          "relative z-10 max-h-[90dvh] w-full overflow-y-auto rounded-t-2xl border p-4 shadow-lift sm:rounded-2xl sm:p-5",
+          "relative z-10 max-h-[90dvh] w-full overflow-y-auto rounded-t-3xl border p-5 shadow-2xl sm:rounded-3xl",
           wide ? "max-w-lg" : "max-w-md"
         )}
         style={{
           borderColor: "var(--border)",
           background: "var(--card)",
           color: "var(--ink)",
-          paddingBottom: "calc(16px + var(--safe-b))",
+          paddingBottom: "calc(18px + var(--safe-b))",
         }}
       >
-        <div className="mb-2 flex justify-center sm:hidden">
+        <div className="mb-3 flex justify-center sm:hidden">
           <span className="h-1 w-10 rounded-full" style={{ background: "var(--border)" }} />
         </div>
         {title && (
-          <div className="mb-3 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex h-8 w-8 items-center justify-center rounded-lg"
-              style={{ color: "var(--muted)" }}
-              aria-label="Back"
-            >
+          <div className="mb-4 flex items-center gap-2">
+            <button type="button" onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-xl" style={{ color: "var(--muted)" }} aria-label="Back">
               <ChevronLeft className="h-5 w-5" />
             </button>
-            <h2 className="flex-1 text-base font-semibold">{title}</h2>
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex h-8 w-8 items-center justify-center rounded-lg"
-              style={{ color: "var(--muted)" }}
-              aria-label="Close"
-            >
+            <h2 className="flex-1 text-base font-semibold tracking-tight">{title}</h2>
+            <button type="button" onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-xl" style={{ color: "var(--muted)" }} aria-label="Close">
               <X className="h-4 w-4" />
             </button>
           </div>
-        )}
-        {!title && (
-          <button
-            type="button"
-            onClick={onClose}
-            className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-lg"
-            style={{ color: "var(--muted)" }}
-            aria-label="Close"
-          >
-            <X className="h-4 w-4" />
-          </button>
         )}
         {children}
       </div>
@@ -481,187 +340,69 @@ function Sheet({
   );
 }
 
-function Row({
-  icon: Icon,
-  label,
-  value,
-  onClick,
-  danger,
-}: {
-  icon: React.ElementType;
-  label: string;
-  value?: string;
-  onClick?: () => void;
-  danger?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm"
-      style={{ color: danger ? "#dc2626" : "var(--ink)" }}
-    >
-      <Icon className="h-4 w-4 opacity-70" />
-      <span className="flex-1 font-medium">{label}</span>
-      {value && (
-        <span className="text-xs" style={{ color: "var(--muted)" }}>
-          {value}
-        </span>
-      )}
-      <ChevronRight className="h-4 w-4" style={{ color: "var(--soft)" }} />
-    </button>
-  );
-}
-
-/* ── Main (wrapped for useSearchParams) ───────────────────── */
-
-function DashboardInner() {
-  const searchParams = useSearchParams();
-  const router = useRouter();
-
+function Dashboard() {
+  const [view, setView] = useState<"home" | "app">("home");
   const [mode, setMode] = useState<Mode>("chat");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [drawer, setDrawer] = useState(false);
-  const [plan, setPlan] = useState<Plan>("free");
   const [modal, setModal] = useState<
-    | "settings"
-    | "profile"
-    | "skills"
-    | "login"
-    | "checkout"
-    | "plans"
-    | "feedback"
-    | "help"
-    | null
+    null | "auth" | "settings" | "plans" | "profile"
   >(null);
-  const [modalStack, setModalStack] = useState<string[]>([]);
-
-  const openModal = (m: NonNullable<typeof modal>) => {
-    setModalStack((s) => (modal ? [...s, modal] : s));
-    setModal(m);
-  };
-  const closeModal = () => {
-    setModalStack((s) => {
-      if (s.length) {
-        const prev = s[s.length - 1] as typeof modal;
-        setModal(prev);
-        return s.slice(0, -1);
-      }
-      setModal(null);
-      return s;
-    });
-  };
-  const closeAllModals = () => {
-    setModalStack([]);
-    setModal(null);
-  };
-
+  const [authTab, setAuthTab] = useState<"login" | "register">("login");
   const [themePref, setThemePref] = useState<ThemePref>("system");
   const [dark, setDark] = useState(false);
-  const [skills, setSkills] = useState<string[]>(["Web development"]);
-  const [customSkill, setCustomSkill] = useState("");
-  const [loggedIn, setLoggedIn] = useState(false);
-  const [authNext, setAuthNext] = useState<"upload" | "download" | "pro" | null>(null);
-  const [loginEmail, setLoginEmail] = useState("");
-  const [userName, setUserName] = useState("Guest");
-  const [userEmail, setUserEmail] = useState("");
-  const [listening, setListening] = useState(false);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const [me, setMe] = useState<MeResponse | null>(null);
+  const [history, setHistory] = useState<HistItem[]>([]);
   const [search, setSearch] = useState("");
-  const [checkoutBusy, setCheckoutBusy] = useState(false);
-  const [checkoutError, setCheckoutError] = useState("");
-  const [agreeTerms, setAgreeTerms] = useState(false);
-  const [payMethod, setPayMethod] = useState<"upi" | "card" | "netbanking">("upi");
-  const [checkoutInfo, setCheckoutInfo] = useState({
-    displayAmount: "₹500",
-    planName: "BUILDWE PRO",
-    demo: true,
-  });
-
-  const initials = useMemo(() => {
-    if (!loggedIn || userName === "Guest") return "G";
-    return (
-      userName
-        .split(" ")
-        .filter(Boolean)
-        .map((n) => n[0])
-        .join("")
-        .slice(0, 2)
-        .toUpperCase() || "U"
-    );
-  }, [loggedIn, userName]);
-
-  // Unified activity history
-  const [activities, setActivities] = useState<Activity[]>([
-    {
-      id: "a_welcome",
-      title: "Welcome",
-      mode: "chat",
-      preview: "Hey — I'm BUILDWE.",
-      updatedAt: Date.now() - 60000,
-      messages: [
-        {
-          id: "m0",
-          role: "assistant",
-          content:
-            "Hey — I'm **BUILDWE**.\n\nChat, code, images, audio — or use **Auto** and I’ll pick the tool.\n\nWhat are you working on?",
-          createdAt: Date.now() - 60000,
-        },
-      ],
-    },
-  ]);
-  const [activeId, setActiveId] = useState("a_welcome");
-  const active = activities.find((a) => a.id === activeId) || activities[0];
-
-  // Shared input — FIXED height behavior (never blocks viewport)
+  const [convId, setConvId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [error, setError] = useState("");
+  const [modelTag, setModelTag] = useState("");
+  const [copied, setCopied] = useState<string | null>(null);
+
+  // code panel
+  const [codePanel, setCodePanel] = useState("// generated code lands here\n");
+  const [codeLang, setCodeLang] = useState("txt");
+
+  // image
+  const [aspect, setAspect] = useState("1:1");
+  const [images, setImages] = useState<{ id: string; url: string; prompt: string }[]>([]);
+  const [imgLoading, setImgLoading] = useState(false);
+  const [activeImg, setActiveImg] = useState<string | null>(null);
+
+  // audio
+  const [voice, setVoice] = useState("nova");
+  const [showVoices, setShowVoices] = useState(false);
+  const [speed, setSpeed] = useState(1);
+  const [audioBusy, setAudioBusy] = useState(false);
+  const [listening, setListening] = useState(false);
+  const utterRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  // auth form
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [authErr, setAuthErr] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+
   const abortRef = useRef<AbortController | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  // Code canvas
-  const [codeFiles, setCodeFiles] = useState<CodeFile[]>([]);
-  const [activeFileId, setActiveFileId] = useState<string | null>(null);
-  const [slides, setSlides] = useState<Slide[]>([]);
-  const [activeSlide, setActiveSlide] = useState(0);
-  const [codeView, setCodeView] = useState<CodeView>("files");
-  const [pendingQ, setPendingQ] = useState<string[] | null>(null);
-  const [clarify, setClarify] = useState<Record<string, string>>({});
-  const [seedPrompt, setSeedPrompt] = useState("");
-  const [showCanvasMobile, setShowCanvasMobile] = useState(false);
+  const meta = MODE_META.find((m) => m.id === mode)!;
+  const plan = me?.plan || "free";
+  const loggedIn = me?.kind === "user";
 
-  // Image / audio
-  const [aspect, setAspect] = useState("1:1");
-  const [images, setImages] = useState<ImageGen[]>([]);
-  const [activeImageId, setActiveImageId] = useState<string | null>(null);
-  const [imageLoading, setImageLoading] = useState(false);
-  const [fullscreenImage, setFullscreenImage] = useState<string | null>(null);
-  const [voice, setVoice] = useState("nova");
-  const [showAllVoices, setShowAllVoices] = useState(false);
-  const [speed, setSpeed] = useState(1);
-  const [audios, setAudios] = useState<AudioGen[]>([]);
-  const [activeAudioId, setActiveAudioId] = useState<string | null>(null);
-  const [audioLoading, setAudioLoading] = useState(false);
-  const [audioProgress, setAudioProgress] = useState(0);
-  const audioTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const [usage, setUsage] = useState({ code: 0, image: 0, audio: 0 });
-  const [headline] = useState(
-    () => CHAT_HEADLINES[Math.floor(Math.random() * CHAT_HEADLINES.length)]
-  );
-
-  const history = useMemo(() => {
+  const filteredHistory = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return [...activities]
-      .filter((a) => !q || a.title.toLowerCase().includes(q) || a.preview.toLowerCase().includes(q))
-      .sort((a, b) => b.updatedAt - a.updatedAt);
-  }, [activities, search]);
-
-  const activeFile = codeFiles.find((f) => f.id === activeFileId) || codeFiles[0];
-  const meta = MODES.find((m) => m.id === mode)!;
+    return history.filter(
+      (h) => !q || h.title.toLowerCase().includes(q) || h.preview.toLowerCase().includes(q)
+    );
+  }, [history, search]);
 
   /* theme */
   useEffect(() => {
@@ -676,290 +417,283 @@ function DashboardInner() {
     return () => mq.removeEventListener("change", apply);
   }, [themePref]);
 
-  /* open checkout from /?checkout=pro */
-  useEffect(() => {
-    if (searchParams.get("checkout") === "pro") {
-      setModal("checkout");
-      router.replace("/", { scroll: false });
+  const refreshMe = useCallback(async () => {
+    try {
+      const m = await fetchMe();
+      setMe(m);
+    } catch {
+      /* */
     }
-  }, [searchParams, router]);
+  }, []);
 
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [active?.messages.length, streaming]);
-
-  useEffect(
-    () => () => {
-      if (audioTimer.current) clearInterval(audioTimer.current);
-      recognitionRef.current?.stop?.();
-    },
-    []
-  );
-
-  /* stable textarea grow — capped so it never eats the screen */
-  const growInput = useCallback(() => {
-    const el = taRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    const max = typeof window !== "undefined" && window.innerWidth < 768 ? 100 : 140;
-    el.style.height = Math.min(el.scrollHeight, max) + "px";
+  const refreshHistory = useCallback(async () => {
+    try {
+      const h = await fetchHistory();
+      setHistory(
+        h.conversations.map((c) => ({
+          id: c.id,
+          title: c.title,
+          mode: c.mode,
+          updatedAt: c.updatedAt,
+          preview: c.preview,
+        }))
+      );
+    } catch {
+      /* */
+    }
   }, []);
 
   useEffect(() => {
-    // reset height on mode switch so oversized state never sticks
-    if (taRef.current) {
-      taRef.current.style.height = "auto";
-    }
-    growInput();
-  }, [mode, growInput]);
+    refreshMe();
+    refreshHistory();
+  }, [refreshMe, refreshHistory]);
 
-  const requireAuth = (reason: "upload" | "download" | "pro") => {
-    if (loggedIn) return true;
-    setAuthNext(reason);
-    openModal("login");
-    return false;
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, streaming]);
+
+  const grow = () => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const max = window.innerWidth < 768 ? 96 : 128;
+    el.style.height = Math.min(el.scrollHeight, max) + "px";
   };
 
-  const hiddenLimit = (f: "code" | "image" | "audio") =>
-    plan === "free" && usage[f] >= FREE_LIMITS[f];
+  useEffect(() => {
+    if (taRef.current) taRef.current.style.height = "48px";
+    grow();
+  }, [mode]);
 
-  const stopStream = () => {
+  const switchMode = (m: Mode) => {
+    if (streaming) {
+      abortRef.current?.abort();
+      setStreaming(false);
+    }
+    setMode(m);
+    setDrawer(false);
+    setError("");
+    if (m !== "audio") setShowVoices(false);
+  };
+
+  const newChat = () => {
+    setConvId(null);
+    setMessages([]);
+    setInput("");
+    setCodePanel("// generated code lands here\n");
+    setModelTag("");
+    setView("app");
+    setMode("chat");
+    setDrawer(false);
+  };
+
+  const openHist = async (id: string) => {
+    try {
+      const c = await loadConversation(id);
+      setConvId(c.id);
+      setMessages(
+        (c.messages || [])
+          .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
+          .map((m: { id: string; role: string; content: string }) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+          }))
+      );
+      setMode((c.mode as Mode) || "chat");
+      setView("app");
+      setDrawer(false);
+      const last = [...(c.messages || [])].reverse().find((m: { role: string }) => m.role === "assistant");
+      if (last) {
+        const blocks = extractCode(last.content);
+        if (blocks.length) {
+          setCodePanel(blocks[blocks.length - 1].code);
+          setCodeLang(blocks[blocks.length - 1].lang);
+        }
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const stop = () => {
     abortRef.current?.abort();
     abortRef.current = null;
     setStreaming(false);
   };
 
-  const switchMode = (m: Mode) => {
-    if (streaming) stopStream();
-    setMode(m);
-    setDrawer(false);
-    setShowCanvasMobile(false);
-    if (m !== "audio") setShowAllVoices(false);
-    setInput("");
-    requestAnimationFrame(() => {
-      if (taRef.current) {
-        taRef.current.style.height = "44px";
-      }
-    });
-  };
-
-  const newChat = () => {
-    const id = uid("a");
-    const item: Activity = {
-      id,
-      title: "New chat",
-      mode: "chat",
-      preview: "",
-      messages: [],
-      updatedAt: Date.now(),
-    };
-    setActivities((p) => [item, ...p]);
-    setActiveId(id);
-    setMode("chat");
-    setInput("");
-    setCodeFiles([]);
-    setPendingQ(null);
-    setDrawer(false);
-  };
-
-  const deleteActivity = (id: string) => {
-    setActivities((prev) => {
-      const next = prev.filter((a) => a.id !== id);
-      if (activeId === id) setActiveId(next[0]?.id || "");
-      return next.length
-        ? next
-        : [
-            {
-              id: uid("a"),
-              title: "New chat",
-              mode: "chat",
-              preview: "",
-              messages: [],
-              updatedAt: Date.now(),
-            },
-          ];
-    });
-  };
-
-  const pushMessages = (actId: string, msgs: Message[], title?: string, m?: Mode) => {
-    setActivities((prev) =>
-      prev.map((a) =>
-        a.id !== actId
-          ? a
-          : {
-              ...a,
-              title: title || a.title,
-              mode: m || a.mode,
-              preview: msgs[msgs.length - 1]?.content.slice(0, 80) || a.preview,
-              messages: msgs,
-              updatedAt: Date.now(),
-            }
-      )
-    );
-  };
-
-  const ensureActivity = (text: string, m: Mode) => {
-    let id = activeId;
-    let act = activities.find((a) => a.id === id);
-    if (!act || (act.messages.length === 0 && act.title === "New chat")) {
-      // reuse empty or create
-      if (!act) {
-        id = uid("a");
-        act = {
-          id,
-          title: titleFrom(text),
-          mode: m,
-          preview: text.slice(0, 80),
-          messages: [],
-          updatedAt: Date.now(),
-        };
-        setActivities((p) => [act!, ...p]);
-        setActiveId(id);
-      } else {
-        setActivities((p) =>
-          p.map((a) =>
-            a.id === id
-              ? { ...a, title: titleFrom(text), mode: m, updatedAt: Date.now() }
-              : a
-          )
-        );
-      }
-    } else if (act.mode !== m && act.messages.length > 0) {
-      // continue same thread but tag latest mode in title lightly
-      setActivities((p) =>
-        p.map((a) => (a.id === id ? { ...a, mode: m, updatedAt: Date.now() } : a))
-      );
+  const speakBrowser = (text: string, vId: string, spd: number) => {
+    if (typeof window === "undefined" || !window.speechSynthesis) {
+      throw new Error("Speech synthesis not supported in this browser");
     }
-    return id;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = spd;
+    const voices = window.speechSynthesis.getVoices();
+    const pref = VOICES.find((x) => x.id === vId);
+    const match =
+      voices.find((v) =>
+        pref?.lang === "HI"
+          ? /hi|hindi/i.test(v.lang + v.name)
+          : pref?.lang.startsWith("EN")
+            ? /en/i.test(v.lang)
+            : v.lang.toLowerCase().includes((pref?.lang || "en").toLowerCase().slice(0, 2))
+      ) || voices[0];
+    if (match) u.voice = match;
+    utterRef.current = u;
+    window.speechSynthesis.speak(u);
   };
 
-  /* ── send ──────────────────────────────────────────────── */
+  const send = async (override?: string) => {
+    const text = (override ?? input).trim();
+    if (!text || streaming) return;
+    setError("");
+    setView("app");
+    setInput("");
+    if (taRef.current) taRef.current.style.height = "48px";
 
-  const runAssistant = async (
-    actId: string,
-    userText: string,
-    resolvedMode: Exclude<Mode, "auto">,
-    prior: Message[]
-  ) => {
-    const userMsg: Message = {
-      id: uid("m"),
-      role: "user",
-      content: userText,
-      createdAt: Date.now(),
-    };
-    const aId = uid("m");
-    const assistant: Message = {
-      id: aId,
-      role: "assistant",
-      content: "",
-      createdAt: Date.now(),
-      streaming: true,
-    };
-    const base = [...prior, userMsg, assistant];
-    pushMessages(actId, base, prior.length === 0 ? titleFrom(userText) : undefined, resolvedMode);
+    let resolved: Mode = mode;
+    if (mode === "auto") {
+      try {
+        const d = await detectAuto(text);
+        resolved = (d.mode as Mode) || "chat";
+        setMode(resolved === "auto" ? "chat" : resolved);
+      } catch {
+        resolved = "chat";
+      }
+    }
 
+    if (resolved === "image") {
+      setImgLoading(true);
+      const userMsg: Msg = { id: rid(), role: "user", content: text };
+      setMessages((m) => [...m, userMsg]);
+      try {
+        const img = await generateImage(text, aspect);
+        setImages((p) => [{ id: img.id, url: img.url, prompt: text }, ...p]);
+        setActiveImg(img.id);
+        setMessages((m) => [
+          ...m,
+          {
+            id: rid(),
+            role: "assistant",
+            content: `**Ready.** Your image is in the preview.\n\n> ${text}`,
+          },
+        ]);
+        setModelTag("BUILDWE Vision");
+        refreshMe();
+        refreshHistory();
+      } catch (e) {
+        setError((e as Error).message);
+      } finally {
+        setImgLoading(false);
+      }
+      return;
+    }
+
+    if (resolved === "audio") {
+      setAudioBusy(true);
+      const userMsg: Msg = { id: rid(), role: "user", content: text };
+      setMessages((m) => [...m, userMsg]);
+      try {
+        const a = await generateAudio(text, voice, speed);
+        speakBrowser(a.text, a.voice, a.speed);
+        setMessages((m) => [
+          ...m,
+          {
+            id: rid(),
+            role: "assistant",
+            content: `**Playing** · voice **${VOICES.find((v) => v.id === voice)?.label || voice}**\n\n${a.text}`,
+          },
+        ]);
+        setModelTag("BUILDWE Voice");
+        refreshMe();
+      } catch (e) {
+        setError((e as Error).message);
+      } finally {
+        setAudioBusy(false);
+      }
+      return;
+    }
+
+    // chat or code stream
+    const endpoint = resolved === "code" ? "/api/ai/code" : "/api/ai/chat";
+    const userMsg: Msg = { id: rid(), role: "user", content: text };
+    const aId = rid();
+    const nextMessages = [
+      ...messages,
+      userMsg,
+      { id: aId, role: "assistant" as const, content: "", streaming: true },
+    ];
+    setMessages(nextMessages);
     setStreaming(true);
+
+    const apiMessages = nextMessages
+      .filter((m) => m.id !== aId)
+      .concat()
+      .map((m) => ({ role: m.role, content: m.content }));
+    // include current user
+    if (!apiMessages.some((m) => m.content === text && m.role === "user")) {
+      apiMessages.push({ role: "user", content: text });
+    }
+
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
     try {
-      if (resolvedMode === "image") {
-        await doImage(userText);
-        const reply = `Image ready for:\n\n> ${userText.slice(0, 160)}\n\nCheck the preview panel.`;
-        await streamDemoText(
-          reply,
-          (partial) => {
-            pushMessages(
-              actId,
-              base.map((m) =>
-                m.id === aId ? { ...m, content: partial, streaming: true } : m
+      let acc = "";
+      await streamAI(
+        endpoint,
+        {
+          messages: [
+            ...messages.map((m) => ({ role: m.role, content: m.content })),
+            { role: "user", content: text },
+          ],
+          conversationId: convId,
+        },
+        (ev) => {
+          if (ev.meta && typeof ev.meta === "object") {
+            const meta = ev.meta as { conversationId?: string; model?: string; live?: boolean };
+            if (meta.conversationId) setConvId(meta.conversationId);
+            if (meta.model) setModelTag(meta.model);
+          }
+          if (ev.token) {
+            acc += ev.token;
+            setMessages((ms) =>
+              ms.map((m) =>
+                m.id === aId ? { ...m, content: acc, streaming: true } : m
               )
             );
-          },
-          ctrl.signal
-        );
-      } else if (resolvedMode === "audio") {
-        await doAudio(userText);
-        const reply = `Audio generated with **${VOICES.find((v) => v.id === voice)?.label || voice}**. Use the player to play, share, or download.`;
-        await streamDemoText(
-          reply,
-          (partial) => {
-            pushMessages(
-              actId,
-              base.map((m) =>
-                m.id === aId ? { ...m, content: partial, streaming: true } : m
-              )
-            );
-          },
-          ctrl.signal
-        );
-      } else if (resolvedMode === "code") {
-        const project = buildProject(userText);
-        setCodeFiles(project.files);
-        setActiveFileId(project.files[0]?.id || null);
-        setSlides(project.slides);
-        setActiveSlide(0);
-        setShowCanvasMobile(true);
-        setUsage((u) => ({ ...u, code: u.code + 1 }));
-        const reply = demoReply("code", userText, skills) + `\n\n**${project.summary}**\nFiles: ${project.files.map((f) => `\`${f.name}\``).join(", ")}`;
-        await streamDemoText(
-          reply,
-          (partial) => {
-            pushMessages(
-              actId,
-              base.map((m) =>
-                m.id === aId ? { ...m, content: partial, streaming: true } : m
-              )
-            );
-          },
-          ctrl.signal
-        );
-      } else {
-        const reply = demoReply("chat", userText, skills);
-        await streamDemoText(
-          reply,
-          (partial) => {
-            pushMessages(
-              actId,
-              base.map((m) =>
-                m.id === aId ? { ...m, content: partial, streaming: true } : m
-              )
-            );
-          },
-          ctrl.signal
-        );
-      }
-
-      setActivities((prev) =>
-        prev.map((a) =>
-          a.id !== actId
-            ? a
-            : {
-                ...a,
-                messages: a.messages.map((m) =>
-                  m.id === aId ? { ...m, streaming: false } : m
-                ),
+            if (resolved === "code") {
+              const blocks = extractCode(acc);
+              if (blocks.length) {
+                setCodePanel(blocks[blocks.length - 1].code);
+                setCodeLang(blocks[blocks.length - 1].lang);
               }
-        )
+            }
+          }
+          if (ev.error) setError(ev.error);
+          if (ev.done) {
+            setMessages((ms) =>
+              ms.map((m) => (m.id === aId ? { ...m, streaming: false } : m))
+            );
+          }
+        },
+        ctrl.signal
       );
+      refreshMe();
+      refreshHistory();
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
-        setActivities((prev) =>
-          prev.map((a) =>
-            a.id !== actId
-              ? a
-              : {
-                  ...a,
-                  messages: a.messages.map((m) =>
-                    m.id === aId
-                      ? {
-                          ...m,
-                          content: "Something went wrong. Try again.",
-                          streaming: false,
-                        }
-                      : m
-                  ),
+        setError((e as Error).message);
+        setMessages((ms) =>
+          ms.map((m) =>
+            m.id === aId
+              ? {
+                  ...m,
+                  content: m.content || "Something went wrong. Try again.",
+                  streaming: false,
                 }
+              : m
           )
         );
       }
@@ -969,524 +703,299 @@ function DashboardInner() {
     }
   };
 
-  const doImage = async (prompt: string) => {
-    if (hiddenLimit("image")) {
-      openModal("plans");
-      throw new DOMException("limit", "AbortError");
-    }
-    const id = uid("img");
-    setImages((p) => [
-      { id, prompt, aspect, url: "", createdAt: Date.now(), status: "loading" },
-      ...p,
-    ]);
-    setActiveImageId(id);
-    setImageLoading(true);
-    setUsage((u) => ({ ...u, image: u.image + 1 }));
-    await new Promise((r) => setTimeout(r, 1200));
-    const a = ASPECTS.find((x) => x.id === aspect) || ASPECTS[0];
-    const w = a.w * 100;
-    const h = a.h * 100;
-    const hue = 20 + Math.floor(Math.random() * 40);
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="hsl(${hue},42%,93%)"/><stop offset="100%" stop-color="hsl(${hue + 20},38%,74%)"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" font-family="system-ui" font-size="14" fill="rgba(28,28,28,.4)">BUILDWE</text></svg>`;
-    const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-    setImages((p) => p.map((i) => (i.id === id ? { ...i, url, status: "done" } : i)));
-    setImageLoading(false);
-  };
-
-  const doAudio = async (text: string) => {
-    if (hiddenLimit("audio")) {
-      openModal("plans");
-      throw new DOMException("limit", "AbortError");
-    }
-    const id = uid("aud");
-    const duration = Math.max(3, Math.round(text.split(/\s+/).length / 2.5 / speed));
-    setAudios((p) => [
-      {
-        id,
-        text,
-        voice,
-        speed,
-        duration,
-        createdAt: Date.now(),
-        status: "loading",
-      },
-      ...p,
-    ]);
-    setActiveAudioId(id);
-    setAudioLoading(true);
-    setUsage((u) => ({ ...u, audio: u.audio + 1 }));
-    await new Promise((r) => setTimeout(r, 900));
-    setAudios((p) => p.map((a) => (a.id === id ? { ...a, status: "done" } : a)));
-    setAudioLoading(false);
-  };
-
-  const send = async (override?: string) => {
-    const text = (override ?? input).trim();
-    if (!text || streaming) return;
-
-    let resolved: Exclude<Mode, "auto"> =
-      mode === "auto" ? detectIntent(text) : mode;
-
-    // complex code → optional questions
-    if (
-      resolved === "code" &&
-      isComplexCodePrompt(text) &&
-      !pendingQ &&
-      codeFiles.length === 0
-    ) {
-      setSeedPrompt(text);
-      setInput("");
-      if (taRef.current) taRef.current.style.height = "44px";
-      setPendingQ([
-        "Project name?",
-        "UI / UX style? (minimal, playful, premium…)",
-        "Look & vibe? (colors, references)",
-      ]);
-      setClarify({});
-      const actId = ensureActivity(text, "code");
-      const act = activities.find((a) => a.id === actId);
-      const prior = act?.messages || [];
-      pushMessages(
-        actId,
-        [
-          ...prior,
-          { id: uid("m"), role: "user", content: text, createdAt: Date.now() },
-          {
-            id: uid("m"),
-            role: "assistant",
-            content:
-              "Quick details (or **Skip**):\n\n1. Project name?\n2. UI / UX style?\n3. Look & vibe?",
-            createdAt: Date.now(),
-          },
-        ],
-        titleFrom(text),
-        "code"
-      );
-      setMode("code");
-      return;
-    }
-
-    if (resolved === "code" && hiddenLimit("code")) {
-      openModal("plans");
-      return;
-    }
-
-    setInput("");
-    if (taRef.current) taRef.current.style.height = "44px";
-
-    if (mode === "auto") {
-      // softly switch UI to resolved tool
-      setMode(resolved);
-    }
-
-    const actId = ensureActivity(text, resolved);
-    const act = activities.find((a) => a.id === actId);
-    const prior = act?.id === actId ? act.messages : [];
-    // re-read latest
-    const latest = activities.find((a) => a.id === actId)?.messages || prior;
-    await runAssistant(actId, text, resolved, latest.length ? latest : []);
-  };
-
-  const confirmBuild = async () => {
-    const line =
-      seedPrompt +
-      "\n" +
-      Object.entries(clarify)
-        .map(([k, v]) => `${k}: ${v}`)
-        .join("\n");
-    setPendingQ(null);
-    setSeedPrompt("");
-    const actId = activeId;
-    const prior = activities.find((a) => a.id === actId)?.messages || [];
-    await runAssistant(actId, line, "code", prior);
-  };
-
-  const skipBuild = async () => {
-    const line = seedPrompt || "New project";
-    setPendingQ(null);
-    setSeedPrompt("");
-    const actId = activeId;
-    const prior = activities.find((a) => a.id === actId)?.messages || [];
-    await runAssistant(actId, line, "code", prior);
-  };
-
-  const onUpload = (file: File) => {
-    if (!requireAuth("upload")) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = String(reader.result || "").slice(0, 6000);
-      setInput((v) => (v ? v + "\n\n" : "") + `[Uploaded: ${file.name}]\n${text}`);
-      requestAnimationFrame(growInput);
-    };
-    if (
-      file.type.startsWith("text/") ||
-      /\.(txt|md|json|js|ts|tsx|py|css|html|csv)$/i.test(file.name)
-    ) {
-      reader.readAsText(file);
-    } else {
-      setInput((v) => (v ? v + "\n" : "") + `[Attached: ${file.name}]`);
-    }
-  };
-
-  const toggleMic = () => {
-    const w = window as unknown as {
-      SpeechRecognition?: typeof SpeechRecognition;
-      webkitSpeechRecognition?: typeof SpeechRecognition;
-    };
-    const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
-    if (!SR) {
-      alert("Voice input needs Chrome / Edge.");
-      return;
-    }
-    if (listening && recognitionRef.current) {
-      recognitionRef.current.stop();
-      setListening(false);
-      return;
-    }
-    const rec = new SR();
-    recognitionRef.current = rec;
-    rec.continuous = false;
-    rec.interimResults = true;
-    rec.lang = "en-IN";
-    rec.onresult = (ev: SpeechRecognitionEvent) => {
-      let t = "";
-      for (let i = ev.resultIndex; i < ev.results.length; i++) t += ev.results[i][0].transcript;
-      setInput((v) => (v ? v + " " : "") + t);
-      requestAnimationFrame(growInput);
-    };
-    rec.onerror = () => setListening(false);
-    rec.onend = () => setListening(false);
-    rec.start();
-    setListening(true);
-  };
-
-  const guardedDownload = (fn: () => void) => {
-    if (!requireAuth("download")) return;
-    fn();
-  };
-
-  const togglePlay = (id: string) => {
-    const item = audios.find((a) => a.id === id);
-    if (!item || item.status !== "done") return;
-    if (audioTimer.current) {
-      clearInterval(audioTimer.current);
-      audioTimer.current = null;
-    }
-    const playing = !!item.playing;
-    setAudios((p) => p.map((a) => ({ ...a, playing: a.id === id ? !playing : false })));
-    if (playing) return;
-    setActiveAudioId(id);
-    setAudioProgress(0);
-    const start = Date.now();
-    const dur = item.duration * 1000;
-    audioTimer.current = setInterval(() => {
-      const p = Math.min(1, (Date.now() - start) / dur);
-      setAudioProgress(p);
-      if (p >= 1) {
-        if (audioTimer.current) clearInterval(audioTimer.current);
-        setAudios((prev) =>
-          prev.map((a) => (a.id === id ? { ...a, playing: false } : a))
-        );
-        setAudioProgress(0);
-      }
-    }, 50);
-  };
-
-  /* checkout */
-  const startCheckout = async () => {
-    setCheckoutError("");
-    if (!loggedIn) {
-      setAuthNext("pro");
-      openModal("login");
-      return;
-    }
-    if (!agreeTerms) {
-      setCheckoutError("Agree to Terms & Privacy to continue.");
-      return;
-    }
-    setCheckoutBusy(true);
+  const onAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthErr("");
+    setAuthBusy(true);
     try {
-      const res = await fetch("/api/checkout/order", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: userEmail || "user_demo" }),
-      });
-      const data = await res.json();
-      setCheckoutInfo({
-        displayAmount: data.displayAmount || "₹500",
-        planName: data.planName || "BUILDWE PRO",
-        demo: Boolean(data.demo),
-      });
-
-      // DEMO payment success path (replace with Razorpay Checkout.js)
-      // TODO(prod): new (window as any).Razorpay({ key, amount, order_id, handler }).open()
-      const verify = await fetch("/api/checkout/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          razorpay_order_id: data.order?.id || "order_demo",
-          razorpay_payment_id: `pay_demo_${Date.now()}`,
-          razorpay_signature: "demo",
-          method: payMethod,
-        }),
-      });
-      const v = await verify.json();
-      if (v.ok) {
-        setPlan("pro");
-        closeAllModals();
-      } else {
-        setCheckoutError(v.error || "Payment failed");
-      }
-    } catch {
-      setCheckoutError("Network error. Try again.");
+      if (authTab === "login") await apiLogin(email, password);
+      else await apiRegister(email, password, name || undefined);
+      await refreshMe();
+      await refreshHistory();
+      setModal(null);
+      setPassword("");
+    } catch (err) {
+      setAuthErr((err as Error).message);
     } finally {
-      setCheckoutBusy(false);
+      setAuthBusy(false);
     }
   };
 
-  const switchToFree = () => {
-    setPlan("free");
-    closeAllModals();
+  const doLogout = async () => {
+    await apiLogout();
+    await refreshMe();
+    setModal(null);
   };
 
-  const placeholder =
-    mode === "auto"
-      ? "Describe anything — I’ll choose Chat, Code, Image, or Audio…"
-      : mode === "code"
-        ? "Describe what to build…"
-        : mode === "image"
-          ? "Describe the image…"
-          : mode === "audio"
-            ? "Text to speak…"
-            : "Message BUILDWE…";
+  const copy = async (t: string, id: string) => {
+    await navigator.clipboard.writeText(t);
+    setCopied(id);
+    setTimeout(() => setCopied(null), 1200);
+  };
 
-  /* ── render ────────────────────────────────────────────── */
-
-  return (
-    <div
-      className="flex h-[100dvh] w-full overflow-hidden"
-      style={{ background: "var(--bg)", color: "var(--ink)" }}
-    >
-      {/* SIDEBAR 3-layer */}
-      <aside
-        className={clsx(
-          "relative z-20 hidden shrink-0 flex-col border-r transition-[width] duration-200 lg:flex",
-          sidebarOpen ? "w-60" : "w-[68px]"
-        )}
-        style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
-      >
-        <div
-          className="flex h-14 shrink-0 items-center gap-2.5 border-b px-3"
-          style={{ borderColor: "var(--border)" }}
-        >
-          <div
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-sm font-bold"
-            style={{ background: "var(--ink)", color: "var(--bg)" }}
-          >
-            B
-          </div>
-          {sidebarOpen && (
-            <div className="min-w-0">
-              <div className="text-[13px] font-semibold">BUILDWE</div>
+  /* ── Landing ───────────────────────────────────────────── */
+  if (view === "home") {
+    return (
+      <div className="mesh-bg min-h-[100dvh]" style={{ color: "var(--ink)" }}>
+        <header className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
+          <div className="flex items-center gap-2.5">
+            <span
+              className="flex h-9 w-9 items-center justify-center rounded-2xl text-sm font-bold"
+              style={{ background: "var(--ink)", color: "var(--bg)" }}
+            >
+              B
+            </span>
+            <div>
+              <div className="text-sm font-semibold tracking-tight">BUILDWE</div>
               <div className="text-[10px]" style={{ color: "var(--soft)" }}>
-                <a href="/about" className="hover:underline">
-                  buildwe.online · About
-                </a>
+                buildwe.online
               </div>
             </div>
-          )}
-        </div>
+          </div>
+          <nav className="hidden items-center gap-6 text-sm md:flex" style={{ color: "var(--muted)" }}>
+            <Link href="/about" className="hover:opacity-80">About</Link>
+            <Link href="/pricing" className="hover:opacity-80">Pricing</Link>
+            <Link href="/privacy" className="hover:opacity-80">Privacy</Link>
+          </nav>
+          <div className="flex items-center gap-2">
+            <Btn variant="ghost" size="sm" onClick={() => { setAuthTab("login"); setModal("auth"); }}>
+              Log in
+            </Btn>
+            <Btn size="sm" onClick={() => setView("app")}>
+              Enter app <ArrowRight className="h-3.5 w-3.5" />
+            </Btn>
+          </div>
+        </header>
 
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div className="p-2.5">
-            <button
-              type="button"
-              onClick={newChat}
-              className={clsx(
-                "flex w-full items-center gap-2 rounded-xl border py-2.5 text-sm font-medium",
-                sidebarOpen ? "px-3" : "justify-center"
-              )}
-              style={{ borderColor: "var(--border)", background: "var(--card)" }}
+        <main className="mx-auto max-w-6xl px-4 pb-20 pt-10 sm:pt-16">
+          <div className="anim-fade-up mx-auto max-w-3xl text-center">
+            <div
+              className="mb-5 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium"
+              style={{ borderColor: "var(--border)", background: "var(--card)", color: "var(--accent)" }}
             >
-              <Plus className="h-4 w-4" style={{ color: "var(--accent)" }} />
-              {sidebarOpen && "New chat"}
-            </button>
+              <Sparkles className="h-3.5 w-3.5" /> Free for everyone · Ad-supported
+            </div>
+            <h1 className="text-4xl font-semibold tracking-tight sm:text-6xl sm:leading-[1.05]">
+              Four AI problems.
+              <br />
+              <span style={{ color: "var(--accent)" }}>One platform.</span>
+            </h1>
+            <p className="mx-auto mt-5 max-w-xl text-base sm:text-lg" style={{ color: "var(--muted)" }}>
+              Chat. Code. Image. Audio. BUILDWE is the free workspace that keeps creation in one place — so more people can build, and the platform grows with you.
+            </p>
+            <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+              <Btn size="lg" onClick={() => setView("app")}>
+                Enter BUILDWE <ArrowRight className="h-4 w-4" />
+              </Btn>
+              <Btn variant="ghost" size="lg" onClick={() => setModal("plans")}>
+                Free &amp; PRO
+              </Btn>
+            </div>
           </div>
 
-          <nav className="space-y-0.5 px-2.5 pb-2">
-            {MODES.map((m) => {
+          <div className="mt-14 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {MODE_META.filter((m) => m.id !== "auto").map((m, i) => {
               const Icon = m.icon;
-              const on = mode === m.id;
               return (
                 <button
                   key={m.id}
                   type="button"
-                  onClick={() => switchMode(m.id)}
-                  className={clsx(
-                    "flex w-full items-center gap-2.5 rounded-xl py-2.5 text-sm font-medium",
-                    sidebarOpen ? "px-3" : "justify-center"
-                  )}
-                  style={
-                    on
-                      ? { background: "var(--accent-soft)", color: "var(--accent)" }
-                      : { color: "var(--muted)" }
-                  }
+                  onClick={() => {
+                    setMode(m.id);
+                    setView("app");
+                  }}
+                  className="anim-fade-up rounded-3xl border p-5 text-left transition hover:-translate-y-0.5"
+                  style={{
+                    borderColor: "var(--border)",
+                    background: "var(--card)",
+                    animationDelay: `${i * 60}ms`,
+                  }}
                 >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  {sidebarOpen && m.label}
+                  <div
+                    className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl"
+                    style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+                  >
+                    <Icon className="h-5 w-5" />
+                  </div>
+                  <div className="text-sm font-semibold">{m.label}</div>
+                  <div className="mt-1 text-[15px] font-medium tracking-tight">{m.headline}</div>
+                  <p className="mt-2 text-xs leading-relaxed" style={{ color: "var(--muted)" }}>
+                    {m.sub}
+                  </p>
+                  <div
+                    className="mt-4 inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                    style={{ background: "var(--secondary)", color: "var(--soft)" }}
+                  >
+                    {m.power}
+                  </div>
                 </button>
               );
             })}
-          </nav>
+          </div>
 
           <div
-            className="flex min-h-0 flex-1 flex-col border-t"
-            style={{ borderColor: "var(--border)" }}
+            className="mt-14 rounded-3xl border p-6 sm:p-10"
+            style={{ borderColor: "var(--border)", background: "var(--card)" }}
           >
-            {sidebarOpen && (
-              <>
-                <div
-                  className="px-3.5 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider"
-                  style={{ color: "var(--soft)" }}
-                >
-                  History
+            <div className="grid gap-8 lg:grid-cols-2 lg:items-center">
+              <div>
+                <h2 className="text-2xl font-semibold tracking-tight">Built as a platform — not a pitch deck.</h2>
+                <ul className="mt-4 space-y-3 text-sm" style={{ color: "var(--muted)" }}>
+                  <li className="flex gap-2"><Check className="mt-0.5 h-4 w-4 shrink-0" style={{ color: "var(--accent)" }} /> Free for every new user — growth first, ads-supported</li>
+                  <li className="flex gap-2"><Check className="mt-0.5 h-4 w-4 shrink-0" style={{ color: "var(--accent)" }} /> Four tools, one session: stop hopping between AI tabs</li>
+                  <li className="flex gap-2"><Check className="mt-0.5 h-4 w-4 shrink-0" style={{ color: "var(--accent)" }} /> PRO = higher limits + calmer experience when you need volume</li>
+                  <li className="flex gap-2"><Check className="mt-0.5 h-4 w-4 shrink-0" style={{ color: "var(--accent)" }} /> Mobile-first workspace that feels like a product, not a form</li>
+                </ul>
+              </div>
+              <div className="rounded-2xl border p-4" style={{ borderColor: "var(--border)", background: "var(--bg)" }}>
+                <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Inside the workspace</div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {["Auto route", "Streaming chat", "Code canvas", "Vision", "Voice", "History", "Guest mode"].map((label) => (
+                    <span key={label} className="rounded-full border px-3 py-1 text-xs font-medium" style={{ borderColor: "var(--border)", background: "var(--card)" }}>{label}</span>
+                  ))}
                 </div>
-                <div className="px-2.5 pb-2">
-                  <div className="relative">
-                    <Search
-                      className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2"
-                      style={{ color: "var(--soft)" }}
-                    />
-                    <input
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                      placeholder="Search"
-                      className="h-8 w-full rounded-lg pl-8 pr-2 text-xs outline-none"
-                      style={{ background: "var(--secondary)" }}
-                    />
-                  </div>
-                </div>
-                <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
-                  {history.map((a) => {
-                    const Icon =
-                      MODES.find((m) => m.id === a.mode)?.icon || MessageSquare;
-                    return (
-                      <div
-                        key={a.id}
-                        className="group flex items-center rounded-lg"
-                        style={
-                          a.id === activeId ? { background: "var(--secondary)" } : undefined
-                        }
-                      >
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setActiveId(a.id);
-                            setMode(a.mode === "auto" ? "chat" : a.mode);
-                          }}
-                          className="min-w-0 flex-1 px-2.5 py-2 text-left"
-                        >
-                          <div className="flex items-center gap-1.5">
-                            <Icon
-                              className="h-3 w-3 shrink-0"
-                              style={{ color: "var(--soft)" }}
-                            />
-                            <span className="truncate text-[13px] font-medium">
-                              {a.title}
-                            </span>
-                          </div>
-                          <div className="truncate text-[10px]" style={{ color: "var(--soft)" }}>
-                            {formatTime(a.updatedAt)}
-                            {a.preview ? ` · ${a.preview.slice(0, 28)}` : ""}
-                          </div>
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Delete"
-                          onClick={() => deleteActivity(a.id)}
-                          className="mr-1 hidden h-6 w-6 items-center justify-center rounded group-hover:flex"
-                          style={{ color: "var(--soft)" }}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </>
-            )}
+                <Link href="/about" className="mt-4 inline-flex items-center gap-1 text-sm font-medium" style={{ color: "var(--accent)" }}>
+                  How BUILDWE works <ExternalLink className="h-3.5 w-3.5" />
+                </Link>
+              </div>
+            </div>
           </div>
+        </main>
+
+        {modal === "auth" && (
+          <AuthSheet
+            tab={authTab}
+            setTab={setAuthTab}
+            email={email}
+            setEmail={setEmail}
+            password={password}
+            setPassword={setPassword}
+            name={name}
+            setName={setName}
+            err={authErr}
+            busy={authBusy}
+            onSubmit={onAuth}
+            onClose={() => setModal(null)}
+          />
+        )}
+        {modal === "plans" && (
+          <PlansSheet plan={plan} onClose={() => setModal(null)} onPro={() => setModal("auth")} />
+        )}
+      </div>
+    );
+  }
+
+  /* ── App shell ─────────────────────────────────────────── */
+  return (
+    <div className="flex h-[100dvh] overflow-hidden" style={{ background: "var(--bg)", color: "var(--ink)" }}>
+      {/* Sidebar */}
+      <aside
+        className={clsx(
+          "relative z-20 hidden shrink-0 flex-col border-r transition-[width] duration-200 lg:flex",
+          sidebarOpen ? "w-[260px]" : "w-[72px]"
+        )}
+        style={{ borderColor: "var(--border)", background: "var(--bg-elevated)" }}
+      >
+        <div className="flex h-14 items-center gap-2.5 border-b px-3" style={{ borderColor: "var(--border)" }}>
+          <button type="button" onClick={() => setView("home")} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl text-sm font-bold" style={{ background: "var(--ink)", color: "var(--bg)" }}>B</button>
+          {sidebarOpen && (
+            <div className="min-w-0">
+              <div className="text-[13px] font-semibold">BUILDWE</div>
+              <a href="/about" className="text-[10px] hover:underline" style={{ color: "var(--soft)" }}>Platform</a>
+            </div>
+          )}
         </div>
 
-        <div
-          className="shrink-0 space-y-1 border-t p-2.5"
-          style={{ borderColor: "var(--border)" }}
-        >
+        <div className="p-2.5">
           <button
             type="button"
-            onClick={() => openModal("settings")}
-            className={clsx(
-              "flex w-full items-center gap-2.5 rounded-xl py-2.5 text-sm",
-              sidebarOpen ? "px-3" : "justify-center"
-            )}
-            style={{ color: "var(--muted)" }}
+            onClick={newChat}
+            className={clsx("flex w-full items-center gap-2 rounded-2xl border py-2.5 text-sm font-medium", sidebarOpen ? "px-3" : "justify-center")}
+            style={{ borderColor: "var(--border)", background: "var(--card)" }}
           >
+            <Plus className="h-4 w-4" style={{ color: "var(--accent)" }} />
+            {sidebarOpen && "New chat"}
+          </button>
+        </div>
+
+        <nav className="space-y-0.5 px-2.5 pb-2">
+          {MODE_META.map((m) => {
+            const Icon = m.icon;
+            const on = mode === m.id;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => switchMode(m.id)}
+                className={clsx("flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm font-medium", sidebarOpen ? "px-3" : "justify-center")}
+                style={on ? { background: "var(--accent-soft)", color: "var(--accent)" } : { color: "var(--muted)" }}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                {sidebarOpen && m.label}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="flex min-h-0 flex-1 flex-col border-t" style={{ borderColor: "var(--border)" }}>
+          {sidebarOpen && (
+            <>
+              <div className="px-4 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>History</div>
+              <div className="px-2.5 pb-2">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2" style={{ color: "var(--soft)" }} />
+                  <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search" className="h-9 w-full rounded-xl pl-8 pr-2 text-xs outline-none" style={{ background: "var(--secondary)" }} />
+                </div>
+              </div>
+              <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
+                {filteredHistory.map((h) => (
+                  <div key={h.id} className="group flex items-center rounded-xl" style={h.id === convId ? { background: "var(--secondary)" } : undefined}>
+                    <button type="button" onClick={() => openHist(h.id)} className="min-w-0 flex-1 px-2.5 py-2 text-left">
+                      <div className="truncate text-[13px] font-medium">{h.title}</div>
+                      <div className="truncate text-[10px]" style={{ color: "var(--soft)" }}>{h.mode} · {h.preview}</div>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Delete"
+                      className="mr-1 hidden h-7 w-7 items-center justify-center rounded-lg group-hover:flex"
+                      style={{ color: "var(--soft)" }}
+                      onClick={async () => {
+                        await deleteHistory(h.id);
+                        if (convId === h.id) newChat();
+                        refreshHistory();
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+                {!filteredHistory.length && (
+                  <p className="px-2 py-8 text-center text-[11px]" style={{ color: "var(--soft)" }}>No history yet</p>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="space-y-1 border-t p-2.5" style={{ borderColor: "var(--border)" }}>
+          <button type="button" onClick={() => setModal("settings")} className={clsx("flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm", sidebarOpen ? "px-3" : "justify-center")} style={{ color: "var(--muted)" }}>
             <Settings className="h-4 w-4" />
             {sidebarOpen && "Settings"}
           </button>
           {loggedIn ? (
-            <>
-              <button
-                type="button"
-                onClick={() => openModal("profile")}
-                className={clsx(
-                  "flex w-full items-center gap-2.5 rounded-xl py-2 text-sm",
-                  sidebarOpen ? "px-3" : "justify-center"
-                )}
-              >
-                <span
-                  className="flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-semibold"
-                  style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
-                >
-                  {initials}
+            <button type="button" onClick={() => setModal("profile")} className={clsx("flex w-full items-center gap-2.5 rounded-2xl py-2 text-sm", sidebarOpen ? "px-3" : "justify-center")}>
+              <span className="flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
+                {(me?.name || "U").slice(0, 1).toUpperCase()}
+              </span>
+              {sidebarOpen && (
+                <span className="min-w-0 text-left">
+                  <span className="block truncate text-[12px] font-medium">{me?.name}</span>
+                  <span className="text-[10px]" style={{ color: "var(--muted)" }}>{plan === "pro" ? "PRO" : "Free"}</span>
                 </span>
-                {sidebarOpen && (
-                  <span className="min-w-0 text-left">
-                    <span className="block truncate text-[12px] font-medium">{userName}</span>
-                    <span className="text-[10px]" style={{ color: "var(--muted)" }}>
-                      {plan === "pro" ? "PRO" : "Free"}
-                    </span>
-                  </span>
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setLoggedIn(false);
-                  setUserName("Guest");
-                  setUserEmail("");
-                  setPlan("free");
-                }}
-                className={clsx(
-                  "flex w-full items-center gap-2.5 rounded-xl py-2 text-sm",
-                  sidebarOpen ? "px-3" : "justify-center"
-                )}
-                style={{ color: "var(--muted)" }}
-              >
-                <LogOut className="h-4 w-4" />
-                {sidebarOpen && "Log out"}
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              onClick={() => openModal("login")}
-              className={clsx(
-                "flex w-full items-center gap-2.5 rounded-xl py-2.5 text-sm font-medium",
-                sidebarOpen ? "px-3" : "justify-center"
               )}
-              style={{ background: "var(--ink)", color: "var(--bg)" }}
-            >
+            </button>
+          ) : (
+            <button type="button" onClick={() => { setAuthTab("login"); setModal("auth"); }} className={clsx("flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm font-medium", sidebarOpen ? "px-3" : "justify-center")} style={{ background: "var(--ink)", color: "var(--bg)" }}>
               <LogIn className="h-4 w-4" />
               {sidebarOpen && "Log in"}
             </button>
@@ -1494,1510 +1003,554 @@ function DashboardInner() {
         </div>
       </aside>
 
-      {/* MAIN */}
+      {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header
-          className="flex h-12 shrink-0 items-center gap-2 border-b px-2.5 sm:px-4"
-          style={{
-            borderColor: "var(--border)",
-            background: "color-mix(in srgb, var(--bg-elevated) 94%, transparent)",
-          }}
-        >
-          <Btn variant="icon" className="lg:hidden" aria-label="Menu" onClick={() => setDrawer(true)}>
-            <Menu className="h-5 w-5" />
-          </Btn>
-          <Btn
-            variant="icon"
-            className="hidden lg:inline-flex"
-            aria-label="Toggle sidebar"
-            onClick={() => setSidebarOpen((v) => !v)}
-          >
-            {sidebarOpen ? (
-              <PanelLeftClose className="h-[18px] w-[18px]" />
-            ) : (
-              <PanelLeft className="h-[18px] w-[18px]" />
-            )}
+        <header className="flex h-14 shrink-0 items-center gap-2 border-b px-3 sm:px-4" style={{ borderColor: "var(--border)", background: "color-mix(in srgb, var(--bg-elevated) 92%, transparent)" }}>
+          <Btn variant="icon" className="lg:hidden" aria-label="Menu" onClick={() => setDrawer(true)}><Menu className="h-5 w-5" /></Btn>
+          <Btn variant="icon" className="hidden lg:inline-flex" aria-label="Sidebar" onClick={() => setSidebarOpen((v) => !v)}>
+            {sidebarOpen ? <PanelLeftClose className="h-[18px] w-[18px]" /> : <PanelLeft className="h-[18px] w-[18px]" />}
           </Btn>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold">{meta.label}</div>
-            <div className="hidden truncate text-[11px] sm:block" style={{ color: "var(--muted)" }}>
-              {meta.hint}
-              {plan === "pro" ? " · PRO" : " · Free"}
-            </div>
+            <div className="truncate text-sm font-semibold tracking-tight">{meta.label}</div>
+            <div className="hidden truncate text-[11px] sm:block" style={{ color: "var(--muted)" }}>{meta.headline}{modelTag ? ` · ${modelTag}` : ""}</div>
           </div>
           {plan === "pro" ? (
-            <button
-              type="button"
-              onClick={() => openModal("plans")}
-              className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold"
-              style={{ background: "var(--ink)", color: "var(--bg)" }}
-            >
-              <Star className="h-3 w-3" /> PRO
-            </button>
+            <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold" style={{ background: "var(--ink)", color: "var(--bg)" }}><Star className="h-3 w-3" /> PRO</span>
           ) : (
-            <Btn size="sm" onClick={() => openModal("checkout")}>
-              <Zap className="h-3.5 w-3.5" /> PRO
-            </Btn>
+            <Btn size="sm" variant="soft" onClick={() => setModal("plans")}><Zap className="h-3.5 w-3.5" /> PRO</Btn>
           )}
         </header>
 
-        {/* Workspace + fixed composer */}
+        {plan === "free" && (
+          <div
+            className="flex shrink-0 items-center justify-center gap-2 border-b px-3 py-1.5 text-[11px]"
+            style={{ borderColor: "var(--border)", background: "var(--secondary)", color: "var(--muted)" }}
+          >
+            <span>Free platform · ad-supported</span>
+            <span style={{ color: "var(--soft)" }}>·</span>
+            <button type="button" className="font-semibold" style={{ color: "var(--accent)" }} onClick={() => setModal("plans")}>
+              Go PRO — quieter workspace
+            </button>
+          </div>
+        )}
+
         <div className="flex min-h-0 flex-1 flex-col pb-mobile-nav md:pb-0">
-          <div className="relative min-h-0 flex-1 overflow-hidden">
-            {/* Messages + tool panels */}
-            <div
-              className={clsx(
-                "flex h-full",
-                mode === "code" && codeFiles.length > 0 ? "flex-col lg:flex-row" : "flex-col"
-              )}
-            >
-              {/* Conversation column */}
-              <div
-                className={clsx(
-                  "flex min-h-0 flex-col",
-                  mode === "code" && codeFiles.length > 0 && showCanvasMobile
-                    ? "hidden lg:flex lg:w-[42%]"
-                    : mode === "code" && codeFiles.length > 0
-                      ? "flex flex-1 lg:w-[42%]"
-                      : "flex flex-1"
-                )}
-              >
-                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-                  <div className="mx-auto flex min-h-full max-w-2xl flex-col px-3 py-4 sm:px-5">
-                    {(!active || active.messages.length === 0) && (
-                      <div className="flex flex-1 flex-col items-center justify-center py-8 text-center">
-                        <div
-                          className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl"
-                          style={{
-                            background: "var(--card)",
-                            boxShadow: "0 0 0 1px var(--border)",
-                          }}
-                        >
-                          <meta.icon className="h-5 w-5" style={{ color: "var(--accent)" }} />
-                        </div>
-                        <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">
-                          {mode === "image"
-                            ? "Bring your ideas to life."
-                            : mode === "audio"
-                              ? "Make your voice heard."
-                              : mode === "code"
-                                ? "Ready to build something?"
-                                : mode === "auto"
-                                  ? "What should we do?"
-                                  : headline}
-                        </h1>
-                        <p className="mt-1.5 max-w-sm text-sm" style={{ color: "var(--muted)" }}>
-                          {mode === "auto"
-                            ? "One box. AI routes to the right tool."
-                            : mode === "image"
-                              ? "Turn imagination into visuals."
-                              : mode === "audio"
-                                ? "Natural AI audio in seconds."
-                                : mode === "code"
-                                  ? "Describe it. BUILDWE CODE brings it to life."
-                                  : "Ask anything · create ideas · solve problems."}
-                        </p>
-                        <div className="mt-6 grid w-full max-w-md gap-2">
-                          {(SUGGESTIONS[mode] || SUGGESTIONS.chat).map((s) => (
-                            <button
-                              key={s}
-                              type="button"
-                              onClick={() => send(s)}
-                              className="rounded-xl border px-3.5 py-3 text-left text-sm"
-                              style={{
-                                borderColor: "var(--border)",
-                                background: "var(--card)",
-                              }}
-                            >
-                              {s}
-                            </button>
-                          ))}
-                        </div>
+          <div className={clsx("flex min-h-0 flex-1", mode === "code" ? "flex-col lg:flex-row" : "flex-col")}>
+            {/* messages */}
+            <div className={clsx("flex min-h-0 flex-col", mode === "code" ? "lg:w-[46%] lg:border-r" : "flex-1")} style={{ borderColor: "var(--border)" }}>
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                <div className="mx-auto flex min-h-full max-w-2xl flex-col px-3 py-5 sm:px-5">
+                  {!messages.length && (
+                    <div className="anim-fade-up flex flex-1 flex-col items-center justify-center py-10 text-center">
+                      <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-3xl" style={{ background: "var(--card)", boxShadow: "0 0 0 1px var(--border)" }}>
+                        <meta.icon className="h-6 w-6" style={{ color: "var(--accent)" }} />
                       </div>
-                    )}
-
-                    {active && active.messages.length > 0 && (
-                      <div className="space-y-4 pb-2">
-                        {active.messages.map((m) => {
-                          const isUser = m.role === "user";
-                          return (
-                            <div
-                              key={m.id}
-                              className={clsx("flex", isUser ? "justify-end" : "justify-start")}
-                            >
-                              <div className="max-w-[min(100%,34rem)]">
-                                {!isUser && (
-                                  <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium" style={{ color: "var(--muted)" }}>
-                                    <span
-                                      className="flex h-5 w-5 items-center justify-center rounded text-[10px] font-bold text-white"
-                                      style={{ background: "var(--accent)" }}
-                                    >
-                                      B
-                                    </span>
-                                    BUILDWE
-                                  </div>
-                                )}
-                                <div
-                                  className={clsx(
-                                    "rounded-2xl px-3.5 py-2.5 text-[15px] leading-relaxed",
-                                    isUser ? "rounded-br-md" : "rounded-bl-md border",
-                                    m.streaming && !isUser && "typing-caret"
-                                  )}
-                                  style={
-                                    isUser
-                                      ? { background: "var(--ink)", color: "var(--bg)" }
-                                      : {
-                                          background: "var(--card)",
-                                          borderColor: "var(--border)",
-                                        }
-                                  }
-                                >
-                                  {isUser ? (
-                                    <p className="whitespace-pre-wrap">{m.content}</p>
-                                  ) : (
-                                    <div
-                                      className="prose-buildwe"
-                                      dangerouslySetInnerHTML={{
-                                        __html: roughMarkdown(m.content || ""),
-                                      }}
-                                    />
-                                  )}
-                                </div>
-                                {!isUser && m.content && !m.streaming && (
-                                  <div className="mt-1 flex gap-0.5">
-                                    <Btn
-                                      variant="icon"
-                                      size="sm"
-                                      aria-label="Copy"
-                                      onClick={() => {
-                                        navigator.clipboard.writeText(m.content);
-                                        setCopiedId(m.id);
-                                        setTimeout(() => setCopiedId(null), 1200);
-                                      }}
-                                    >
-                                      {copiedId === m.id ? (
-                                        <Check className="h-3.5 w-3.5" style={{ color: "var(--accent)" }} />
-                                      ) : (
-                                        <Copy className="h-3.5 w-3.5" />
-                                      )}
-                                    </Btn>
-                                    <Btn
-                                      variant="icon"
-                                      size="sm"
-                                      aria-label="Download"
-                                      onClick={() =>
-                                        guardedDownload(() =>
-                                          downloadText("buildwe-chat.txt", m.content)
-                                        )
-                                      }
-                                    >
-                                      <Download className="h-3.5 w-3.5" />
-                                    </Btn>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-
-                        {pendingQ && (
-                          <div
-                            className="rounded-2xl border p-3"
+                      <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{meta.headline}</h1>
+                      <p className="mt-2 max-w-md text-sm" style={{ color: "var(--muted)" }}>{meta.sub}</p>
+                      <div
+                        className="mt-3 rounded-full px-3 py-1 text-[11px] font-semibold"
+                        style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+                      >
+                        Free on BUILDWE
+                      </div>
+                      <div className="mt-8 grid w-full max-w-md gap-2">
+                        {SUGGEST[mode].map((s) => (
+                          <button
+                            key={s}
+                            type="button"
+                            onClick={() => send(s)}
+                            className="rounded-2xl border px-4 py-3 text-left text-sm transition hover:border-[var(--accent)]"
                             style={{ borderColor: "var(--border)", background: "var(--card)" }}
                           >
-                            <div className="mb-2 flex items-center justify-between">
-                              <span className="text-sm font-semibold">Quick details</span>
-                              <button
-                                type="button"
-                                className="text-[11px] font-medium"
-                                style={{ color: "var(--accent)" }}
-                                onClick={skipBuild}
-                              >
-                                Skip · build now
-                              </button>
-                            </div>
-                            {pendingQ.map((q) => (
-                              <label key={q} className="mb-2 block">
-                                <span className="mb-1 block text-xs" style={{ color: "var(--muted)" }}>
-                                  {q}
-                                </span>
-                                <input
-                                  value={clarify[q] || ""}
-                                  onChange={(e) =>
-                                    setClarify((c) => ({ ...c, [q]: e.target.value }))
-                                  }
-                                  className="h-10 w-full rounded-lg border px-3 text-sm outline-none"
-                                  style={{
-                                    borderColor: "var(--border)",
-                                    background: "var(--bg)",
-                                  }}
-                                />
-                              </label>
-                            ))}
-                            <Btn className="mt-1 w-full" onClick={confirmBuild} disabled={streaming}>
-                              <Sparkles className="h-4 w-4" /> Build project
-                            </Btn>
-                          </div>
-                        )}
-
-                        {/* Inline tool previews for image/audio on mobile */}
-                        {mode === "image" && activeImageId && (
-                          <ImageStrip
-                            images={images}
-                            activeId={activeImageId}
-                            setActive={setActiveImageId}
-                            loading={imageLoading}
-                            onFull={(u) => setFullscreenImage(u)}
-                            onDownload={(img) =>
-                              guardedDownload(() => {
-                                const a = document.createElement("a");
-                                a.href = img.url;
-                                a.download = `buildwe-${img.id}.svg`;
-                                a.click();
-                              })
-                            }
-                          />
-                        )}
-                        {mode === "audio" && activeAudioId && (
-                          <AudioPlayer
-                            item={audios.find((a) => a.id === activeAudioId)}
-                            progress={audioProgress}
-                            onToggle={() => activeAudioId && togglePlay(activeAudioId)}
-                            onRegen={() => {
-                              const it = audios.find((a) => a.id === activeAudioId);
-                              if (it) send(it.text);
-                            }}
-                            onShare={async (it) => {
-                              try {
-                                if (navigator.share)
-                                  await navigator.share({ text: it.text, title: "BUILDWE Audio" });
-                                else await navigator.clipboard.writeText(it.text);
-                              } catch {
-                                /* ignore */
-                              }
-                            }}
-                            onDownload={(it) =>
-                              guardedDownload(() =>
-                                downloadText(`buildwe-audio.txt`, it.text)
-                              )
-                            }
-                          />
-                        )}
-
-                        <div ref={endRef} />
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* FIXED COMPOSER — never oversized */}
-                <div
-                  className="shrink-0 border-t px-3 py-2 sm:px-5"
-                  style={{
-                    borderColor: "var(--border)",
-                    background:
-                      "color-mix(in srgb, var(--bg-elevated) 96%, transparent)",
-                  }}
-                >
-                  <div className="mx-auto max-w-2xl">
-                    {/* mode chips — compact */}
-                    {(mode === "image" || mode === "audio") && (
-                      <div className="mb-2 flex flex-wrap items-center gap-1.5">
-                        {mode === "image" &&
-                          ASPECTS.map((a) => (
-                            <button
-                              key={a.id}
-                              type="button"
-                              onClick={() => setAspect(a.id)}
-                              className="rounded-lg border px-2 py-1 text-[11px] font-medium"
-                              style={
-                                aspect === a.id
-                                  ? {
-                                      borderColor: "var(--accent)",
-                                      background: "var(--accent-soft)",
-                                      color: "var(--accent)",
-                                    }
-                                  : {
-                                      borderColor: "var(--border)",
-                                      color: "var(--muted)",
-                                    }
-                              }
-                            >
-                              {a.label}
-                            </button>
-                          ))}
-                        {mode === "audio" && (
-                          <>
-                            {(showAllVoices
-                              ? VOICES
-                              : VOICES.slice(0, VOICE_PREVIEW_COUNT)
-                            ).map((v) => (
-                              <button
-                                key={v.id}
-                                type="button"
-                                onClick={() => setVoice(v.id)}
-                                title={`${v.lang} · ${v.region} · ${v.tone}`}
-                                className="rounded-lg border px-2 py-1 text-[11px] font-medium"
-                                style={
-                                  voice === v.id
-                                    ? {
-                                        borderColor: "var(--accent)",
-                                        background: "var(--accent-soft)",
-                                        color: "var(--accent)",
-                                      }
-                                    : {
-                                        borderColor: "var(--border)",
-                                        color: "var(--muted)",
-                                      }
-                                }
-                              >
-                                {v.label}
-                                {showAllVoices && (
-                                  <span className="ml-1 opacity-60">{v.lang.slice(0, 2)}</span>
-                                )}
-                              </button>
-                            ))}
-                            <button
-                              type="button"
-                              onClick={() => setShowAllVoices((v) => !v)}
-                              className="rounded-lg border px-2 py-1 text-[11px] font-semibold"
-                              style={{
-                                borderColor: "var(--border)",
-                                color: "var(--accent)",
-                              }}
-                            >
-                              {showAllVoices
-                                ? "Show less"
-                                : `Show more (+${VOICES.length - VOICE_PREVIEW_COUNT})`}
-                            </button>
-                            {[0.75, 1, 1.25, 1.5].map((s) => (
-                              <button
-                                key={s}
-                                type="button"
-                                onClick={() => setSpeed(s)}
-                                className="rounded-lg border px-2 py-1 text-[11px]"
-                                style={
-                                  speed === s
-                                    ? {
-                                        borderColor: "var(--accent)",
-                                        color: "var(--accent)",
-                                      }
-                                    : {
-                                        borderColor: "var(--border)",
-                                        color: "var(--muted)",
-                                      }
-                                }
-                              >
-                                {s}×
-                              </button>
-                            ))}
-                          </>
-                        )}
-                      </div>
-                    )}
-
-                    <div
-                      className="rounded-2xl border shadow-soft"
-                      style={{ borderColor: "var(--border)", background: "var(--card)" }}
-                    >
-                      <textarea
-                        ref={taRef}
-                        value={input}
-                        rows={1}
-                        placeholder={placeholder}
-                        onChange={(e) => {
-                          setInput(e.target.value);
-                          growInput();
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            send();
-                          }
-                        }}
-                        className="max-h-[100px] min-h-[44px] w-full resize-none bg-transparent px-3.5 pt-3 text-[15px] outline-none placeholder:opacity-50 md:max-h-[140px]"
-                        style={{ color: "var(--ink)" }}
-                      />
-                      <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
-                        <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
-                          {MODES.map((m) => {
-                            const Icon = m.icon;
-                            const on = mode === m.id;
-                            return (
-                              <button
-                                key={m.id}
-                                type="button"
-                                onClick={() => switchMode(m.id)}
-                                className="flex shrink-0 items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium"
-                                style={
-                                  on
-                                    ? {
-                                        background: "var(--accent-soft)",
-                                        color: "var(--accent)",
-                                      }
-                                    : { color: "var(--muted)" }
-                                }
-                              >
-                                <Icon className="h-3.5 w-3.5" />
-                                <span className="hidden sm:inline">{m.label}</span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                        <input
-                          ref={fileRef}
-                          type="file"
-                          className="hidden"
-                          onChange={(e) => {
-                            const f = e.target.files?.[0];
-                            if (f) onUpload(f);
-                            e.target.value = "";
-                          }}
-                        />
-                        <Btn
-                          variant="icon"
-                          size="sm"
-                          aria-label="Upload"
-                          onClick={() => fileRef.current?.click()}
-                        >
-                          <Paperclip className="h-4 w-4" />
-                        </Btn>
-                        <Btn
-                          variant="icon"
-                          size="sm"
-                          aria-label="Voice"
-                          onClick={toggleMic}
-                          className={listening ? "!text-[var(--accent)]" : ""}
-                        >
-                          {listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-                        </Btn>
-                        {streaming ? (
-                          <Btn
-                            variant="ink"
-                            className="!h-9 !w-9 !p-0"
-                            aria-label="Stop"
-                            onClick={stopStream}
-                          >
-                            <Square className="h-3.5 w-3.5 fill-current" />
-                          </Btn>
-                        ) : (
-                          <Btn
-                            className="!h-9 !w-9 !p-0"
-                            aria-label="Send"
-                            disabled={!input.trim()}
-                            onClick={() => send()}
-                          >
-                            <Send className="h-4 w-4" />
-                          </Btn>
-                        )}
-                      </div>
-                    </div>
-                    {mode === "code" && codeFiles.length > 0 && (
-                      <button
-                        type="button"
-                        className="mt-1.5 text-xs font-medium lg:hidden"
-                        style={{ color: "var(--accent)" }}
-                        onClick={() => setShowCanvasMobile(true)}
-                      >
-                        Open code canvas →
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Code canvas */}
-              {mode === "code" && codeFiles.length > 0 && (
-                <div
-                  className={clsx(
-                    "min-h-0 flex-col border-l lg:flex lg:flex-1",
-                    showCanvasMobile ? "flex flex-1" : "hidden lg:flex"
-                  )}
-                  style={{
-                    background: "var(--code-bg)",
-                    color: "var(--code-fg)",
-                    borderColor: "transparent",
-                  }}
-                >
-                  <div className="flex items-center gap-2 border-b border-white/10 px-2 py-2">
-                    <button
-                      type="button"
-                      className="rounded-md px-2 py-1 text-xs text-white/60 lg:hidden"
-                      onClick={() => setShowCanvasMobile(false)}
-                    >
-                      ← Back
-                    </button>
-                    <div className="flex rounded-lg bg-white/5 p-0.5">
-                      <button
-                        type="button"
-                        onClick={() => setCodeView("files")}
-                        className={clsx(
-                          "flex items-center gap-1 rounded-md px-2 py-1 text-xs",
-                          codeView === "files" ? "bg-white/15 text-white" : "text-white/50"
-                        )}
-                      >
-                        <FolderOpen className="h-3.5 w-3.5" /> Files
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCodeView("slides")}
-                        className={clsx(
-                          "flex items-center gap-1 rounded-md px-2 py-1 text-xs",
-                          codeView === "slides" ? "bg-white/15 text-white" : "text-white/50"
-                        )}
-                      >
-                        <Presentation className="h-3.5 w-3.5" /> Slides
-                      </button>
-                    </div>
-                    <div className="flex-1" />
-                    {activeFile && codeView === "files" && (
-                      <>
-                        <button
-                          type="button"
-                          className="px-2 text-[11px] text-white/55"
-                          onClick={() => {
-                            navigator.clipboard.writeText(activeFile.content);
-                            setCopiedId("file");
-                            setTimeout(() => setCopiedId(null), 1000);
-                          }}
-                        >
-                          {copiedId === "file" ? "Copied" : "Copy"}
-                        </button>
-                        <button
-                          type="button"
-                          className="px-2 text-[11px] text-white/55"
-                          onClick={() =>
-                            guardedDownload(() =>
-                              downloadText(activeFile.name, activeFile.content)
-                            )
-                          }
-                        >
-                          Save
-                        </button>
-                      </>
-                    )}
-                  </div>
-                  {codeView === "files" ? (
-                    <div className="flex min-h-0 flex-1">
-                      <div className="w-32 shrink-0 overflow-y-auto border-r border-white/10 py-1 sm:w-40">
-                        {codeFiles.map((f) => (
-                          <button
-                            key={f.id}
-                            type="button"
-                            onClick={() => setActiveFileId(f.id)}
-                            className={clsx(
-                              "flex w-full items-center gap-1 truncate px-2 py-2 text-left text-[12px]",
-                              f.id === activeFile?.id
-                                ? "bg-white/10 text-white"
-                                : "text-white/55"
-                            )}
-                          >
-                            <FileCode2 className="h-3.5 w-3.5 shrink-0" />
-                            {f.name}
+                            {s}
                           </button>
                         ))}
                       </div>
-                      <div className="min-w-0 flex-1 overflow-auto p-3">
-                        <pre className="font-mono text-[12px] leading-relaxed sm:text-[13px]">
-                          <code>{activeFile?.content}</code>
-                        </pre>
-                      </div>
                     </div>
-                  ) : (
-                    <div className="flex flex-1 flex-col items-center justify-center gap-3 p-4">
-                      {slides[activeSlide] && (
-                        <div className="w-full max-w-md rounded-2xl bg-gradient-to-br from-[#F8F6F1] to-[#E8E4DB] p-8 text-[#1C1C1C]">
-                          <div className="text-xs font-semibold text-[#C45C26]">
-                            Slide {activeSlide + 1}/{slides.length}
+                  )}
+
+                  {!!messages.length && (
+                    <div className="space-y-4 pb-2">
+                      {messages.map((m) => {
+                        const isUser = m.role === "user";
+                        return (
+                          <div key={m.id} className={clsx("flex", isUser ? "justify-end" : "justify-start")}>
+                            <div className="max-w-[min(100%,36rem)]">
+                              {!isUser && (
+                                <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium" style={{ color: "var(--muted)" }}>
+                                  <span className="flex h-5 w-5 items-center justify-center rounded-md text-[10px] font-bold text-white" style={{ background: "var(--accent)" }}>B</span>
+                                  BUILDWE
+                                </div>
+                              )}
+                              <div
+                                className={clsx(
+                                  "rounded-3xl px-4 py-3 text-[15px] leading-relaxed",
+                                  isUser ? "rounded-br-md" : "rounded-bl-md border",
+                                  m.streaming && !isUser && "typing-caret"
+                                )}
+                                style={
+                                  isUser
+                                    ? { background: "var(--ink)", color: "var(--bg)" }
+                                    : { background: "var(--card)", borderColor: "var(--border)" }
+                                }
+                              >
+                                {isUser ? (
+                                  <p className="whitespace-pre-wrap">{m.content}</p>
+                                ) : (
+                                  <div className="prose-bw" dangerouslySetInnerHTML={{ __html: md(m.content || "") }} />
+                                )}
+                              </div>
+                              {!isUser && m.content && !m.streaming && (
+                                <div className="mt-1 flex gap-0.5">
+                                  <Btn variant="icon" size="sm" aria-label="Copy" onClick={() => copy(m.content, m.id)}>
+                                    {copied === m.id ? <Check className="h-3.5 w-3.5" style={{ color: "var(--accent)" }} /> : <Copy className="h-3.5 w-3.5" />}
+                                  </Btn>
+                                  <Btn
+                                    variant="icon"
+                                    size="sm"
+                                    aria-label="Regenerate"
+                                    onClick={() => {
+                                      const idx = messages.findIndex((x) => x.id === m.id);
+                                      const prevUser = [...messages.slice(0, idx)].reverse().find((x) => x.role === "user");
+                                      if (!prevUser || streaming) return;
+                                      setMessages((ms) => ms.filter((x) => x.id !== m.id));
+                                      setTimeout(() => send(prevUser.content), 30);
+                                    }}
+                                  >
+                                    <RotateCcw className="h-3.5 w-3.5" />
+                                  </Btn>
+                                  <Btn
+                                    variant="icon"
+                                    size="sm"
+                                    aria-label="Edit prompt"
+                                    onClick={() => {
+                                      const idx = messages.findIndex((x) => x.id === m.id);
+                                      const prevUser = [...messages.slice(0, idx)].reverse().find((x) => x.role === "user");
+                                      if (!prevUser) return;
+                                      setInput(prevUser.content);
+                                      requestAnimationFrame(grow);
+                                    }}
+                                  >
+                                    <SquarePen className="h-3.5 w-3.5" />
+                                  </Btn>
+                                </div>
+                              )}
+                            </div>
                           </div>
-                          <h3 className="mt-2 text-2xl font-semibold">
-                            {slides[activeSlide].title}
-                          </h3>
-                          <p className="mt-3 whitespace-pre-line text-sm text-[#444]">
-                            {slides[activeSlide].body}
-                          </p>
+                        );
+                      })}
+
+                      {mode === "image" && (imgLoading || activeImg) && (
+                        <div className="rounded-3xl border p-3" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
+                          {imgLoading ? (
+                            <div className="shimmer h-48 rounded-2xl" />
+                          ) : (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={images.find((i) => i.id === activeImg)?.url}
+                              alt=""
+                              className="max-h-72 w-auto rounded-2xl"
+                            />
+                          )}
+                          <div className="mt-2 flex gap-2 overflow-x-auto">
+                            {images.map((i) => (
+                              <button key={i.id} type="button" onClick={() => setActiveImg(i.id)} className="h-14 w-14 shrink-0 overflow-hidden rounded-xl border-2" style={{ borderColor: i.id === activeImg ? "var(--accent)" : "transparent" }}>
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img src={i.url} alt="" className="h-full w-full object-cover" />
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       )}
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          disabled={activeSlide === 0}
-                          onClick={() => setActiveSlide((s) => s - 1)}
-                          className="rounded-lg bg-white/10 px-3 py-1.5 text-xs text-white disabled:opacity-40"
-                        >
-                          Prev
-                        </button>
-                        <button
-                          type="button"
-                          disabled={activeSlide >= slides.length - 1}
-                          onClick={() => setActiveSlide((s) => s + 1)}
-                          className="rounded-lg bg-white/10 px-3 py-1.5 text-xs text-white disabled:opacity-40"
-                        >
-                          Next
-                        </button>
-                      </div>
+
+                      <div ref={endRef} />
                     </div>
                   )}
                 </div>
-              )}
+              </div>
+
+              {/* composer */}
+              <div className="shrink-0 border-t px-3 py-2.5 sm:px-5" style={{ borderColor: "var(--border)", background: "color-mix(in srgb, var(--bg-elevated) 95%, transparent)" }}>
+                <div className="mx-auto max-w-2xl">
+                  {error && (
+                    <div className="mb-2 rounded-xl px-3 py-2 text-xs" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
+                      {error}
+                      {/limit|PRO/i.test(error) && (
+                        <button type="button" className="ml-2 font-semibold underline" onClick={() => setModal("plans")}>Upgrade</button>
+                      )}
+                    </div>
+                  )}
+
+                  {(mode === "image" || mode === "audio") && (
+                    <div className="mb-2 flex flex-wrap gap-1.5">
+                      {mode === "image" &&
+                        ASPECTS.map((a) => (
+                          <button key={a} type="button" onClick={() => setAspect(a)} className="rounded-xl border px-2.5 py-1 text-[11px] font-medium" style={aspect === a ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" } : { borderColor: "var(--border)", color: "var(--muted)" }}>{a}</button>
+                        ))}
+                      {mode === "audio" && (
+                        <>
+                          {(showVoices ? VOICES : VOICES.slice(0, 6)).map((v) => (
+                            <button key={v.id} type="button" title={`${v.lang} · ${v.tone}`} onClick={() => setVoice(v.id)} className="rounded-xl border px-2.5 py-1 text-[11px] font-medium" style={voice === v.id ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" } : { borderColor: "var(--border)", color: "var(--muted)" }}>
+                              {v.label}{showVoices && <span className="ml-1 opacity-50">{v.lang}</span>}
+                            </button>
+                          ))}
+                          <button type="button" onClick={() => setShowVoices((v) => !v)} className="rounded-xl border px-2.5 py-1 text-[11px] font-semibold" style={{ borderColor: "var(--border)", color: "var(--accent)" }}>
+                            {showVoices ? "Less" : `More +${VOICES.length - 6}`}
+                          </button>
+                          {[0.75, 1, 1.25, 1.5].map((s) => (
+                            <button key={s} type="button" onClick={() => setSpeed(s)} className="rounded-xl border px-2 py-1 text-[11px]" style={speed === s ? { borderColor: "var(--accent)", color: "var(--accent)" } : { borderColor: "var(--border)", color: "var(--muted)" }}>{s}×</button>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="rounded-3xl border shadow-sm" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
+                    <textarea
+                      ref={taRef}
+                      value={input}
+                      rows={1}
+                      placeholder={
+                        mode === "auto"
+                          ? "What are we making?"
+                          : mode === "code"
+                            ? "Describe the build…"
+                            : mode === "image"
+                              ? "Describe the frame…"
+                              : mode === "audio"
+                                ? "Paste the script…"
+                                : "Message BUILDWE"
+                      }
+                      onChange={(e) => {
+                        setInput(e.target.value);
+                        grow();
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          send();
+                        }
+                      }}
+                      className="max-h-[96px] min-h-[48px] w-full resize-none bg-transparent px-4 pt-3.5 text-[15px] outline-none placeholder:opacity-45 md:max-h-[128px]"
+                    />
+                    <div className="flex items-center gap-0.5 px-2 pb-2">
+                      <div className="flex min-w-0 flex-1 gap-0.5 overflow-x-auto">
+                        {MODE_META.map((m) => {
+                          const Icon = m.icon;
+                          const on = mode === m.id;
+                          return (
+                            <button key={m.id} type="button" onClick={() => switchMode(m.id)} className="flex shrink-0 items-center gap-1 rounded-xl px-2 py-1.5 text-[11px] font-medium" style={on ? { background: "var(--accent-soft)", color: "var(--accent)" } : { color: "var(--muted)" }}>
+                              <Icon className="h-3.5 w-3.5" />
+                              <span className="hidden sm:inline">{m.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <input ref={fileRef} type="file" className="hidden" accept="text/*,.md,.json,.js,.ts,.tsx,.py,.css,.html" onChange={async (e) => {
+                        const f = e.target.files?.[0];
+                        if (!f) return;
+                        const t = await f.text();
+                        setInput((v) => (v ? v + "\n\n" : "") + `[File: ${f.name}]\n${t.slice(0, 8000)}`);
+                        e.target.value = "";
+                        requestAnimationFrame(grow);
+                      }} />
+                      <Btn variant="icon" size="sm" aria-label="Upload" onClick={() => fileRef.current?.click()}><Paperclip className="h-4 w-4" /></Btn>
+                      <Btn
+                        variant="icon"
+                        size="sm"
+                        aria-label="Mic"
+                        onClick={() => {
+                          const w = window as unknown as { SpeechRecognition?: new () => SpeechRecognition; webkitSpeechRecognition?: new () => SpeechRecognition };
+                          const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
+                          if (!SR) return alert("Use Chrome for voice input");
+                          if (listening) {
+                            setListening(false);
+                            return;
+                          }
+                          const rec = new SR();
+                          rec.lang = "en-IN";
+                          rec.onresult = (ev: SpeechRecognitionEvent) => {
+                            let t = "";
+                            for (let i = ev.resultIndex; i < ev.results.length; i++) t += ev.results[i][0].transcript;
+                            setInput((v) => (v ? v + " " : "") + t);
+                            requestAnimationFrame(grow);
+                          };
+                          rec.onend = () => setListening(false);
+                          rec.start();
+                          setListening(true);
+                        }}
+                      >
+                        {listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                      </Btn>
+                      {streaming || imgLoading || audioBusy ? (
+                        <Btn variant="ink" className="!h-10 !w-10 !p-0" aria-label="Stop" onClick={stop}><Square className="h-3.5 w-3.5 fill-current" /></Btn>
+                      ) : (
+                        <Btn className="!h-10 !w-10 !p-0" aria-label="Send" disabled={!input.trim()} onClick={() => send()}>
+                          {streaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                        </Btn>
+                      )}
+                    </div>
+                  </div>
+                  <p className="mt-1.5 text-center text-[10px]" style={{ color: "var(--soft)" }}>
+                    {me?.kind === "guest" ? "Browsing free · sign in to sync across devices" : me?.user?.email}
+                    {plan === "free" ? " · Free plan" : " · PRO"}
+                  </p>
+                </div>
+              </div>
             </div>
+
+            {/* code canvas */}
+            {mode === "code" && (
+              <div className="hidden min-h-0 flex-1 flex-col lg:flex" style={{ background: "var(--code-bg)", color: "var(--code-fg)" }}>
+                <div className="flex items-center justify-between border-b border-white/10 px-3 py-2">
+                  <div className="flex items-center gap-2 text-xs text-white/50">
+                    <FileCode2 className="h-3.5 w-3.5" />
+                    buildwe · {codeLang}
+                  </div>
+                  <div className="flex gap-1">
+                    <button type="button" className="rounded-lg px-2 py-1 text-[11px] text-white/55 hover:bg-white/10" onClick={() => copy(codePanel, "code")}>{copied === "code" ? "Copied" : "Copy"}</button>
+                    <button type="button" className="rounded-lg px-2 py-1 text-[11px] text-white/55 hover:bg-white/10" onClick={() => {
+                      const blob = new Blob([codePanel], { type: "text/plain" });
+                      const a = document.createElement("a");
+                      a.href = URL.createObjectURL(blob);
+                      a.download = `buildwe.${codeLang || "txt"}`;
+                      a.click();
+                    }}>Save</button>
+                  </div>
+                </div>
+                <div className="flex-1 overflow-auto p-4">
+                  <pre className="font-mono text-[13px] leading-relaxed"><code>{codePanel}</code></pre>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Mobile bottom nav */}
-        <nav
-          className="fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur-md md:hidden"
-          style={{
-            borderColor: "var(--border)",
-            background: "color-mix(in srgb, var(--bg-elevated) 95%, transparent)",
-            paddingBottom: "var(--safe-b)",
-          }}
-        >
-          <div className="flex h-14">
-            {MODES.filter((m) => m.id !== "auto")
-              .concat(MODES.filter((m) => m.id === "auto"))
-              .slice(0, 5)
-              .map((m) => {
-                const Icon = m.icon;
-                const on = mode === m.id;
-                return (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => switchMode(m.id)}
-                    className="flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-medium"
-                    style={{ color: on ? "var(--accent)" : "var(--muted)" }}
-                  >
-                    <span
-                      className="flex h-7 w-11 items-center justify-center rounded-full"
-                      style={on ? { background: "var(--accent-soft)" } : undefined}
-                    >
-                      <Icon className="h-5 w-5" />
-                    </span>
-                    {m.label}
-                  </button>
-                );
-              })}
+        {/* mobile nav */}
+        <nav className="fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur-md md:hidden" style={{ borderColor: "var(--border)", background: "color-mix(in srgb, var(--bg-elevated) 94%, transparent)", paddingBottom: "var(--safe-b)" }}>
+          <div className="flex h-[58px]">
+            {MODE_META.map((m) => {
+              const Icon = m.icon;
+              const on = mode === m.id;
+              return (
+                <button key={m.id} type="button" onClick={() => switchMode(m.id)} className="flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-medium" style={{ color: on ? "var(--accent)" : "var(--muted)" }}>
+                  <span className="flex h-7 w-11 items-center justify-center rounded-full" style={on ? { background: "var(--accent-soft)" } : undefined}>
+                    <Icon className="h-5 w-5" />
+                  </span>
+                  {m.label}
+                </button>
+              );
+            })}
           </div>
         </nav>
       </div>
 
-      {/* Mobile drawer */}
+      {/* mobile drawer */}
       {drawer && (
         <div className="fixed inset-0 z-50 lg:hidden">
-          <button
-            type="button"
-            className="absolute inset-0 bg-black/40"
-            aria-label="Close"
-            onClick={() => setDrawer(false)}
-          />
-          <div
-            className="absolute inset-y-0 left-0 flex w-[min(100%,280px)] flex-col"
-            style={{ background: "var(--bg-elevated)", paddingTop: "var(--safe-t)" }}
-          >
-            <div
-              className="flex h-12 items-center justify-between border-b px-3"
-              style={{ borderColor: "var(--border)" }}
-            >
+          <button type="button" className="absolute inset-0 bg-black/40" aria-label="Close" onClick={() => setDrawer(false)} />
+          <div className="absolute inset-y-0 left-0 flex w-[min(100%,300px)] flex-col" style={{ background: "var(--bg-elevated)", paddingTop: "var(--safe-t)" }}>
+            <div className="flex h-14 items-center justify-between border-b px-3" style={{ borderColor: "var(--border)" }}>
               <span className="font-semibold">BUILDWE</span>
-              <Btn variant="icon" aria-label="Close" onClick={() => setDrawer(false)}>
-                <X className="h-4 w-4" />
-              </Btn>
+              <Btn variant="icon" aria-label="Close" onClick={() => setDrawer(false)}><X className="h-4 w-4" /></Btn>
             </div>
-            <div className="p-3">
-              <Btn className="w-full" onClick={newChat}>
-                <Plus className="h-4 w-4" /> New chat
-              </Btn>
-            </div>
-            <nav className="space-y-0.5 px-2">
-              {MODES.map((m) => {
-                const Icon = m.icon;
-                return (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => switchMode(m.id)}
-                    className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium"
-                    style={
-                      mode === m.id
-                        ? { background: "var(--accent-soft)", color: "var(--accent)" }
-                        : { color: "var(--muted)" }
-                    }
-                  >
-                    <Icon className="h-4 w-4" />
-                    {m.label}
-                  </button>
-                );
-              })}
-            </nav>
-            <div className="min-h-0 flex-1 overflow-y-auto border-t px-2 pt-2" style={{ borderColor: "var(--border)" }}>
-              <div className="px-2 pb-1 text-[10px] font-semibold uppercase" style={{ color: "var(--soft)" }}>
-                History
-              </div>
-              {history.map((a) => (
-                <button
-                  key={a.id}
-                  type="button"
-                  onClick={() => {
-                    setActiveId(a.id);
-                    setMode(a.mode === "auto" ? "chat" : a.mode);
-                    setDrawer(false);
-                  }}
-                  className="flex w-full rounded-lg px-2.5 py-2 text-left text-[13px]"
-                  style={a.id === activeId ? { background: "var(--secondary)" } : undefined}
-                >
-                  <span className="truncate font-medium">{a.title}</span>
+            <div className="p-3"><Btn className="w-full" onClick={newChat}><Plus className="h-4 w-4" /> New chat</Btn></div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-2">
+              {filteredHistory.map((h) => (
+                <button key={h.id} type="button" onClick={() => openHist(h.id)} className="mb-0.5 flex w-full rounded-xl px-3 py-2.5 text-left text-sm" style={h.id === convId ? { background: "var(--secondary)" } : undefined}>
+                  <span className="truncate font-medium">{h.title}</span>
                 </button>
               ))}
             </div>
-            <div
-              className="space-y-1 border-t p-3"
-              style={{
-                borderColor: "var(--border)",
-                paddingBottom: "calc(12px + var(--safe-b))",
-              }}
-            >
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm"
-                style={{ color: "var(--muted)" }}
-                onClick={() => {
-                  setDrawer(false);
-                  openModal("settings");
-                }}
-              >
-                <Settings className="h-4 w-4" /> Settings
-              </button>
-              {loggedIn ? (
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm"
-                  style={{ color: "var(--muted)" }}
-                  onClick={() => {
-                    setLoggedIn(false);
-                    setPlan("free");
-                    setUserName("Guest");
-                    setDrawer(false);
-                  }}
-                >
-                  <LogOut className="h-4 w-4" /> Log out
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium"
-                  style={{ background: "var(--ink)", color: "var(--bg)" }}
-                  onClick={() => {
-                    setDrawer(false);
-                    openModal("login");
-                  }}
-                >
-                  <LogIn className="h-4 w-4" /> Log in
-                </button>
-              )}
-              <button
-                type="button"
-                className="flex w-full items-center justify-between rounded-xl px-4 py-3 text-sm font-medium"
-                style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
-                onClick={() => {
-                  setDrawer(false);
-                  openModal("plans");
-                }}
-              >
-                Plans · Free / PRO
-                <ArrowUpRight className="h-4 w-4" />
-              </button>
+            <div className="space-y-1 border-t p-3" style={{ borderColor: "var(--border)", paddingBottom: "calc(12px + var(--safe-b))" }}>
+              <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm" style={{ color: "var(--muted)" }} onClick={() => { setDrawer(false); setModal("settings"); }}><Settings className="h-4 w-4" /> Settings</button>
+              <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium" style={{ background: "var(--accent-soft)", color: "var(--accent)" }} onClick={() => { setDrawer(false); setModal("plans"); }}><Zap className="h-4 w-4" /> Plans</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* PLANS overview — Free ↔ PRO both work */}
+      {modal === "auth" && (
+        <AuthSheet
+          tab={authTab}
+          setTab={setAuthTab}
+          email={email}
+          setEmail={setEmail}
+          password={password}
+          setPassword={setPassword}
+          name={name}
+          setName={setName}
+          err={authErr}
+          busy={authBusy}
+          onSubmit={onAuth}
+          onClose={() => setModal(null)}
+        />
+      )}
+
       {modal === "plans" && (
-        <Sheet onClose={closeModal} title="Your plan" wide>
-          <p className="mb-4 text-sm" style={{ color: "var(--muted)" }}>
-            Everyone starts on <strong style={{ color: "var(--ink)" }}>Free</strong>. PRO
-            unlocks only after payment is verified.
-          </p>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div
-              className="rounded-xl border p-4"
-              style={{
-                borderColor: plan === "free" ? "var(--accent)" : "var(--border)",
-                background: "var(--secondary)",
-              }}
-            >
-              <div className="text-xs font-semibold" style={{ color: "var(--soft)" }}>
-                FREE {plan === "free" && "· CURRENT"}
-              </div>
-              <div className="mt-1 text-2xl font-semibold">$0</div>
-              <ul className="mt-3 space-y-1 text-xs" style={{ color: "var(--muted)" }}>
-                <li>✓ Unlimited normal chat</li>
-                <li>✓ Limited code / image / audio</li>
-                <li>✓ Standard models</li>
-              </ul>
-              <Btn
-                variant={plan === "free" ? "ghost" : "primary"}
-                className="mt-4 w-full"
-                size="sm"
-                onClick={switchToFree}
-                disabled={plan === "free"}
-              >
-                {plan === "free" ? "Current plan" : "Switch to Free"}
-              </Btn>
-            </div>
-            <div
-              className="rounded-xl border-2 p-4"
-              style={{
-                borderColor: "var(--accent)",
-                background: "var(--card)",
-              }}
-            >
-              <div className="text-xs font-semibold" style={{ color: "var(--accent)" }}>
-                PRO {plan === "pro" && "· CURRENT"}
-              </div>
-              <div className="mt-1 text-2xl font-semibold">
-                $5<span className="text-sm font-normal" style={{ color: "var(--muted)" }}>/mo</span>
-              </div>
-              <ul className="mt-3 space-y-1 text-xs">
-                <li>✓ Priority models</li>
-                <li>✓ No hard daily image/audio caps</li>
-                <li>✓ Higher code limits</li>
-                <li>✓ Faster generation</li>
-              </ul>
-              {plan === "pro" ? (
-                <Btn variant="ghost" className="mt-4 w-full" size="sm" disabled>
-                  Current plan
-                </Btn>
-              ) : (
-                <Btn
-                  className="mt-4 w-full"
-                  size="sm"
-                  onClick={() => openModal("checkout")}
-                >
-                  Switch to PRO →
-                </Btn>
-              )}
-            </div>
-          </div>
-          <div className="mt-4 flex flex-wrap gap-3 text-xs" style={{ color: "var(--soft)" }}>
-            <Link href="/pricing" className="underline" onClick={closeAllModals}>
-              Full pricing page
-            </Link>
-            <Link href="/terms" className="underline" onClick={closeAllModals}>
-              Terms
-            </Link>
-            <Link href="/privacy" className="underline" onClick={closeAllModals}>
-              Privacy
-            </Link>
-          </div>
-        </Sheet>
-      )}
-
-      {/* CHECKOUT — amount, method, agree */}
-      {modal === "checkout" && (
-        <Sheet onClose={closeModal} title="Checkout · BUILDWE PRO" wide>
-          <div
-            className="mb-4 rounded-xl border p-4"
-            style={{ borderColor: "var(--border)", background: "var(--secondary)" }}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold">{checkoutInfo.planName}</div>
-                <div className="mt-0.5 text-xs" style={{ color: "var(--muted)" }}>
-                  Billed monthly · cancel anytime
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-xl font-semibold">{checkoutInfo.displayAmount}</div>
-                <div className="text-[10px]" style={{ color: "var(--soft)" }}>
-                  ≈ $5 USD
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>
-            Payment method
-          </p>
-          <div className="mb-4 grid grid-cols-3 gap-2">
-            {(
-              [
-                ["upi", "UPI"],
-                ["card", "Card"],
-                ["netbanking", "NetBank"],
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setPayMethod(id)}
-                className="rounded-xl border py-2.5 text-xs font-semibold"
-                style={
-                  payMethod === id
-                    ? {
-                        borderColor: "var(--accent)",
-                        background: "var(--accent-soft)",
-                        color: "var(--accent)",
-                      }
-                    : { borderColor: "var(--border)", color: "var(--muted)" }
-                }
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          <label className="mb-4 flex items-start gap-2 text-xs leading-relaxed" style={{ color: "var(--muted)" }}>
-            <input
-              type="checkbox"
-              checked={agreeTerms}
-              onChange={(e) => setAgreeTerms(e.target.checked)}
-              className="mt-0.5 accent-[var(--accent)]"
-            />
-            <span>
-              I agree to the{" "}
-              <Link href="/terms" className="underline" style={{ color: "var(--accent)" }} target="_blank">
-                Terms of Use
-              </Link>{" "}
-              and{" "}
-              <Link href="/privacy" className="underline" style={{ color: "var(--accent)" }} target="_blank">
-                Privacy Policy
-              </Link>{" "}
-              and authorize this PRO purchase.
-            </span>
-          </label>
-
-          {checkoutError && (
-            <p className="mb-3 text-xs text-red-600">{checkoutError}</p>
-          )}
-
-          <Btn className="w-full" size="lg" disabled={checkoutBusy} onClick={startCheckout}>
-            {checkoutBusy ? "Processing…" : `Pay ${checkoutInfo.displayAmount} · Get PRO`}
-          </Btn>
-          <Btn variant="ghost" className="mt-2 w-full" onClick={closeModal}>
-            ← Back
-          </Btn>
-          <p className="mt-3 text-center text-[10px]" style={{ color: "var(--soft)" }}>
-            {checkoutInfo.demo
-              ? "TEST mode — Razorpay keys go in .env (see .env.example). Demo verifies without real charge."
-              : "Secured by Razorpay"}
-          </p>
-          <div className="mt-2 flex justify-center gap-2 text-[10px]" style={{ color: "var(--soft)" }}>
-            <Shield className="h-3 w-3" /> PCI via Razorpay · No card data on BUILDWE servers
-          </div>
-        </Sheet>
-      )}
-
-      {modal === "login" && (
-        <Sheet onClose={closeModal} title="Log in">
-          <p className="mb-3 text-sm" style={{ color: "var(--muted)" }}>
-            {authNext === "upload"
-              ? "Log in to upload files."
-              : authNext === "download"
-                ? "Log in to download."
-                : authNext === "pro"
-                  ? "Log in to buy PRO."
-                  : "Guest chat works. Log in for uploads, downloads, PRO."}
-          </p>
-          <input
-            type="email"
-            value={loginEmail}
-            onChange={(e) => setLoginEmail(e.target.value)}
-            placeholder="you@email.com"
-            className="mb-3 h-11 w-full rounded-xl border px-3 text-sm outline-none"
-            style={{ borderColor: "var(--border)", background: "var(--card)" }}
-          />
-          <Btn
-            className="w-full"
-            size="lg"
-            onClick={() => {
-              const email = (loginEmail || "alex@buildwe.online").trim();
-              const nice = email
-                .split("@")[0]
-                .replace(/[._-]/g, " ")
-                .replace(/\b\w/g, (c) => c.toUpperCase());
-              setUserEmail(email);
-              setUserName(nice);
-              setLoggedIn(true);
-              setLoginEmail("");
-              const next = authNext;
-              setAuthNext(null);
-              if (next === "pro") openModal("checkout");
-              else closeModal();
-            }}
-          >
-            Continue
-          </Btn>
-          <Btn
-            variant="ghost"
-            className="mt-2 w-full"
-            onClick={() => {
-              setUserEmail("alex@buildwe.online");
-              setUserName("Alex Rivera");
-              setLoggedIn(true);
-              const next = authNext;
-              setAuthNext(null);
-              if (next === "pro") openModal("checkout");
-              else closeModal();
-            }}
-          >
-            Continue with Google
-          </Btn>
-        </Sheet>
+        <PlansSheet
+          plan={plan}
+          onClose={() => setModal(null)}
+          onPro={() => {
+            if (!loggedIn) {
+              setAuthTab("register");
+              setModal("auth");
+            } else {
+              setModal(null);
+              // Billing hooks live under /api/checkout — wire keys when ready
+              window.location.href = "/pricing";
+            }
+          }}
+        />
       )}
 
       {modal === "settings" && (
-        <Sheet onClose={closeModal} title="Settings">
-          <button
-            type="button"
-            onClick={() => openModal("profile")}
-            className="mb-2 flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left"
-            style={{ borderColor: "var(--border)", background: "var(--secondary)" }}
-          >
-            <span
-              className="flex h-10 w-10 items-center justify-center rounded-full text-xs font-semibold"
-              style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
-            >
-              {initials}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-medium">
-                {loggedIn ? userName : "Guest"}
+        <Sheet onClose={() => setModal(null)} title="Settings">
+          <div className="space-y-1">
+            <button type="button" onClick={() => setModal(loggedIn ? "profile" : "auth")} className="mb-2 flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left" style={{ borderColor: "var(--border)", background: "var(--secondary)" }}>
+              <span className="flex h-10 w-10 items-center justify-center rounded-full text-xs font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{(me?.name || "G")[0]}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">{me?.name || "Guest"}</span>
+                <span className="text-[11px]" style={{ color: "var(--muted)" }}>{loggedIn ? me?.user?.email : "Tap to log in"}</span>
               </span>
-              <span className="text-[11px]" style={{ color: "var(--muted)" }}>
-                {loggedIn ? userEmail : "Tap profile"}
-              </span>
-            </span>
-            <ChevronRight className="h-4 w-4" style={{ color: "var(--soft)" }} />
-          </button>
-          <Row icon={Sparkles} label="Skills" value={String(skills.length)} onClick={() => openModal("skills")} />
-          <Row
-            icon={CreditCard}
-            label="Plan"
-            value={plan === "pro" ? "PRO" : "Free"}
-            onClick={() => openModal("plans")}
-          />
-          <div className="my-2 px-1 text-[10px] font-semibold uppercase" style={{ color: "var(--soft)" }}>
-            Theme
-          </div>
-          <div className="mb-2 grid grid-cols-3 gap-1.5">
-            {(
-              [
+              <ChevronRight className="h-4 w-4" style={{ color: "var(--soft)" }} />
+            </button>
+            <div className="px-1 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Theme</div>
+            <div className="grid grid-cols-3 gap-1.5">
+              {([
                 ["system", Monitor, "System"],
                 ["light", Sun, "Light"],
                 ["dark", Moon, "Dark"],
-              ] as const
-            ).map(([id, Icon, label]) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setThemePref(id)}
-                className="flex items-center justify-center gap-1 rounded-lg border py-2 text-[11px] font-medium"
-                style={
-                  themePref === id
-                    ? {
-                        borderColor: "var(--accent)",
-                        background: "var(--accent-soft)",
-                        color: "var(--accent)",
-                      }
-                    : { borderColor: "var(--border)", color: "var(--muted)" }
-                }
-              >
-                <Icon className="h-3.5 w-3.5" />
-                {label}
-              </button>
-            ))}
-          </div>
-          <Row icon={MessageCircle} label="Feedback" onClick={() => openModal("feedback")} />
-          <Row icon={HelpCircle} label="Help" onClick={() => openModal("help")} />
-          <a
-            href="/about"
-            className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"
-          >
-            <Bot className="h-4 w-4 opacity-70" />
-            <span className="flex-1">About BUILDWE</span>
-            <ExternalLink className="h-3.5 w-3.5" style={{ color: "var(--soft)" }} />
-          </a>
-          <a
-            href="/privacy"
-            className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"
-          >
-            <Shield className="h-4 w-4 opacity-70" />
-            <span className="flex-1">Privacy</span>
-            <ExternalLink className="h-3.5 w-3.5" style={{ color: "var(--soft)" }} />
-          </a>
-          <a
-            href="/terms"
-            className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"
-          >
-            <FileCode2 className="h-4 w-4 opacity-70" />
-            <span className="flex-1">Terms</span>
-            <ExternalLink className="h-3.5 w-3.5" style={{ color: "var(--soft)" }} />
-          </a>
-          {loggedIn ? (
-            <Row
-              icon={LogOut}
-              label="Log out"
-              danger
-              onClick={() => {
-                setLoggedIn(false);
-                setPlan("free");
-                setUserName("Guest");
-                closeAllModals();
-              }}
-            />
-          ) : (
-            <Row icon={LogIn} label="Log in" onClick={() => openModal("login")} />
-          )}
-        </Sheet>
-      )}
-
-      {modal === "skills" && (
-        <Sheet onClose={closeModal} title="Skills">
-          <p className="mb-3 text-xs" style={{ color: "var(--muted)" }}>
-            Add skills or a short style prompt for better answers.
-          </p>
-          <div className="mb-3 flex flex-wrap gap-1.5">
-            {skills.map((s) => (
-              <button
-                key={s}
-                type="button"
-                onClick={() => setSkills((p) => p.filter((x) => x !== s))}
-                className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium"
-                style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
-              >
-                {s} <X className="h-3 w-3" />
-              </button>
-            ))}
-          </div>
-          <div className="mb-3 flex flex-wrap gap-1.5">
-            {SKILL_PRESETS.filter((s) => !skills.includes(s)).map((s) => (
-              <button
-                key={s}
-                type="button"
-                onClick={() => setSkills((p) => [...p, s])}
-                className="rounded-full px-2.5 py-1 text-[11px]"
-                style={{ background: "var(--secondary)", color: "var(--muted)" }}
-              >
-                + {s}
-              </button>
-            ))}
-          </div>
-          <textarea
-            value={customSkill}
-            onChange={(e) => setCustomSkill(e.target.value)}
-            rows={3}
-            placeholder='Custom: "Senior Next.js" or "Write like a founder"'
-            className="w-full resize-none rounded-xl border px-3 py-2 text-sm outline-none"
-            style={{ borderColor: "var(--border)", background: "var(--card)" }}
-          />
-          <Btn
-            className="mt-2 w-full"
-            size="sm"
-            disabled={!customSkill.trim()}
-            onClick={() => {
-              setSkills((p) => Array.from(new Set([...p, customSkill.trim()])));
-              setCustomSkill("");
-            }}
-          >
-            Add skill
-          </Btn>
-        </Sheet>
-      )}
-
-      {modal === "profile" && (
-        <Sheet onClose={closeModal} title="Profile">
-          {!loggedIn ? (
-            <div className="space-y-3 text-center">
-              <p className="text-sm" style={{ color: "var(--muted)" }}>
-                You&apos;re browsing as Guest.
-              </p>
-              <Btn className="w-full" onClick={() => openModal("login")}>
-                Log in
-              </Btn>
+              ] as const).map(([id, Icon, label]) => (
+                <button key={id} type="button" onClick={() => setThemePref(id)} className="flex items-center justify-center gap-1 rounded-xl border py-2.5 text-[11px] font-medium" style={themePref === id ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" } : { borderColor: "var(--border)", color: "var(--muted)" }}>
+                  <Icon className="h-3.5 w-3.5" /> {label}
+                </button>
+              ))}
             </div>
-          ) : (
-            <div className="space-y-4">
-              <div className="flex items-center gap-3">
-                <span
-                  className="flex h-14 w-14 items-center justify-center rounded-full text-base font-semibold"
-                  style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
-                >
-                  {initials}
-                </span>
-                <div>
-                  <div className="text-lg font-medium">{userName}</div>
-                  <div className="text-sm" style={{ color: "var(--muted)" }}>
-                    {userEmail}
-                  </div>
-                </div>
-              </div>
-              <div
-                className="grid grid-cols-2 gap-2 rounded-xl border p-3 text-sm"
-                style={{ borderColor: "var(--border)", background: "var(--secondary)" }}
-              >
-                <div>
-                  <div className="text-[10px] uppercase" style={{ color: "var(--soft)" }}>
-                    Plan
-                  </div>
-                  <div className="font-medium">{plan === "pro" ? "PRO" : "Free"}</div>
-                </div>
-                <div>
-                  <div className="text-[10px] uppercase" style={{ color: "var(--soft)" }}>
-                    Skills
-                  </div>
-                  <div className="font-medium">{skills.length}</div>
-                </div>
-              </div>
-              <Row icon={Sparkles} label="Edit skills" onClick={() => openModal("skills")} />
-              <Row
-                icon={CreditCard}
-                label="Change plan"
-                onClick={() => openModal("plans")}
-              />
+            <div className="pt-3">
+              <a href="/about" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Bot className="h-4 w-4 opacity-70" /> About BUILDWE <ExternalLink className="ml-auto h-3.5 w-3.5" style={{ color: "var(--soft)" }} /></a>
+              <a href="/privacy" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Shield className="h-4 w-4 opacity-70" /> Privacy</a>
+              <a href="/terms" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><FileCode2 className="h-4 w-4 opacity-70" /> Terms</a>
+              <button type="button" onClick={() => setModal("plans")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><CreditCard className="h-4 w-4 opacity-70" /> Plan · {plan}</button>
+              {loggedIn ? (
+                <button type="button" onClick={doLogout} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-red-600"><LogOut className="h-4 w-4" /> Log out</button>
+              ) : (
+                <button type="button" onClick={() => setModal("auth")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><LogIn className="h-4 w-4 opacity-70" /> Log in</button>
+              )}
             </div>
-          )}
-        </Sheet>
-      )}
-
-      {modal === "feedback" && (
-        <Sheet onClose={closeModal} title="Feedback">
-          <textarea
-            rows={4}
-            placeholder="What should we improve?"
-            className="w-full rounded-xl border px-3 py-2 text-sm outline-none"
-            style={{ borderColor: "var(--border)" }}
-          />
-          <Btn className="mt-3 w-full" onClick={closeModal}>
-            Send
-          </Btn>
-        </Sheet>
-      )}
-
-      {modal === "help" && (
-        <Sheet onClose={closeModal} title="Help">
-          <div className="space-y-2 text-sm" style={{ color: "var(--muted)" }}>
-            <p>
-              <strong style={{ color: "var(--ink)" }}>Auto</strong> — AI picks Chat / Code /
-              Image / Audio from your prompt.
-            </p>
-            <p>
-              <strong style={{ color: "var(--ink)" }}>Free</strong> — default. Chat is free
-              for normal use.
-            </p>
-            <p>
-              <strong style={{ color: "var(--ink)" }}>PRO</strong> — pay via checkout; features
-              unlock after verify.
-            </p>
-            <p>support@buildwe.online</p>
-            <a href="/about" className="block font-medium underline" style={{ color: "var(--accent)" }}>
-              About, models & policies →
-            </a>
+            <p className="px-1 pt-2 text-[10px]" style={{ color: "var(--soft)" }}>Now: {dark ? "Dark" : "Light"}{themePref === "system" ? " (system)" : ""}</p>
           </div>
         </Sheet>
       )}
 
-      {fullscreenImage && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-3"
-          onClick={() => setFullscreenImage(null)}
-        >
-          <button
-            type="button"
-            className="absolute right-3 top-3 flex h-10 w-10 items-center justify-center rounded-full bg-white/15 text-white"
-            onClick={() => setFullscreenImage(null)}
-          >
-            <X className="h-5 w-5" />
-          </button>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={fullscreenImage}
-            alt=""
-            className="max-h-full max-w-full rounded-lg"
-            onClick={(e) => e.stopPropagation()}
-          />
-        </div>
+      {modal === "profile" && me?.user && (
+        <Sheet onClose={() => setModal(null)} title="Profile">
+          <div className="flex items-center gap-3">
+            <span className="flex h-14 w-14 items-center justify-center rounded-full text-lg font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{me.name[0]}</span>
+            <div>
+              <div className="text-lg font-medium">{me.user.name}</div>
+              <div className="text-sm" style={{ color: "var(--muted)" }}>{me.user.email}</div>
+            </div>
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-2 rounded-2xl border p-3 text-sm" style={{ borderColor: "var(--border)", background: "var(--secondary)" }}>
+            <div><div className="text-[10px] uppercase" style={{ color: "var(--soft)" }}>Plan</div><div className="font-medium">{me.plan}</div></div>
+            <div><div className="text-[10px] uppercase" style={{ color: "var(--soft)" }}>Today</div><div className="font-medium">{me.usage.chat} chats</div></div>
+          </div>
+          <Btn variant="ghost" className="mt-4 w-full" onClick={doLogout}>Log out</Btn>
+        </Sheet>
       )}
     </div>
   );
 }
 
-function ImageStrip({
-  images,
-  activeId,
-  setActive,
-  loading,
-  onFull,
-  onDownload,
-}: {
-  images: ImageGen[];
-  activeId: string;
-  setActive: (id: string) => void;
-  loading: boolean;
-  onFull: (url: string) => void;
-  onDownload: (img: ImageGen) => void;
+function AuthSheet(props: {
+  tab: "login" | "register";
+  setTab: (t: "login" | "register") => void;
+  email: string;
+  setEmail: (v: string) => void;
+  password: string;
+  setPassword: (v: string) => void;
+  name: string;
+  setName: (v: string) => void;
+  err: string;
+  busy: boolean;
+  onSubmit: (e: React.FormEvent) => void;
+  onClose: () => void;
 }) {
-  const img = images.find((i) => i.id === activeId);
-  if (!img) return null;
   return (
-    <div
-      className="rounded-2xl border p-3"
-      style={{ borderColor: "var(--border)", background: "var(--card)" }}
-    >
-      <div className="mb-2 flex gap-2">
-        {img.status === "done" && (
-          <>
-            <Btn variant="ghost" size="sm" onClick={() => onFull(img.url)}>
-              <Maximize2 className="h-3.5 w-3.5" />
-            </Btn>
-            <Btn variant="ghost" size="sm" onClick={() => onDownload(img)}>
-              <Download className="h-3.5 w-3.5" />
-            </Btn>
-          </>
-        )}
-      </div>
-      {img.status === "loading" || loading ? (
-        <div className="shimmer h-40 rounded-xl" />
-      ) : (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={img.url}
-          alt=""
-          className="max-h-56 w-auto rounded-xl"
-          onClick={() => onFull(img.url)}
-        />
-      )}
-      <div className="mt-2 flex gap-2 overflow-x-auto">
-        {images.map((i) => (
-          <button
-            key={i.id}
-            type="button"
-            onClick={() => setActive(i.id)}
-            className="h-12 w-12 shrink-0 overflow-hidden rounded-lg border-2"
-            style={{
-              borderColor: i.id === activeId ? "var(--accent)" : "transparent",
-            }}
-          >
-            {i.url ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={i.url} alt="" className="h-full w-full object-cover" />
-            ) : (
-              <div className="shimmer h-full w-full" />
-            )}
-          </button>
+    <Sheet onClose={props.onClose} title={props.tab === "login" ? "Welcome back" : "Create account"}>
+      <div className="mb-4 flex rounded-2xl border p-1" style={{ borderColor: "var(--border)" }}>
+        {(["login", "register"] as const).map((t) => (
+          <button key={t} type="button" onClick={() => props.setTab(t)} className="flex-1 rounded-xl py-2 text-sm font-medium capitalize" style={props.tab === t ? { background: "var(--ink)", color: "var(--bg)" } : { color: "var(--muted)" }}>{t}</button>
         ))}
       </div>
-    </div>
+      <form onSubmit={props.onSubmit} className="space-y-3">
+        {props.tab === "register" && (
+          <input value={props.name} onChange={(e) => props.setName(e.target.value)} placeholder="Name" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+        )}
+        <input type="email" required value={props.email} onChange={(e) => props.setEmail(e.target.value)} placeholder="Email" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+        <input type="password" required minLength={6} value={props.password} onChange={(e) => props.setPassword(e.target.value)} placeholder="Password (min 6)" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+        {props.err && <p className="text-xs text-red-600">{props.err}</p>}
+        <Btn type="submit" className="w-full" size="lg" disabled={props.busy}>{props.busy ? "…" : props.tab === "login" ? "Log in" : "Sign up free"}</Btn>
+      </form>
+      <p className="mt-3 text-center text-[11px]" style={{ color: "var(--soft)" }}>Free account · your workspace, your history</p>
+    </Sheet>
   );
 }
 
-function AudioPlayer({
-  item,
-  progress,
-  onToggle,
-  onRegen,
-  onShare,
-  onDownload,
-}: {
-  item?: AudioGen;
-  progress: number;
-  onToggle: () => void;
-  onRegen: () => void;
-  onShare: (i: AudioGen) => void;
-  onDownload: (i: AudioGen) => void;
-}) {
-  if (!item) return null;
-  if (item.status === "loading") {
-    return (
-      <div
-        className="rounded-2xl border p-4 text-center text-sm"
-        style={{ borderColor: "var(--border)", color: "var(--muted)" }}
-      >
-        Synthesizing…
-      </div>
-    );
-  }
+function PlansSheet({ plan, onClose, onPro }: { plan: string; onClose: () => void; onPro: () => void }) {
   return (
-    <div
-      className="rounded-2xl border p-4"
-      style={{ borderColor: "var(--border)", background: "var(--card)" }}
-    >
-      <p className="text-sm leading-relaxed line-clamp-4">{item.text}</p>
-      <div className="mt-3 flex items-center gap-3">
-        <button
-          type="button"
-          onClick={onToggle}
-          className="flex h-11 w-11 items-center justify-center rounded-full"
-          style={{ background: "var(--ink)", color: "var(--bg)" }}
-        >
-          {item.playing ? (
-            <Pause className="h-4 w-4 fill-current" />
-          ) : (
-            <Play className="ml-0.5 h-4 w-4 fill-current" />
-          )}
-        </button>
-        <div className="min-w-0 flex-1">
-          <div className="h-1.5 rounded-full" style={{ background: "var(--secondary)" }}>
-            <div
-              className="h-full rounded-full"
-              style={{
-                width: `${(item.playing ? progress : 0) * 100}%`,
-                background: "var(--accent)",
-              }}
-            />
-          </div>
-          <div className="mt-1 text-[10px]" style={{ color: "var(--muted)" }}>
-            {formatDuration(item.duration)}
-          </div>
+    <Sheet onClose={onClose} title="Plans" wide>
+      <p className="mb-4 text-sm" style={{ color: "var(--muted)" }}>
+        BUILDWE is free so more people can create. We grow with reach — supported by ads on Free. PRO removes friction when you need volume.
+      </p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-2xl border p-4" style={{ borderColor: plan === "free" ? "var(--accent)" : "var(--border)", background: "var(--secondary)" }}>
+          <div className="text-xs font-semibold" style={{ color: "var(--soft)" }}>FREE {plan === "free" && "· CURRENT"}</div>
+          <div className="mt-1 text-2xl font-semibold">$0</div>
+          <ul className="mt-3 space-y-1.5 text-xs" style={{ color: "var(--muted)" }}>
+            <li>✓ Full platform access</li>
+            <li>✓ Chat, Code, Image, Audio</li>
+            <li>✓ Fair daily creative limits</li>
+            <li>✓ Ad-supported experience</li>
+          </ul>
         </div>
-        <Btn variant="ghost" size="sm" onClick={onRegen} aria-label="Regenerate">
-          <RefreshCw className="h-3.5 w-3.5" />
-        </Btn>
-        <Btn variant="ghost" size="sm" onClick={() => onShare(item)} aria-label="Share">
-          <Share2 className="h-3.5 w-3.5" />
-        </Btn>
-        <Btn variant="ghost" size="sm" onClick={() => onDownload(item)} aria-label="Download">
-          <Download className="h-3.5 w-3.5" />
-        </Btn>
+        <div className="rounded-2xl border-2 p-4" style={{ borderColor: "var(--accent)", background: "var(--card)" }}>
+          <div className="text-xs font-semibold" style={{ color: "var(--accent)" }}>PRO</div>
+          <div className="mt-1 text-2xl font-semibold">$5<span className="text-sm font-normal" style={{ color: "var(--muted)" }}>/mo</span></div>
+          <ul className="mt-3 space-y-1.5 text-xs">
+            <li>✓ Higher creative limits</li>
+            <li>✓ Priority generation</li>
+            <li>✓ Calmer, fewer ads</li>
+            <li>✓ Built for daily heavy use</li>
+          </ul>
+          <Btn className="mt-4 w-full" size="sm" onClick={onPro}>Upgrade to PRO</Btn>
+        </div>
       </div>
-    </div>
+      <div className="mt-4 flex flex-wrap gap-3 text-xs" style={{ color: "var(--soft)" }}>
+        <Link href="/pricing" onClick={onClose} className="underline">Pricing page</Link>
+        <Link href="/terms" onClick={onClose} className="underline">Terms</Link>
+        <Link href="/privacy" onClick={onClose} className="underline">Privacy</Link>
+      </div>
+    </Sheet>
   );
 }
 
 export default function Page() {
   return (
-    <Suspense
-      fallback={
-        <div
-          className="flex h-[100dvh] items-center justify-center text-sm"
-          style={{ background: "#F8F6F1", color: "#737373" }}
-        >
-          Loading BUILDWE…
-        </div>
-      }
-    >
-      <DashboardInner />
+    <Suspense fallback={<div className="flex h-[100dvh] items-center justify-center text-sm" style={{ background: "#F7F4EE", color: "#6b6560" }}>Loading BUILDWE…</div>}>
+      <Dashboard />
     </Suspense>
   );
 }
 
-/* SpeechRecognition */
 interface SpeechRecognition extends EventTarget {
-  continuous: boolean;
-  interimResults: boolean;
   lang: string;
   start(): void;
-  stop(): void;
   onresult: ((ev: SpeechRecognitionEvent) => void) | null;
-  onerror: ((ev: Event) => void) | null;
   onend: (() => void) | null;
 }
 interface SpeechRecognitionEvent extends Event {
   resultIndex: number;
   results: SpeechRecognitionResultList;
 }
-declare var SpeechRecognition: {
-  prototype: SpeechRecognition;
-  new (): SpeechRecognition;
-};
