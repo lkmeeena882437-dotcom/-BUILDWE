@@ -35,7 +35,11 @@ export async function POST(req: NextRequest) {
     }
     if (image.length > MAX_IMAGE_BYTES * 1.4) {
       return NextResponse.json(
-        { error: "Image too large — keep it under 5 MB." },
+        {
+          error: "Image too large — keep it under 5 MB.",
+          code: "FILE_TOO_LARGE",
+          hint: "Reduce the image size under 5 MB (or screenshot a smaller crop) and attach it again.",
+        },
         { status: 413 }
       );
     }

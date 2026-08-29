@@ -3,6 +3,7 @@ import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
 import { extractClaims } from "@/lib/ai/quality";
 import { webSearch } from "@/lib/ai/search";
+import { bump } from "@/lib/metrics/metrics";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,6 +45,7 @@ export async function POST(req: NextRequest) {
     }
 
     // verify the top claims against live sources (key-free)
+    bump("verify_run");
     const results = await Promise.all(
       claims.slice(0, 3).map(async (c) => {
         let found = await webSearch(c.text.slice(0, 120), { max: 4, timeoutMs: 7000 });

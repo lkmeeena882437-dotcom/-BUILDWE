@@ -7,6 +7,7 @@ import { composeSearchAnswer, searchContextBlock, webSearch } from "@/lib/ai/sea
 import { understandPrompt } from "@/lib/ai/understanding";
 import { qualityGate } from "@/lib/ai/quality";
 import { estimateComplexity } from "@/lib/ai/models-catalog";
+import { bump } from "@/lib/metrics/metrics";
 import {
   appendMessages,
   createConversation,
@@ -101,6 +102,7 @@ export async function POST(req: NextRequest) {
     const contextBlock = searchContextBlock(searchResults);
     const depth = String(body.depth || "balanced");
     const tone = String(body.tone || "standard");
+    const systemHintExtras: string[] = [];
 
     // Prompt Understanding Layer (Update #1) — key-free intent/entities/gaps
     const understood = understandPrompt(String(userText));
@@ -110,6 +112,37 @@ export async function POST(req: NextRequest) {
     if (depth === "balanced") {
       if (complexity === "simple") autoDepthHint = "LENGTH (auto): this looks like a quick ask — answer in 1–4 sentences first; offer to go deeper only at the end.";
       else if (complexity === "complex") autoDepthHint = "LENGTH (auto): this is a complex task — structure the answer with clear sections and a short summary at the end.";
+    }
+
+    // Duplicate-work prevention (Update #2 P1): if the user re-asks essentially
+    // the same thing already answered in this conversation, DON'T redo the work.
+    const norm = (s: string) =>
+      s.toLowerCase().replace(/[^a-z0-9\u0900-\u097F ]/g, " ").replace(/\s+/g, " ").trim();
+    const nowNorm = norm(String(userText));
+    const earlierUserAsks = body.messages
+      .filter((m: { role?: string }) => m?.role === "user")
+      .map((m: { content?: string }) => norm(String(m?.content || "")))
+      .filter(Boolean);
+    const isRepeat =
+      nowNorm.length > 8 &&
+      earlierUserAsks.slice(0, -1).some((p: string) => {
+        if (p === nowNorm) return true;
+        const a = new Set(p.split(" "));
+        const b = nowNorm.split(" ");
+        const overlap = b.filter((w: string) => a.has(w)).length / Math.max(b.length, 1);
+        return overlap >= 0.85 && Math.abs(p.length - nowNorm.length) < 60;
+      });
+    if (isRepeat) {
+      systemHintExtras.push(
+        "DUPLICATE ASK: the user has already asked essentially this in this conversation. Do NOT redo the work or repeat the full answer. In one line, point to your earlier answer, give only what's new or different, and ask if they want it regenerated differently."
+      );
+    }
+
+    // Smart execution (Update #2): complex tasks plan first, then execute
+    if (complexity === "complex") {
+      systemHintExtras.push(
+        "PLAN FIRST: start with a 2–3 line plan of what you'll deliver, then execute it step by step. Keep each step tight — no filler."
+      );
     }
 
     const styleLines: string[] = [];
@@ -130,6 +163,7 @@ export async function POST(req: NextRequest) {
     const systemParts = [
       styleLines.length ? styleLines.join("\n") : "",
       understood.systemHint,
+      ...systemHintExtras,
       contextBlock
         ? `${contextBlock}\n\nAnswer using these results where relevant. Cite sources inline as [1], [2]. If the results don't cover it, say so and answer from your own knowledge.`
         : "",
@@ -163,6 +197,12 @@ export async function POST(req: NextRequest) {
         ? { offlineOverrideText: composeSearchAnswer(userText, searchResults) }
         : {}),
     });
+
+    // internal metrics (Update #2) — no PII
+    bump("chat_send");
+    if (fallbackNote) bump("fallback");
+    if (understood.correction) bump("correction");
+    if (understood.surgical) bump("surgical_edit");
 
     try {
       recordUsage(session.userId, "chat");
@@ -259,12 +299,14 @@ export async function POST(req: NextRequest) {
             /* never block the answer */
           }
           persistAssistant(full, quality);
+          bump("chat_done");
           controller.enqueue(
             encoder.encode(`data: ${JSON.stringify({ done: true, ...(quality ? { quality } : {}) })}\n\n`)
           );
           controller.close();
         } catch (e) {
           // Client aborted mid-stream → save the partial answer (stop & keep)
+          bump("chat_error");
           persistAssistant(full);
           try {
             controller.enqueue(
@@ -291,6 +333,7 @@ export async function POST(req: NextRequest) {
     return res;
   } catch (e) {
     console.error("[bw] chat route", e);
+    bump("chat_error");
     return NextResponse.json(
       { error: "Something went wrong. Please try again." },
       { status: 500 }

@@ -3,6 +3,7 @@ import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
 import { streamChatOrCode } from "@/lib/ai/providers";
 import { estimateComplexity } from "@/lib/ai/models-catalog";
+import { bump } from "@/lib/metrics/metrics";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -87,6 +88,8 @@ export async function POST(req: NextRequest) {
     );
 
     const liveLanes = lanes.filter((l) => l.live && l.reply.trim());
+    bump("compare_run");
+    if (!liveLanes.length) bump("compare_offline");
     if (!liveLanes.length) {
       const message =
         "Model comparison needs at least one live model — add a free Groq key in Settings → API keys (or platform keys on the server), then try again.";

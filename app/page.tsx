@@ -1160,6 +1160,8 @@ function Dashboard() {
 
     try {
       let acc = "";
+      const t0 = Date.now();
+      let firstTokenSeen = false;
       await streamAI(
         endpoint,
         {
@@ -1211,6 +1213,10 @@ function Dashboard() {
               streamPhaseRef.current = "Writing…";
               setStreamPhase("Writing…");
               if (phaseTimer.current) clearTimeout(phaseTimer.current);
+            }
+            if (!firstTokenSeen) {
+              firstTokenSeen = true;
+              beat("ttft", Date.now() - t0);
             }
             acc += ev.token;
             setMessages((ms) =>
@@ -1309,7 +1315,22 @@ function Dashboard() {
     const last = messages[messages.length - 1];
     const base = last?.role === "assistant" && last.recovery ? messages.slice(0, -1) : messages;
     setMode(rec.mode);
-    await send(rec.text, { altModel: rec.altModel, baseMessages: base });
+    beat(rec.altModel ? "recovery_use_another_model" : "recovery_try_again");
+    await send(rec.text, { altModel: rec.altModel || undefined, baseMessages: base });
+  };
+
+  // internal metrics beat (Update #2) — fire-and-forget, never blocks UX
+  const beat = (kind: string, ms?: number) => {
+    try {
+      void fetch("/api/metrics", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, ...(ms !== undefined ? { ms } : {}) }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch {
+      /* */
+    }
   };
 
   const onAuth = async (e: React.FormEvent) => {
@@ -2043,7 +2064,7 @@ function Dashboard() {
                                   <div className="flex flex-wrap items-center gap-1.5">
                                     <Btn
                                       size="sm"
-                                      onClick={() => retrySend(m.recovery!)}
+                                      onClick={() => retrySend({ ...m.recovery!, altModel: 0 })}
                                       disabled={streaming || visionBusy}
                                     >
                                       <RotateCcw className="h-3.5 w-3.5" /> Try Again
@@ -2051,7 +2072,7 @@ function Dashboard() {
                                     <Btn
                                       size="sm"
                                       variant="ghost"
-                                      onClick={() => retrySend({ ...m.recovery!, altModel: Math.min((m.recovery!.altModel || 0) + 1, 3) })}
+                                      onClick={() => retrySend({ ...m.recovery!, altModel: Math.min(m.recovery!.altModel || 1, 3) })}
                                       disabled={streaming || visionBusy}
                                       title="Send the same request to a different AI model"
                                     >
@@ -2078,6 +2099,7 @@ function Dashboard() {
                                       const idx = messages.findIndex((x) => x.id === m.id);
                                       const prevUser = [...messages.slice(0, idx)].reverse().find((x) => x.role === "user");
                                       if (!prevUser || streaming) return;
+                                      beat("regenerate");
                                       setMessages((ms) => ms.filter((x) => x.id !== m.id));
                                       setTimeout(() => send(prevUser.content), 30);
                                     }}
@@ -2309,6 +2331,11 @@ function Dashboard() {
                       <input ref={fileRef} type="file" className="hidden" accept="text/*,.md,.json,.js,.ts,.tsx,.py,.css,.html,.csv" onChange={async (e) => {
                         const f = e.target.files?.[0];
                         if (!f) return;
+                        if (f.size > 200 * 1024) {
+                          setError("File too large — keep text files under 200 KB. Tip: attach just the part you need help with.");
+                          e.target.value = "";
+                          return;
+                        }
                         const t = await f.text();
                         try {
                           const a = await analyzeFileApi(f.name, t);

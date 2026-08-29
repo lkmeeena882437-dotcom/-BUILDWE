@@ -109,3 +109,16 @@ Scope per boss's "mix" decision: Update #2 + Update #1's pending P1 (multi-model
 - ✅ No new surface area — anti-bloat principle respected (intelligence behind the interface)
 
 **QA**: TS clean, build pass, live regression — security headers present on /, /changelog 404, chat/code SSE with fallbackNote+understood meta, compare offline-honest + 429 RATE_LIMIT (with session cookie), surgical/correction intents detected, altModel accepted, home/status 200.
+
+## RE-CHECK PASS (v1.6.1) — gaps found & fixed
+
+Boss asked: "recheck everything, kuch adhura to nahi?" Full audit of v1.4.0+v1.5.0+v1.6.0 vs all three updates:
+
+- ✅ verified already-present: BYOK key encryption (AES-256-GCM), untrusted-content guards, canvas version history, reduced-motion + aria, AdSlot, answer controls
+- ✅ fixed: duplicate-work prevention (≥85% overlap → "reference earlier answer" hint)
+- ✅ fixed: plan-first hint for complex tasks (smart-execution rule)
+- ✅ fixed: FILE_TOO_LARGE code+hint on vision 413; client 200 KB text-file cap
+- ✅ added: lightweight internal metrics (/api/metrics, zero PII, robots-disallowed) — ttft/completion/error/fallback/regeneration/recovery + correction & surgical counters
+- ✅ fixed: Try Again retries SAME model; Use another model advances (was double-shifting)
+
+**QA**: TS clean, build pass, live — metrics snapshot counts chat_send/chat_done/fallback + ttft sample, vision 413 carries code+hint, dup-message chat 200, /api disallowed in robots.

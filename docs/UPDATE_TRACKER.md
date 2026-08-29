@@ -8,6 +8,7 @@ Boss bhejte hue updates yahan track hote hain. Public changelog page hata diya g
 |---|---|---|
 | Update #1 — Product Audit & AI Intelligence Roadmap | boss (chat paste) | ✅ Implemented (v1.5.0) — P0 complete, P1 partial (see below) |
 | Update #2 — Next Big Update (latency/cost/security/fallback/verification/errors + smart-execution rules) | boss (chat paste) | ✅ Implemented (v1.6.0) — see below |
+| Update #2 re-check pass | boss ("recheck karo, kuch adhura to nahi") | ✅ v1.6.1 — 4 gaps mile aur fix hue (niche) |
 | Update #3 — Product/UX/Brand/Trust plan | boss (chat paste) | ✅ Implemented earlier (v1.4.0) |
 
 ## Update #2 — kya implement hua (v1.6.0)
@@ -39,6 +40,18 @@ Boss ne "mix" scope chuna (Update #2 + Update #1 ke pending P1: multi-model comp
 
 ### Anti-bloat
 Koi naya mode/nav item nahi — sab intelligence existing UI ke andar (composer button, quick actions, banners). "Keep the interface simple; intelligence behind the interface."
+
+## Update #2 re-check pass — v1.6.1 (boss ne bolle "recheck karo")
+
+**Re-check result**: teeno updates (v1.4.0 / v1.5.0 / v1.6.0) code me verify kiye — key encryption (AES-256-GCM) pehle se tha ✓, prompt-injection guard ✓, version history ✓, a11y/reduced-motion ✓, ads ✓. 4 gaps mile, sab fix:
+
+- ✅ **Duplicate-work prevention** (P1 miss tha): same conversation me user ka repeated ask (exact ya ≥85% word-overlap) → system hint "point to earlier answer, only what's new — don't redo"
+- ✅ **Plan-first for complex** (smart-execution rule): complex tasks → "2–3 line plan, then execute step by step" hint
+- ✅ **FILE_TOO_LARGE recovery**: vision 413 → code + hint ("reduce under 5 MB…"); client text-file attach cap 200 KB friendly error ke saath
+- ✅ **Internal metrics** (boss ki metrics list ka lightweight version): lib/metrics + GET/POST /api/metrics — chat sends/done/errors, fallback rate, corrections, surgical edits, regenerations, recovery actions (try-again vs use-another-model), avg time-to-first-token (client-beaconed), completion rate. Zero PII, robots-disallowed, UI me link nahi (anti-bloat). Note: in-memory — server restart pe reset (honest, no fake history)
+- ✅ Recovery semantics fix: **Try Again = same model**, **Use another model = next model** (pehle dono shift kar rahe the)
+
+**Deliberately pending (boss ko bataya)**: code canvas Run/Test/Fix/Optimize/Refactor actions (Update #1 P1 #8), PDF/DOCX/XLSX file intelligence (#7), real-device mobile QA, persistent metrics storage.
 
 ## Update #1 — kya implement hua (v1.5.0)
 
