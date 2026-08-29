@@ -48,7 +48,6 @@ export function SitePage({
           <Link href="/how-it-works" className="hover:text-[#14110F]">How it works</Link>
           <Link href="/security" className="hover:text-[#14110F]">Security</Link>
           <Link href="/pricing" className="hover:text-[#14110F]">Pricing</Link>
-          <Link href="/changelog" className="hover:text-[#14110F]">Changelog</Link>
           <Link href="/status" className="hover:text-[#14110F]">Status</Link>
           <Link href="/help" className="hover:text-[#14110F]">Help</Link>
           <Link href="/contact" className="hover:text-[#14110F]">Contact</Link>

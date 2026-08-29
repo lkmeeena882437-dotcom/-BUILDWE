@@ -12,7 +12,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
     "/privacy",
     "/terms",
     "/acceptable-use",
-    "/changelog",
     "/status",
     "/help",
     "/contact",
@@ -21,7 +20,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
   return pages.map((p) => ({
     url: `${site}${p}`,
     lastModified: now,
-    changeFrequency: p === "" || p === "/status" || p === "/changelog" ? "daily" : "weekly",
+    changeFrequency: p === "" || p === "/status" ? "daily" : "weekly",
     priority: p === "" ? 1 : p === "/pricing" || p === "/how-it-works" ? 0.8 : 0.6,
   }));
 }

@@ -3,6 +3,8 @@ import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
 import { streamChatOrCode } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
+import { understandPrompt } from "@/lib/ai/understanding";
+import { qualityGate } from "@/lib/ai/quality";
 import {
   addGeneration,
   appendMessages,
@@ -86,9 +88,15 @@ export async function POST(req: NextRequest) {
       openrouter: byok.openrouter ? decryptSecret(byok.openrouter) : undefined,
     };
 
+    // Prompt Understanding Layer (Update #1) — same benefits for Code
+    const understood = understandPrompt(String(userText));
+    const codeMessages = understood.systemHint
+      ? [{ role: "system", content: understood.systemHint }, ...body.messages]
+      : body.messages;
+
     const { stream, model, live } = await streamChatOrCode({
       mode: "code",
-      messages: body.messages,
+      messages: codeMessages,
       plan: session.plan,
       skills,
       prefer,

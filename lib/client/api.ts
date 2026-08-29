@@ -196,6 +196,30 @@ export async function generateAudio(text: string, voice: string, speed: number) 
   };
 }
 
+/* ── Verification (Update #1) ───────────────────────────── */
+
+export async function verifyApi(text: string) {
+  const r = await fetch("/api/ai/verify", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Verification failed");
+  return j as {
+    ok: boolean;
+    verdict: "verified" | "needs-verification" | "nothing-to-check";
+    message: string;
+    claims: {
+      claim: string;
+      kind: string;
+      verdict: "verified" | "uncertain";
+      source?: { title: string; url: string; host: string };
+    }[];
+  };
+}
+
 /* ── BYOK (bring your own key) ──────────────────────────── */
 
 export async function fetchByok() {

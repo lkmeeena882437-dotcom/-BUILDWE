@@ -76,3 +76,16 @@
 - ✅ Answer controls: Short/Balanced/Detailed/Deep + Simple/Standard/Expert; quick actions Simplify/Shorten/Expand/Explain/Save; canvas version history (12 snapshots)
 
 **QA**: reset/replay/delete lifecycle, wrong-password delete block, cascade verification (teams/projects), depth+tone regression, all pages + sitemap + robots 200, TS clean, build pass.
+
+---
+
+## UPDATE #1 (v1.5.0) — AI Intelligence & Output Quality (audit roadmap)
+
+- ✅ Prompt Understanding Layer (intent/entities/goal/style/output/missing → system hint + UI chip)
+- ✅ Smart Clarification (one question only when material; else sensible defaults)
+- ✅ Response Quality Gate (on-topic/format/length → ✓ Checked / ⚠ Review badge, honest notes)
+- ✅ Verification layer: Verify action → claim extraction → live-source match → Verified/Uncertain + sources (no fake confidence %)
+- ✅ Auto length by complexity + explicit Short/Balanced/Detailed/Deep & Simple/Standard/Expert
+- ✅ New quick actions: Example, Verify, Use-as-prompt (plus Simplify/Shorten/Expand/Explain/Save/Copy/Regenerate)
+- ✅ Understanding layer wired into chat AND code routes
+- 🔁 Public /changelog page removed per product decision (history stays in docs)

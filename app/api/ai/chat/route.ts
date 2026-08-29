@@ -4,6 +4,9 @@ import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
 import { streamChatOrCode } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { composeSearchAnswer, searchContextBlock, webSearch } from "@/lib/ai/search";
+import { understandPrompt } from "@/lib/ai/understanding";
+import { qualityGate } from "@/lib/ai/quality";
+import { estimateComplexity } from "@/lib/ai/models-catalog";
 import {
   appendMessages,
   createConversation,
@@ -98,6 +101,17 @@ export async function POST(req: NextRequest) {
     const contextBlock = searchContextBlock(searchResults);
     const depth = String(body.depth || "balanced");
     const tone = String(body.tone || "standard");
+
+    // Prompt Understanding Layer (Update #1) — key-free intent/entities/gaps
+    const understood = understandPrompt(String(userText));
+    // Auto length: when the user hasn't chosen a depth, adapt to complexity
+    const complexity = estimateComplexity(String(userText));
+    let autoDepthHint = "";
+    if (depth === "balanced") {
+      if (complexity === "simple") autoDepthHint = "LENGTH (auto): this looks like a quick ask — answer in 1–4 sentences first; offer to go deeper only at the end.";
+      else if (complexity === "complex") autoDepthHint = "LENGTH (auto): this is a complex task — structure the answer with clear sections and a short summary at the end.";
+    }
+
     const styleLines: string[] = [];
     if (depth === "short") {
       styleLines.push("LENGTH: Answer in 1–3 sentences. No lists, no preamble.");
@@ -105,6 +119,8 @@ export async function POST(req: NextRequest) {
       styleLines.push("LENGTH: Thorough answer with clear sections and key details.");
     } else if (depth === "deep") {
       styleLines.push("LENGTH: Comprehensive deep-dive — structured sections, examples, edge cases, and a short summary at the end.");
+    } else if (autoDepthHint) {
+      styleLines.push(autoDepthHint);
     }
     if (tone === "simple") {
       styleLines.push("LANGUAGE: Plain, simple words a beginner understands. No jargon; explain any necessary term in one line.");
@@ -113,6 +129,7 @@ export async function POST(req: NextRequest) {
     }
     const systemParts = [
       styleLines.length ? styleLines.join("\n") : "",
+      understood.systemHint,
       contextBlock
         ? `${contextBlock}\n\nAnswer using these results where relevant. Cite sources inline as [1], [2]. If the results don't cover it, say so and answer from your own knowledge.`
         : "",
@@ -154,7 +171,7 @@ export async function POST(req: NextRequest) {
     const encoder = new TextEncoder();
     let full = "";
 
-    const persistAssistant = (text: string) => {
+    const persistAssistant = (text: string, quality?: { label: string }) => {
       if (!text.trim()) return;
       try {
         appendMessages(conversationId!, session.userId, [
@@ -166,6 +183,8 @@ export async function POST(req: NextRequest) {
             meta: {
               model,
               live,
+              ...(understood.summary ? { understood: understood.summary } : {}),
+              ...(quality ? { qualityLabel: quality.label } : {}),
               ...(searchResults.length
                 ? {
                     sources: searchResults.map((r) => ({
@@ -194,6 +213,8 @@ export async function POST(req: NextRequest) {
                   conversationId,
                   model: wantSearch && searchResults.length && !live ? "buildwe-search" : model,
                   live,
+                  understood: understood.summary,
+                  ...(understood.clarifier ? { clarifier: understood.clarifier } : {}),
                   ...(searchResults.length
                     ? {
                         sources: searchResults.map((r) => ({
@@ -222,8 +243,21 @@ export async function POST(req: NextRequest) {
             }
             controller.enqueue(value);
           }
-          persistAssistant(full);
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true })}\n\n`));
+          // Quality gate — honest post-checks surfaced to the user (Update #1)
+          let quality: ReturnType<typeof qualityGate> | undefined;
+          try {
+            quality = qualityGate({
+              prompt: String(userText),
+              answer: full,
+              mode: "chat",
+            });
+          } catch {
+            /* never block the answer */
+          }
+          persistAssistant(full, quality);
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ done: true, ...(quality ? { quality } : {}) })}\n\n`)
+          );
           controller.close();
         } catch (e) {
           // Client aborted mid-stream → save the partial answer (stop & keep)

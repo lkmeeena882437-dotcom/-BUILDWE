@@ -70,6 +70,7 @@ import {
   HelpCircle,
   AlertTriangle,
   Wand2,
+  ShieldCheck,
 } from "lucide-react";
 import clsx from "clsx";
 import {
@@ -103,6 +104,7 @@ import {
   joinTeam,
   leaveTeamApi,
   assignTeam,
+  verifyApi,
   type TeamView,
   type MeResponse,
 } from "@/lib/client/api";
@@ -120,6 +122,14 @@ type Msg = {
   streaming?: boolean;
   image?: string;
   sources?: { title: string; url: string; host: string }[];
+  understood?: string;
+  clarifier?: string;
+  quality?: { label: "good" | "review"; notes: string[] };
+  verified?: {
+    verdict: string;
+    message: string;
+    claims: { claim: string; kind: string; verdict: string; source?: { title: string; url: string; host: string } }[];
+  };
 };
 
 type HistItem = {
@@ -495,6 +505,7 @@ function Dashboard() {
   // share
   const [shareNote, setShareNote] = useState("");
   const [projMenu, setProjMenu] = useState(false);
+  const [verifying, setVerifying] = useState<string | null>(null);
 
   // BYOK
   const [byokKeys, setByokKeys] = useState<{ groq: string | null; openrouter: string | null }>({ groq: null, openrouter: null });
@@ -716,11 +727,13 @@ function Dashboard() {
       setMessages(
         (c.messages || [])
           .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
-          .map((m: { id: string; role: string; content: string; meta?: { sources?: Msg["sources"] } }) => ({
+          .map((m: { id: string; role: string; content: string; meta?: { sources?: Msg["sources"]; understood?: string; qualityLabel?: "good" | "review" } }) => ({
             id: m.id,
             role: m.role as "user" | "assistant",
             content: m.content,
             sources: m.meta?.sources,
+            understood: m.meta?.understood,
+            ...(m.meta?.qualityLabel ? { quality: { label: m.meta.qualityLabel, notes: [] } } : {}),
           }))
       );
       setMode((c.mode as Mode) || "chat");
@@ -750,6 +763,19 @@ function Dashboard() {
   };
 
   const streamPhaseRef = useRef("");
+
+  const doVerify = async (m: Msg) => {
+    if (verifying) return;
+    setVerifying(m.id);
+    try {
+      const v = await verifyApi(m.content);
+      setMessages((ms) => ms.map((x) => (x.id === m.id ? { ...x, verified: v } : x)));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setVerifying(null);
+    }
+  };
 
   const pushCanvasVersion = (code: string, lang: string) => {
     setCanvasVersions((vs) => {
@@ -1110,12 +1136,23 @@ function Dashboard() {
               model?: string;
               live?: boolean;
               sources?: Msg["sources"];
+              understood?: string;
+              clarifier?: string;
             };
             if (meta.conversationId) setConvId(meta.conversationId);
             if (meta.model) setModelTag(String(meta.model));
-            if (meta.sources?.length) {
+            if (meta.understood || meta.sources?.length) {
               setMessages((ms) =>
-                ms.map((m) => (m.id === aId ? { ...m, sources: meta.sources } : m))
+                ms.map((m) =>
+                  m.id === aId
+                    ? {
+                        ...m,
+                        ...(meta.understood ? { understood: meta.understood } : {}),
+                        ...(meta.clarifier ? { clarifier: meta.clarifier } : {}),
+                        ...(meta.sources?.length ? { sources: meta.sources } : {}),
+                      }
+                    : m
+                )
               );
             }
           }
@@ -1141,8 +1178,13 @@ function Dashboard() {
           }
           if (ev.error) setError(ev.error);
           if (ev.done) {
+            const q = (ev as { quality?: Msg["quality"] }).quality;
             setMessages((ms) =>
-              ms.map((m) => (m.id === aId ? { ...m, streaming: false } : m))
+              ms.map((m) =>
+                m.id === aId
+                  ? { ...m, streaming: false, ...(q ? { quality: q } : {}) }
+                  : m
+              )
             );
           }
         },
@@ -1401,7 +1443,6 @@ function Dashboard() {
             <Link href="/pricing" className="hover:opacity-80">Pricing</Link>
             <Link href="/security" className="hover:opacity-80">Security</Link>
             <Link href="/status" className="hover:opacity-80">Status</Link>
-            <Link href="/changelog" className="hover:opacity-80">Changelog</Link>
             <Link href="/help" className="hover:opacity-80">Help</Link>
             <Link href="/contact" className="hover:opacity-80">Contact</Link>
             <Link href="/privacy" className="hover:opacity-80">Privacy</Link>
@@ -1832,7 +1873,25 @@ function Dashboard() {
                                 <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium" style={{ color: "var(--muted)" }}>
                                   <span className="flex h-5 w-5 items-center justify-center rounded-md text-[10px] font-bold text-white" style={{ background: "var(--accent)" }}>B</span>
                                   BUILDWE
+                                  {m.quality && !m.streaming && (
+                                    <span
+                                      className={clsx("ml-1 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide")}
+                                      style={
+                                        m.quality.label === "good"
+                                          ? { background: "var(--ok-soft)", color: "var(--ok)" }
+                                          : { background: "var(--warn-soft)", color: "var(--warn)" }
+                                      }
+                                      title={m.quality.notes.join(" · ")}
+                                    >
+                                      {m.quality.label === "good" ? "✓ Checked" : "⚠ Review"}
+                                    </span>
+                                  )}
                                 </div>
+                              )}
+                              {!isUser && m.understood && (
+                                <p className="mb-1 max-w-[min(100%,36rem)] truncate text-[10px] italic" style={{ color: "var(--soft)" }} title={m.understood}>
+                                  Understood: {m.understood}
+                                </p>
                               )}
                               <div
                                 className={clsx(
@@ -1937,6 +1996,7 @@ function Dashboard() {
                                     ["Shorten", "Rewrite your previous answer much shorter — only the essentials, keep it accurate."],
                                     ["Expand", "Expand your previous answer with more detail and useful examples — keep it accurate."],
                                     ["Explain", "Explain your previous answer step by step like I'm new to this topic."],
+                                    ["Example", "Give one concrete example for your previous answer."],
                                   ].map(([label, instruction]) => (
                                     <button
                                       key={label}
@@ -1952,6 +2012,29 @@ function Dashboard() {
                                   <Btn
                                     variant="icon"
                                     size="sm"
+                                    aria-label="Verify claims"
+                                    title="Verify — check facts against live sources"
+                                    disabled={verifying === m.id}
+                                    onClick={() => doVerify(m)}
+                                  >
+                                    {verifying === m.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+                                  </Btn>
+                                  <Btn
+                                    variant="icon"
+                                    size="sm"
+                                    aria-label="Use as prompt"
+                                    title="Use this answer as your next prompt"
+                                    onClick={() => {
+                                      setInput(m.content.slice(0, 2000));
+                                      requestAnimationFrame(grow);
+                                      taRef.current?.focus();
+                                    }}
+                                  >
+                                    <SquarePen className="h-3.5 w-3.5" />
+                                  </Btn>
+                                  <Btn
+                                    variant="icon"
+                                    size="sm"
                                     aria-label="Save answer"
                                     title="Save this answer to a file"
                                     onClick={() => {
@@ -1964,6 +2047,43 @@ function Dashboard() {
                                   >
                                     <Download className="h-3.5 w-3.5" />
                                   </Btn>
+                                </div>
+                              )}
+                              {!isUser && m.clarifier && !m.streaming && (
+                                <p className="mt-1 rounded-xl px-2.5 py-1.5 text-[11px]" style={{ background: "var(--info-soft)", color: "var(--info)" }}>
+                                  {m.clarifier}
+                                </p>
+                              )}
+                              {!isUser && m.verified && (
+                                <div className="anim-rise mt-1.5 rounded-2xl border px-3 py-2" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
+                                  <div className="flex items-center gap-1.5 text-[11px] font-semibold">
+                                    <ShieldCheck className="h-3.5 w-3.5" style={{ color: m.verified.verdict === "verified" ? "var(--ok)" : "var(--warn)" }} />
+                                    <span style={{ color: m.verified.verdict === "verified" ? "var(--ok)" : "var(--warn)" }}>
+                                      {m.verified.verdict === "verified" ? "Verified" : m.verified.verdict === "nothing-to-check" ? "Nothing to check" : "Needs verification"}
+                                    </span>
+                                    <span className="font-normal" style={{ color: "var(--soft)" }}>· {m.verified.message}</span>
+                                  </div>
+                                  {!!m.verified.claims.length && (
+                                    <ul className="mt-1.5 space-y-1">
+                                      {m.verified.claims.map((c, ci) => (
+                                        <li key={ci} className="flex items-start gap-1.5 text-[11px]" style={{ color: "var(--muted)" }}>
+                                          <span
+                                            className="mt-0.5 shrink-0 rounded-full px-1.5 py-px text-[9px] font-bold uppercase"
+                                            style={c.verdict === "verified" ? { background: "var(--ok-soft)", color: "var(--ok)" } : { background: "var(--warn-soft)", color: "var(--warn)" }}
+                                          >
+                                            {c.verdict === "verified" ? "source ✓" : "uncertain"}
+                                          </span>
+                                          <span className="min-w-0 flex-1">
+                                            {c.claim.slice(0, 140)}
+                                            {c.claim.length > 140 ? "…" : ""}
+                                            {c.source && (
+                                              <> — <a href={c.source.url} target="_blank" rel="noopener noreferrer" className="font-semibold" style={{ color: "var(--accent)" }}>{c.source.host}</a></>
+                                            )}
+                                          </span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  )}
                                 </div>
                               )}
                             </div>
