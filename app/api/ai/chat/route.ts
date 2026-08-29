@@ -8,6 +8,7 @@ import {
   appendMessages,
   createConversation,
   findUserById,
+  isTeamMember,
   uid,
 } from "@/lib/db/store";
 import { decryptSecret } from "@/lib/crypto";
@@ -57,12 +58,16 @@ export async function POST(req: NextRequest) {
     // Persist best-effort — never block the AI reply if storage fails
     try {
       if (!body.conversationId) {
+        const teamId = body.teamId && isTeamMember(String(body.teamId), session.userId)
+          ? String(body.teamId)
+          : null;
         const c = createConversation({
           userId: session.userId,
           mode: "chat",
           title: String(userText).slice(0, 48) || "Chat",
           messages: [],
           projectId: body.projectId || null,
+          teamId,
         });
         conversationId = c.id;
       }

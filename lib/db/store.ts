@@ -8,6 +8,7 @@
 import fs from "fs";
 import path from "path";
 import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { pullRemoteDb, pushRemoteDb, remoteDbEnabled } from "./remote";
 
 export type Plan = "free" | "pro";
 
@@ -49,6 +50,7 @@ export type Conversation = {
   title: string;
   messages: Message[];
   projectId?: string | null;
+  teamId?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -57,6 +59,23 @@ export type Project = {
   id: string;
   userId: string;
   name: string;
+  createdAt: string;
+};
+
+export type TeamMember = {
+  userId: string;
+  email?: string;
+  name?: string;
+  role: "owner" | "member";
+  joinedAt: string;
+};
+
+export type Team = {
+  id: string;
+  name: string;
+  ownerId: string;
+  members: TeamMember[];
+  invites: { code: string; createdAt: string }[];
   createdAt: string;
 };
 
@@ -103,7 +122,7 @@ export type UsageRow = {
   audio: number;
 };
 
-type DB = {
+export type DB = {
   users: User[];
   conversations: Conversation[];
   generations: Generation[];
@@ -112,6 +131,7 @@ type DB = {
   shares: Share[];
   payments: Payment[];
   apiKeys: ApiKey[];
+  teams: Team[];
 };
 
 const emptyDb = (): DB => ({
@@ -123,6 +143,7 @@ const emptyDb = (): DB => ({
   shares: [],
   payments: [],
   apiKeys: [],
+  teams: [],
 });
 
 /** Process-local fallback when disk is unavailable */
@@ -177,6 +198,7 @@ function getPath(): string | null {
 
 function read(): DB {
   const file = getPath();
+  bootRemote();
   if (!file) return memoryDb;
   try {
     const raw = fs.readFileSync(file, "utf8");
@@ -190,6 +212,7 @@ function read(): DB {
       shares: parsed.shares || [],
       payments: parsed.payments || [],
       apiKeys: parsed.apiKeys || [],
+      teams: parsed.teams || [],
     };
     return memoryDb;
   } catch {
@@ -200,12 +223,67 @@ function read(): DB {
 function write(db: DB) {
   memoryDb = db;
   const file = getPath();
-  if (!file || !writable) return;
-  try {
-    fs.writeFileSync(file, JSON.stringify(db, null, 2), "utf8");
-  } catch {
-    writable = false;
+  if (file && writable) {
+    try {
+      // atomic: never leave a half-written store behind
+      const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(db, null, 2), "utf8");
+      fs.renameSync(tmp, file);
+    } catch {
+      writable = false;
+    }
   }
+  scheduleRemotePush(db);
+}
+
+/* ── Optional Supabase mirror (permanent DB) ─────────────── */
+
+let pushTimer: ReturnType<typeof setTimeout> | null = null;
+let latestDb: DB | null = null;
+let bootedRemote = false;
+
+function scheduleRemotePush(db: DB) {
+  if (!remoteDbEnabled()) return;
+  latestDb = db;
+  if (pushTimer) return; // debounced — one push per quiet window
+  pushTimer = setTimeout(async () => {
+    pushTimer = null;
+    const snapshot = latestDb;
+    latestDb = null;
+    if (snapshot) await pushRemoteDb(snapshot);
+  }, 1500);
+}
+
+/** One-time boot: adopt the remote snapshot when local storage is fresh. */
+function bootRemote() {
+  if (bootedRemote || !remoteDbEnabled()) return;
+  bootedRemote = true;
+  void (async () => {
+    const localHadData =
+      memoryDb.users.length > 0 || memoryDb.conversations.length > 0;
+    if (localHadData) return; // local wins on warm starts
+    const remote = await pullRemoteDb();
+    if (!remote) return;
+    memoryDb = {
+      users: remote.users || [],
+      conversations: remote.conversations || [],
+      generations: remote.generations || [],
+      usage: remote.usage || [],
+      projects: remote.projects || [],
+      shares: remote.shares || [],
+      payments: remote.payments || [],
+      apiKeys: remote.apiKeys || [],
+      teams: remote.teams || [],
+    };
+    const file = getPath();
+    if (file && writable) {
+      try {
+        fs.writeFileSync(file, JSON.stringify(memoryDb, null, 2), "utf8");
+      } catch {
+        /* */
+      }
+    }
+  })();
 }
 
 export function storageMode(): "disk" | "memory" {
@@ -312,6 +390,7 @@ export function createConversation(input: {
   title: string;
   messages?: Message[];
   projectId?: string | null;
+  teamId?: string | null;
 }) {
   const db = read();
   const now = new Date().toISOString();
@@ -322,6 +401,7 @@ export function createConversation(input: {
     title: input.title.slice(0, 80) || "New chat",
     messages: input.messages || [],
     projectId: input.projectId || null,
+    teamId: input.teamId || null,
     createdAt: now,
     updatedAt: now,
   };
@@ -344,6 +424,15 @@ export function appendMessages(
   let i = db.conversations.findIndex(
     (c) => c.id === conversationId && c.userId === userId
   );
+  if (i < 0) {
+    // team conversation — any member may append into it
+    i = db.conversations.findIndex(
+      (c) =>
+        c.id === conversationId &&
+        c.teamId &&
+        isTeamMember(c.teamId, userId)
+    );
+  }
   // If missing (new instance / lost memory), recreate shell
   if (i < 0) {
     const now = new Date().toISOString();
@@ -562,6 +651,150 @@ export function touchApiKey(id: string) {
     k.lastUsedAt = new Date().toISOString();
     write(db);
   }
+}
+
+/* ── Teams (workspaces) ──────────────────────────────────── */
+
+export function listTeams(userId: string) {
+  return read()
+    .teams.filter((t) => t.members.some((m) => m.userId === userId))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export function getTeam(id: string) {
+  return read().teams.find((t) => t.id === id) || null;
+}
+
+export function isTeamMember(teamId: string, userId: string) {
+  const t = getTeam(teamId);
+  return Boolean(t?.members.some((m) => m.userId === userId));
+}
+
+export function createTeam(input: {
+  userId: string;
+  name: string;
+  email?: string;
+  userName?: string;
+}) {
+  const db = read();
+  const now = new Date().toISOString();
+  const team: Team = {
+    id: uid("team"),
+    name: input.name.trim().slice(0, 40) || "New team",
+    ownerId: input.userId,
+    members: [
+      {
+        userId: input.userId,
+        email: input.email,
+        name: input.userName,
+        role: "owner",
+        joinedAt: now,
+      },
+    ],
+    invites: [],
+    createdAt: now,
+  };
+  db.teams.push(team);
+  write(db);
+  return team;
+}
+
+export function findTeamByInviteCode(code: string) {
+  const c = code.trim().toUpperCase();
+  return read().teams.find((t) => t.invites.some((i) => i.code === c)) || null;
+}
+
+export function joinTeamByCode(
+  code: string,
+  member: { userId: string; email?: string; name?: string }
+) {
+  const db = read();
+  const c = code.trim().toUpperCase();
+  // look up inside the SAME db object we later write (avoid stale-reference bug)
+  const team = db.teams.find((t) => t.invites.some((i) => i.code === c));
+  if (!team) return { error: "Invalid or expired invite code." as const };
+  if (team.members.some((m) => m.userId === member.userId)) {
+    return { error: "You are already in this team." as const };
+  }
+  team.members.push({
+    userId: member.userId,
+    email: member.email,
+    name: member.name,
+    role: "member",
+    joinedAt: new Date().toISOString(),
+  });
+  write(db);
+  return { team };
+}
+
+export function newTeamInvite(teamId: string, userId: string) {
+  const db = read();
+  const team = db.teams.find(
+    (t) => t.id === teamId && t.members.some((m) => m.userId === userId)
+  );
+  if (!team) return null;
+  // reuse the freshest invite if one exists
+  if (team.invites.length) return team.invites[team.invites.length - 1].code;
+  const code = randomBytes(4).toString("hex").toUpperCase();
+  team.invites.push({ code, createdAt: new Date().toISOString() });
+  team.invites = team.invites.slice(-3);
+  write(db);
+  return code;
+}
+
+export function leaveTeam(teamId: string, userId: string) {
+  const db = read();
+  const team = db.teams.find((t) => t.id === teamId);
+  if (!team) return { error: "Team not found." as const };
+  if (!team.members.some((m) => m.userId === userId)) {
+    return { error: "You are not in this team." as const };
+  }
+  if (team.ownerId === userId) {
+    // owner leaving dissolves the team; team chats stay with their creators
+    db.teams = db.teams.filter((t) => t.id !== teamId);
+    for (const c of db.conversations) {
+      if (c.teamId === teamId) c.teamId = null;
+    }
+    write(db);
+    return { dissolved: true as const };
+  }
+  team.members = team.members.filter((m) => m.userId !== userId);
+  write(db);
+  return { left: true as const };
+}
+
+export function setConversationTeam(
+  conversationId: string,
+  userId: string,
+  teamId: string | null
+) {
+  const db = read();
+  const c = db.conversations.find((x) => x.id === conversationId);
+  if (!c) return null;
+  // only the chat owner (or same-team member) may move it
+  const isOwner = c.userId === userId;
+  const isSameTeam = c.teamId ? isTeamMember(c.teamId, userId) : false;
+  if (!isOwner && !isSameTeam) return null;
+  if (teamId && !isTeamMember(teamId, userId)) return null;
+  c.teamId = teamId;
+  c.updatedAt = new Date().toISOString();
+  write(db);
+  return c;
+}
+
+/** Conversations visible to a user: own + their teams' */
+export function listVisibleConversations(userId: string) {
+  const db = read();
+  const teamIds = new Set(
+    db.teams
+      .filter((t) => t.members.some((m) => m.userId === userId))
+      .map((t) => t.id)
+  );
+  return db.conversations
+    .filter(
+      (c) => c.userId === userId || (c.teamId && teamIds.has(c.teamId))
+    )
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 /* ── Generations ─────────────────────────────────────────── */

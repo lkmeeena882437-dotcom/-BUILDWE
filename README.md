@@ -16,7 +16,7 @@ Creators juggle ChatGPT + coding tools + image + TTS apps. BUILDWE is one worksp
 |-------|------|
 | Frontend | Next.js 14, Tailwind, cream design system, PWA |
 | Auth | Guest cookie + email/password (scrypt), JWT httpOnly |
-| Database | Local JSON file DB (`/data`) — zero paid SaaS |
+| Database | Local JSON file DB (`/data`, atomic writes) — optional Supabase mirror for multi-instance |
 | Chat / Code | Groq free tier → OpenRouter → smart demo fallback |
 | Web search | **DuckDuckGo HTML** (no API key) — grounded answers with sources |
 | Vision | Groq `llama-4-scout` (add key) · honest preview fallback |
@@ -27,6 +27,7 @@ Creators juggle ChatGPT + coding tools + image + TTS apps. BUILDWE is one worksp
 | Dev API | `POST /api/v1/chat` + keys at `/developers` |
 | Ads | Free-plan house-ad slots (PRO ad-free) |
 | Projects | Group chats into projects (folders) |
+| Teams | Shared team workspaces with invite links |
 | Share | Public read-only links `/s/{id}` |
 | Billing | Razorpay real checkout (demo until keys set) |
 | Limits | Server-side daily counters |
@@ -78,6 +79,7 @@ GROQ_API_KEY=gsk_...
 | `POST /api/ai/vision` | Image understanding |
 | `POST /api/ai/file` | CSV/text analysis |
 | `GET/POST/DELETE /api/projects` | Project folders |
+| `GET/POST /api/teams` | Team workspaces (create/join/invite/leave/assign) |
 | `POST /api/share` · `GET /api/share?id=` | Public share links |
 | `POST /api/checkout/order` | Razorpay order (real + demo) |
 | `POST /api/checkout/verify` | HMAC verify → plan=pro |

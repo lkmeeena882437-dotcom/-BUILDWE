@@ -62,6 +62,8 @@ import {
   KeyRound,
   Terminal,
   Printer,
+  Users,
+  UserPlus,
 } from "lucide-react";
 import clsx from "clsx";
 import {
@@ -89,6 +91,13 @@ import {
   deleteProjectApi,
   fetchByok,
   saveByok,
+  fetchTeams,
+  createTeam,
+  teamInvite,
+  joinTeam,
+  leaveTeamApi,
+  assignTeam,
+  type TeamView,
   type MeResponse,
 } from "@/lib/client/api";
 import { ImageStudio, type StudioImage } from "@/components/workspace/ImageStudio";
@@ -114,6 +123,8 @@ type HistItem = {
   updatedAt: string;
   preview: string;
   projectId?: string | null;
+  teamId?: string | null;
+  mine?: boolean;
 };
 
 type ProjectItem = { id: string; name: string; createdAt: string };
@@ -390,7 +401,7 @@ function Dashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [drawer, setDrawer] = useState(false);
   const [modal, setModal] = useState<
-    null | "auth" | "settings" | "plans" | "profile" | "models" | "skills" | "byok"
+    null | "auth" | "settings" | "plans" | "profile" | "models" | "skills" | "byok" | "teams"
   >(null);
   const [authTab, setAuthTab] = useState<"login" | "register">("login");
   const [themePref, setThemePref] = useState<ThemePref>("system");
@@ -452,6 +463,13 @@ function Dashboard() {
   const [activeProject, setActiveProject] = useState<string | null>(null);
   const [convProjectId, setConvProjectId] = useState<string | null>(null);
 
+  // teams
+  const [teams, setTeams] = useState<TeamView[]>([]);
+  const [activeTeam, setActiveTeam] = useState<string | null>(null);
+  const [convTeamId, setConvTeamId] = useState<string | null>(null);
+  const [joinCode, setJoinCode] = useState("");
+  const [teamNote, setTeamNote] = useState("");
+
   // canvas
   const [canvasTab, setCanvasTab] = useState<"code" | "preview">("code");
 
@@ -480,10 +498,12 @@ function Dashboard() {
     const q = search.trim().toLowerCase();
     return history.filter(
       (h) =>
-        (!activeProject || h.projectId === activeProject) &&
+        (activeTeam
+          ? h.teamId === activeTeam
+          : !activeProject || h.projectId === activeProject) &&
         (!q || h.title.toLowerCase().includes(q) || h.preview.toLowerCase().includes(q))
     );
-  }, [history, search, activeProject]);
+  }, [history, search, activeProject, activeTeam]);
 
   /* theme */
   useEffect(() => {
@@ -518,6 +538,8 @@ function Dashboard() {
           updatedAt: c.updatedAt,
           preview: c.preview,
           projectId: (c as { projectId?: string | null }).projectId ?? null,
+          teamId: (c as { teamId?: string | null }).teamId ?? null,
+          mine: (c as { mine?: boolean }).mine ?? true,
         }))
       );
     } catch {
@@ -534,10 +556,20 @@ function Dashboard() {
     }
   }, []);
 
+  const refreshTeams = useCallback(async () => {
+    try {
+      const t = await fetchTeams();
+      setTeams(t.teams || []);
+    } catch {
+      /* */
+    }
+  }, []);
+
   useEffect(() => {
     refreshMe();
     refreshHistory();
     refreshProjects();
+    refreshTeams();
     fetchByok()
       .then((b) => {
         if (!b.requireAuth) {
@@ -549,7 +581,7 @@ function Dashboard() {
     fetchModels()
       .then((m) => setModelsCatalog(m.all || []))
       .catch(() => {});
-  }, [refreshMe, refreshHistory, refreshProjects]);
+  }, [refreshMe, refreshHistory, refreshProjects, refreshTeams]);
 
   const doSaveByok = async (which: "groq" | "openrouter", clear?: boolean) => {
     setByokBusy(true);
@@ -573,6 +605,25 @@ function Dashboard() {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streaming]);
+
+  // invite-link auto-join: /?join=CODE
+  const joinTried = useRef(false);
+  useEffect(() => {
+    if (joinTried.current) return;
+    const code = new URLSearchParams(window.location.search).get("join");
+    if (!code) return;
+    joinTried.current = true;
+    window.history.replaceState({}, "", window.location.pathname);
+    if (!code.trim()) return;
+    joinTeam(code.trim())
+      .then(({ team }) => {
+        setTeams((ts) => (ts.some((t) => t.id === team.id) ? ts : [...ts, team]));
+        setTeamNote(`Joined “${team.name}” ✓ — switched to team chats`);
+        setActiveTeam(team.id);
+      })
+      .catch((e: Error) => setTeamNote(e.message));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const grow = () => {
     const el = taRef.current;
@@ -608,6 +659,7 @@ function Dashboard() {
     setMode("chat");
     setDrawer(false);
     setConvProjectId(null);
+    setConvTeamId(null);
     setCanvasTab("code");
     setAttachment(null);
   };
@@ -628,6 +680,7 @@ function Dashboard() {
       );
       setMode((c.mode as Mode) || "chat");
       setConvProjectId((c as { projectId?: string | null }).projectId ?? null);
+      setConvTeamId((c as { teamId?: string | null }).teamId ?? null);
       setCanvasTab("code");
       setView("app");
       setDrawer(false);
@@ -694,6 +747,81 @@ function Dashboard() {
       await doAssignProject(item.id);
     } catch (e) {
       setError((e as Error).message);
+    }
+  };
+
+  const doAssignTeam = async (teamId: string | null) => {
+    setProjMenu(false);
+    if (!convId) {
+      setActiveTeam(teamId);
+      setActiveProject(null);
+      return;
+    }
+    try {
+      await assignTeam(convId, teamId);
+      setConvTeamId(teamId);
+      setActiveTeam(teamId);
+      setActiveProject(null);
+      refreshHistory();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const doNewTeam = async () => {
+    const name = window.prompt("Team name? (e.g. Studio crew, College project)");
+    if (!name?.trim()) return;
+    try {
+      const { team } = await createTeam(name.trim());
+      setTeams((ts) => [...ts, team]);
+      setTeamNote(`Team “${team.name}” created — invite friends with the code below.`);
+    } catch (e) {
+      setTeamNote((e as Error).message);
+    }
+  };
+
+  const doInvite = async (teamId: string) => {
+    try {
+      const { code } = await teamInvite(teamId);
+      const url = `${window.location.origin}/?join=${code}`;
+      try {
+        await navigator.clipboard.writeText(url);
+        setTeamNote(`Invite link copied ✓ — share it with your team`);
+      } catch {
+        setTeamNote(`Invite code: ${code}`);
+      }
+      setTimeout(() => setTeamNote(""), 4000);
+    } catch (e) {
+      setTeamNote((e as Error).message);
+    }
+  };
+
+  const doJoin = async () => {
+    const code = joinCode.trim();
+    if (!code) return;
+    try {
+      // accept full links or raw codes
+      const raw = code.includes("join=") ? (code.split("join=")[1] || "") : code;
+      const { team } = await joinTeam(raw);
+      setTeams((ts) => [...ts, team]);
+      setJoinCode("");
+      setTeamNote(`Joined “${team.name}” ✓ — switch to it from the sidebar`);
+    } catch (e) {
+      setTeamNote((e as Error).message);
+    }
+  };
+
+  const doLeaveTeam = async (teamId: string, name: string) => {
+    if (!window.confirm(`Leave “${name}”?${teams.find((t) => t.id === teamId)?.myRole === "owner" ? " You own it — the team will be deleted." : ""}`)) return;
+    try {
+      await leaveTeamApi(teamId);
+      setTeams((ts) => ts.filter((t) => t.id !== teamId));
+      if (activeTeam === teamId) setActiveTeam(null);
+      if (convTeamId === teamId) setConvTeamId(null);
+      refreshHistory();
+      setTeamNote("Left the team.");
+    } catch (e) {
+      setTeamNote((e as Error).message);
     }
   };
 
@@ -910,6 +1038,7 @@ function Dashboard() {
           conversationId: convId,
           webSearch: useSearch,
           projectId: convProjectId ?? activeProject ?? null,
+          teamId: convTeamId ?? activeTeam ?? null,
         },
         (ev) => {
           if (ev.meta && typeof ev.meta === "object") {
@@ -1263,12 +1392,52 @@ function Dashboard() {
                     <Plus className="mr-0.5 inline h-2.5 w-2.5" />Project
                   </button>
                 </div>
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  <button
+                    type="button"
+                    onClick={() => { setActiveTeam(null); setActiveProject(null); }}
+                    className="rounded-full px-2 py-1 text-[10px] font-semibold"
+                    style={!activeTeam ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
+                  >
+                    Personal
+                  </button>
+                  {teams.map((t) => (
+                    <span key={t.id} className="group inline-flex items-center">
+                      <button
+                        type="button"
+                        onClick={() => { setActiveTeam(t.id); setActiveProject(null); }}
+                        className="rounded-l-full px-2 py-1 text-[10px] font-semibold"
+                        style={activeTeam === t.id ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
+                      >
+                        <Users className="mr-0.5 inline h-2.5 w-2.5" />{t.name}
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Leave ${t.name}`}
+                        className="rounded-r-full px-1 py-1 opacity-0 transition group-hover:opacity-100"
+                        style={{ color: "var(--soft)" }}
+                        onClick={() => doLeaveTeam(t.id, t.name)}
+                      >
+                        <Trash2 className="h-2.5 w-2.5" />
+                      </button>
+                    </span>
+                  ))}
+                  <button
+                    type="button"
+                    aria-label="Teams"
+                    onClick={() => setModal("teams")}
+                    className="rounded-full px-2 py-1 text-[10px] font-semibold"
+                    style={{ background: "var(--secondary)", color: "var(--muted)" }}
+                  >
+                    <UserPlus className="mr-0.5 inline h-2.5 w-2.5" />Team
+                  </button>
+                </div>
               </div>
               <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
                 {filteredHistory.map((h) => (
                   <div key={h.id} className="group flex items-center rounded-xl" style={h.id === convId ? { background: "var(--secondary)" } : undefined}>
                     <button type="button" onClick={() => openHist(h.id)} className="min-w-0 flex-1 px-2.5 py-2 text-left">
-                      <div className="truncate text-[13px] font-medium">{h.title}</div>
+                      <div className="truncate text-[13px] font-medium">{h.mine === false && <Users className="mr-1 inline h-3 w-3" style={{ color: "var(--accent)" }} />}{h.title}</div>
                       <div className="truncate text-[10px]" style={{ color: "var(--soft)" }}>{h.mode} · {h.preview}</div>
                     </button>
                     <button
@@ -1333,7 +1502,15 @@ function Dashboard() {
             {sidebarOpen ? <PanelLeftClose className="h-[18px] w-[18px]" /> : <PanelLeft className="h-[18px] w-[18px]" />}
           </Btn>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold tracking-tight">{meta.label}{webSearchOn && (mode === "chat" || mode === "auto") ? " · Web search on" : ""}</div>
+            <div className="flex items-center gap-1.5 truncate text-sm font-semibold tracking-tight">
+              <span className="truncate">{meta.label}</span>
+              {activeTeam && (
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
+                  <Users className="h-2.5 w-2.5" /> {teams.find((t) => t.id === activeTeam)?.name || "Team"}
+                </span>
+              )}
+              {webSearchOn && (mode === "chat" || mode === "auto") ? <span className="shrink-0 text-[10px] font-medium" style={{ color: "var(--accent)" }}>· Web</span> : null}
+            </div>
             <div className="hidden truncate text-[11px] sm:block" style={{ color: "var(--muted)" }}>{meta.headline}{modelTag ? ` · ${modelTag}` : ""}</div>
           </div>
           <div className="relative">
@@ -1362,6 +1539,24 @@ function Dashboard() {
                   <button type="button" className="flex w-full items-center gap-2 border-t px-3 py-2.5 text-left text-sm font-medium" style={{ borderColor: "var(--border)", color: "var(--accent)" }} onClick={doNewProject}>
                     <FolderPlus className="h-3.5 w-3.5" /> New project
                   </button>
+                  <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Shared with team</div>
+                  {teams.length ? (
+                    <>
+                      <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: !convTeamId ? "var(--muted)" : "var(--ink)" }} onClick={() => doAssignTeam(null)}>
+                        <FolderOpen className="h-3.5 w-3.5" /> Not shared
+                      </button>
+                      {teams.map((t) => (
+                        <button key={t.id} type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: convTeamId === t.id ? "var(--accent)" : "var(--ink)" }} onClick={() => doAssignTeam(t.id)}>
+                          <Users className="h-3.5 w-3.5" /> <span className="truncate">{t.name}</span>
+                          <span className="ml-auto text-[9px]" style={{ color: "var(--soft)" }}>{t.memberCount}</span>
+                        </button>
+                      ))}
+                    </>
+                  ) : (
+                    <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: "var(--accent)" }} onClick={() => { setProjMenu(false); setModal("teams"); }}>
+                      <UserPlus className="h-3.5 w-3.5" /> Create / join a team
+                    </button>
+                  )}
                 </div>
               </>
             )}
@@ -1920,6 +2115,7 @@ function Dashboard() {
                 }
               }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Printer className="h-4 w-4 opacity-70" /> Print / PDF</button>
               <button type="button" onClick={() => setModal("byok")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><KeyRound className="h-4 w-4 opacity-70" /> API keys <span className="ml-auto text-[10px] font-semibold" style={{ color: byokActive ? "var(--accent)" : "var(--soft)" }}>{byokActive ? "Own key ⚡" : "BYOK"}</span></button>
+              <button type="button" onClick={() => setModal("teams")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Users className="h-4 w-4 opacity-70" /> Teams <span className="ml-auto text-[10px] font-semibold" style={{ color: teams.length ? "var(--accent)" : "var(--soft)" }}>{teams.length ? `${teams.length} active` : "Share chats"}</span></button>
               <a href="/developers" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Terminal className="h-4 w-4 opacity-70" /> Developer API <ExternalLink className="ml-auto h-3.5 w-3.5" style={{ color: "var(--soft)" }} /></a>
               <a href="/about" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Bot className="h-4 w-4 opacity-70" /> About BUILDWE <ExternalLink className="ml-auto h-3.5 w-3.5" style={{ color: "var(--soft)" }} /></a>
               <a href="/privacy" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Shield className="h-4 w-4 opacity-70" /> Privacy</a>
@@ -2018,6 +2214,58 @@ function Dashboard() {
           <p className="mt-3 text-[11px]" style={{ color: "var(--soft)" }}>
             Get a free Groq key at console.groq.com → API Keys. It powers Chat, Code, and Vision for your account only.
           </p>
+        </Sheet>
+      )}
+
+      {modal === "teams" && (
+        <Sheet onClose={() => setModal(null)} title="Team workspaces">
+          <p className="mb-3 text-sm" style={{ color: "var(--muted)" }}>
+            Share chats with your crew — a team chat is visible to every member. Switch teams from the sidebar chips.
+          </p>
+          {!loggedIn && (
+            <p className="mb-3 text-xs" style={{ color: "var(--accent)" }}>Sign in to create or join teams.</p>
+          )}
+
+          <div className="space-y-1.5">
+            {teams.map((t) => (
+              <div key={t.id} className="flex items-center gap-3 rounded-2xl border px-3 py-2.5" style={{ borderColor: "var(--border)" }}>
+                <span className="flex h-9 w-9 items-center justify-center rounded-xl" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
+                  <Users className="h-4 w-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">{t.name}</div>
+                  <div className="text-[10px]" style={{ color: "var(--muted)" }}>
+                    {t.memberCount} member{t.memberCount > 1 ? "s" : ""} · you are {t.myRole}
+                  </div>
+                </div>
+                <Btn variant="icon" size="sm" aria-label="Invite" title="Copy invite link" onClick={() => doInvite(t.id)}><UserPlus className="h-3.5 w-3.5" /></Btn>
+                <Btn variant="icon" size="sm" aria-label="Leave team" title="Leave team" onClick={() => doLeaveTeam(t.id, t.name)}><LogOut className="h-3.5 w-3.5" /></Btn>
+              </div>
+            ))}
+            {!teams.length && loggedIn && (
+              <p className="text-xs" style={{ color: "var(--soft)" }}>No teams yet — create one or join with a code.</p>
+            )}
+          </div>
+
+          {teamNote && <p className="mt-2 text-xs" style={{ color: "var(--accent)" }}>{teamNote}</p>}
+
+          <div className="mt-4 flex gap-2">
+            <Btn size="sm" disabled={!loggedIn} onClick={doNewTeam}><Plus className="h-3.5 w-3.5" /> Create team</Btn>
+          </div>
+
+          <div className="mt-3 border-t pt-3" style={{ borderColor: "var(--border)" }}>
+            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Join with invite code</div>
+            <div className="flex gap-2">
+              <input
+                value={joinCode}
+                onChange={(e) => setJoinCode(e.target.value)}
+                placeholder="e.g. 7F3A9C2B or invite link"
+                className="h-10 flex-1 rounded-2xl border px-3 text-sm outline-none"
+                style={{ borderColor: "var(--border)", background: "var(--bg)" }}
+              />
+              <Btn size="sm" disabled={!loggedIn || !joinCode.trim()} onClick={doJoin}>Join</Btn>
+            </div>
+          </div>
         </Sheet>
       )}
 

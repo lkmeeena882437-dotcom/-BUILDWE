@@ -55,10 +55,40 @@ export default function AboutPage() {
               <strong>Image</strong> — describe a frame and get a visual.
             </li>
             <li>
-              <strong>Audio</strong> — paste a script and hear it spoken.
+              <strong>Audio</strong> — paste a script, get a real MP3 you can download.
             </li>
             <li>
               <strong>Auto</strong> — one prompt; BUILDWE routes the work.
+            </li>
+          </ul>
+        </section>
+
+        <section className="mt-10">
+          <h2 className="text-lg font-semibold">Beyond the basics</h2>
+          <ul className="mt-3 space-y-3 text-[15px] text-[#333]">
+            <li>
+              <strong>Web search</strong> — toggle 🌐 or start with “search:” for live, cited sources. Works without any API key.
+            </li>
+            <li>
+              <strong>Vision</strong> — attach an image in chat and ask about it.
+            </li>
+            <li>
+              <strong>File analysis</strong> — drop a CSV and get rows, column types, and stats injected into the conversation.
+            </li>
+            <li>
+              <strong>Projects &amp; Teams</strong> — group chats into projects; share chats with a team via invite links.
+            </li>
+            <li>
+              <strong>Your own key (BYOK)</strong> — paste a free Groq/OpenRouter key in Settings → API keys; it&apos;s encrypted (AES-256-GCM) and powers your Chat, Code, and Vision.
+            </li>
+            <li>
+              <strong>Share &amp; export</strong> — public read-only chat links, Markdown export, and Print/PDF.
+            </li>
+            <li>
+              <strong>Developer API</strong> — build on BUILDWE from your own apps at <Link href="/developers" className="font-medium text-[#C45C26] underline">/developers</Link>.
+            </li>
+            <li>
+              <strong>Installable</strong> — add BUILDWE to your home screen (PWA) on phone or desktop.
             </li>
           </ul>
         </section>

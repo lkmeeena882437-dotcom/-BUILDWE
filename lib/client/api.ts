@@ -358,6 +358,83 @@ export async function deleteProjectApi(id: string) {
   });
 }
 
+/* ── Teams (workspaces) ─────────────────────────────────── */
+
+export type TeamView = {
+  id: string;
+  name: string;
+  ownerId: string;
+  memberCount: number;
+  myRole: "owner" | "member";
+  createdAt: string;
+};
+
+export async function fetchTeams() {
+  const r = await fetch("/api/teams", { credentials: "include" });
+  const j = await readJson(r);
+  return j as { teams: TeamView[] };
+}
+
+export async function createTeam(name: string) {
+  const r = await fetch("/api/teams", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "create", name }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t create team");
+  return j as { team: TeamView };
+}
+
+export async function teamInvite(teamId: string) {
+  const r = await fetch("/api/teams", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "invite", teamId }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t get invite code");
+  return j as { code: string };
+}
+
+export async function joinTeam(code: string) {
+  const r = await fetch("/api/teams", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "join", code }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t join team");
+  return j as { team: TeamView };
+}
+
+export async function leaveTeamApi(teamId: string) {
+  const r = await fetch("/api/teams", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "leave", teamId }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t leave team");
+  return j as { ok: boolean; dissolved: boolean };
+}
+
+export async function assignTeam(conversationId: string, teamId: string | null) {
+  const r = await fetch("/api/teams", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "assign", conversationId, teamId }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn’t move chat");
+  return j;
+}
+
 export async function sendFeedback(kind: "up" | "down", note?: string) {
   const r = await fetch("/api/ai/feedback", {
     method: "POST",

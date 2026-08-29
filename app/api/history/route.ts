@@ -6,15 +6,16 @@ import {
   appendMessages,
   createConversation,
   deleteConversation,
-  listConversations,
+  isTeamMember,
   listGenerations,
+  listVisibleConversations,
   uid,
 } from "@/lib/db/store";
 
 export async function GET(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
-    const conversations = listConversations(session.userId).map((c) => ({
+    const conversations = listVisibleConversations(session.userId).map((c) => ({
       id: c.id,
       title: c.title,
       mode: c.mode,
@@ -22,6 +23,8 @@ export async function GET(req: NextRequest) {
       preview: c.messages[c.messages.length - 1]?.content?.slice(0, 100) || "",
       messageCount: c.messages.length,
       projectId: c.projectId ?? null,
+      teamId: c.teamId ?? null,
+      mine: c.userId === session.userId,
     }));
     const generations = listGenerations(session.userId);
     const res = NextResponse.json({ conversations, generations });
@@ -39,11 +42,15 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
 
     if (body.action === "create") {
+      if (body.teamId && !isTeamMember(String(body.teamId), session.userId)) {
+        return NextResponse.json({ error: "Not a team member" }, { status: 403 });
+      }
       const c = createConversation({
         userId: session.userId,
         mode: body.mode || "chat",
         title: body.title || "New chat",
         messages: body.messages || [],
+        teamId: body.teamId ? String(body.teamId) : null,
       });
       const res = NextResponse.json({ conversation: c });
       attachGuestCookie(res, session.userId);
@@ -70,7 +77,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === "get" && body.conversationId) {
-      const all = listConversations(session.userId);
+      const all = listVisibleConversations(session.userId);
       const c = all.find((x) => x.id === body.conversationId);
       if (!c) return NextResponse.json({ error: "Not found" }, { status: 404 });
       return NextResponse.json({ conversation: c });
