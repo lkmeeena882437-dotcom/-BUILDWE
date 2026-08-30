@@ -184,3 +184,102 @@ PDF/DOCX/XLSX, metrics persistence, durable rate limit, audio MP3 storage,
 conversation rename UI. Aur: is sandbox se har provider ka outbound TLS blocked
 hai, isliye **live provider response deploy hone ke baad hi test ho sakta hai** —
 uske liye ek free key chahiye hogi.
+
+
+---
+
+## v1.10.0 — Multi-model routing + real coding agent
+
+Boss ke teen order the. Teeno pure.
+
+### 1. "Ham ek hi model ke bharose nahi h — har field me 4-5 alag models"
+
+**Jo galat mila:** catalog me 20 models likhe the, par `providers.ts` sirf
+Groq ka request shape banata tha aur har model id **api.groq.com** ko bhejta
+tha. "Claude Sonnet" chunne par string `claude-sonnet-4` Groq ko jaati thi,
+Groq usse reject karta tha, aur chup-chaap Groq ka hi model chal jaata tha.
+Matlab menu me 20 dish the, kitchen me ek.
+
+**Ab:** naya `lib/ai/provider-registry.ts` — har vendor ka apna adapter.
+
+| Vendor | Wire format | Kya alag hai |
+|---|---|---|
+| Groq, OpenRouter, OpenAI | openai | standard |
+| Anthropic | anthropic | system top-level field, `x-api-key`, version header |
+| Google | google | `contents`/`parts`, `streamGenerateContent` |
+
+**28 models, 9 vendors:** chat 9 · code 6 · image 6 · audio 6.
+
+Routing ab **availability-aware** hai — jis provider ki key nahi lagi, uske
+models scoring se pehle hi hat jaate hain. Aur `modelChain()` fallback me
+**pehle doosre vendor** ko rakhta hai, taaki ek vendor down hone se poori
+capability na mare.
+
+Scoring me **task-kind detection** aaya (writing / reasoning / code /
+translation / summarise), jo har model ki declared strengths se match hoti hai:
+
+```
+"hi"                                   → Llama 3.1 8B Instant (sasta, sahi)
+"Design a multi-region architecture…"  → GPT-OSS 120B         (reasoning)
+"Write a nuanced 2000-word essay…" PRO → Claude 3.5 Sonnet    (writing)
+```
+
+### 2. "Coding wale section ko agent bna do — kaam A to Z kre"
+
+**Jo galat tha:** ek prompt, ek code block. Na plan, na project ki memory,
+na verification, na sudhaar.
+
+**Ab:** `lib/ai/agent.ts` me asli loop —
+**plan → act → check → fix → done**, paanch tools ke saath:
+`list_files`, `read_file`, `write_file`, `delete_file`, `run_check`, `finish`.
+
+`run_check` static analysis hai (execution nahi): balanced braces (quotes aur
+comments samajh kar), JSON validity, HTML/script tag balance, aise event
+handlers jo kabhi define hi nahi hue, bacha hua markdown fence, placeholder text.
+
+**Agar checks fail ho rahe hain to agent `finish` nahi kar sakta** — usse wapas
+kaam par bhej diya jaata hai.
+
+**Live verified** (mock provider se poora loop):
+
+```
+list_files → write_file (toota HTML) → run_check FAIL
+   ("Unbalanced braces: 1 unclosed | Handler addItem() never defined")
+→ finish REJECTED → write_file (theek) → run_check PASS → finish
+→ verified=true
+```
+
+Is test me **do bug khud pakde aur fix kiye**: placeholder detector todo app
+ke "Todo" shabd par galat trigger ho raha tha, aur `verified` sirf isliye true
+ho jaata tha ki files badli thi — ab wo tabhi true hota hai jab checks pass hon.
+
+**Safety:** user ka code server pe kabhi execute nahi hota. Execution wahin
+hai jahan tha — client ka sandboxed iframe aur Web Worker.
+
+**Budgets:** 8 steps, 24 tool calls, 60k chars/file, 200k total, 120s wall
+clock, bounded transcript. Plan ke against code generation ki tarah metered,
+6 runs/min rate limit.
+
+**UI:** canvas me Agent button (jo Stop bhi banta hai) + live step log with
+per-tool status + verified banner.
+
+### 3. "Frontend/backend/database kitna complete h, kya kami h"
+
+Poori report: **`docs/PLATFORM_STATUS.md`**
+
+| Layer | Complete | Sabse badi kami |
+|---|---|---|
+| Frontend | 90% | rename UI, diff view, multi-file preview |
+| Backend | 85% | in-memory rate limit, koi execution sandbox nahi |
+| Database | **60%** | **JSON file hai — serverless pe `/tmp` udd jaata hai** |
+| Storage | **35%** | apna object storage hai hi nahi |
+| AI power | 75% | **koi provider key configured nahi** |
+
+**P0 (inke bina real AI platform nahi):**
+1. Groq key lagao — *2 min, free* — poora AI layer live ho jayega
+2. Asli database (Supabase Postgres) — *2-3 din, free tier*
+3. Durable rate limiting (Upstash) — *4 ghante, free tier*
+
+### Verification
+38/38 regression · 19/19 agent unit tests · 8/8 router picks · agent loop
+end-to-end · `tsc` clean · production build clean.
