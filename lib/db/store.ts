@@ -257,6 +257,9 @@ function read(): DB {
 
 function write(db: DB) {
   memoryDb = db;
+  // A local write happened. If bootRemote() is still awaiting its pull, this
+  // tells it to abandon the adopt rather than overwrite what we just wrote.
+  localWriteSinceBoot = true;
   const file = getPath();
   if (file && writable) {
     try {
@@ -276,6 +279,8 @@ function write(db: DB) {
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let latestDb: DB | null = null;
 let bootedRemote = false;
+/** Set by write(); blocks a late remote adopt from clobbering local data. */
+let localWriteSinceBoot = false;
 
 function scheduleRemotePush(db: DB) {
   if (!remoteDbEnabled()) return;
@@ -289,7 +294,15 @@ function scheduleRemotePush(db: DB) {
   }, 1500);
 }
 
-/** One-time boot: adopt the remote snapshot when local storage is fresh. */
+/**
+ * One-time boot: adopt the remote snapshot when local storage is fresh.
+ *
+ * The pull is async, so writes can land while it is in flight. Before the
+ * `localWriteSinceBoot` guard, a signup during that window was silently
+ * destroyed: the adopt overwrote memoryDb with the older remote snapshot, the
+ * account vanished, and the next push persisted the loss. Only adopt if the
+ * process still hasn't written anything by the time the snapshot arrives.
+ */
 function bootRemote() {
   if (bootedRemote || !remoteDbEnabled()) return;
   bootedRemote = true;
@@ -299,6 +312,9 @@ function bootRemote() {
     if (localHadData) return; // local wins on warm starts
     const remote = await pullRemoteDb();
     if (!remote) return;
+    // Re-check AFTER the await — this is the race the guard exists for.
+    if (localWriteSinceBoot) return;
+    if (memoryDb.users.length > 0 || memoryDb.conversations.length > 0) return;
     memoryDb = {
       users: remote.users || [],
       conversations: remote.conversations || [],

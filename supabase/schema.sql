@@ -142,6 +142,9 @@ create policy "public read buildwe media"
 -- ------------------------------------------------------------
 -- Verify
 -- ------------------------------------------------------------
+-- This whole script is safe to run more than once — every statement is
+-- idempotent, so re-running it after a change will not error or lose data.
+--
 -- Expect: buildwe_kv, buildwe_rate_limits, and a buildwe-media bucket.
 select table_name
 from information_schema.tables
