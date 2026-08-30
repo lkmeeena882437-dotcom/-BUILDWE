@@ -30,6 +30,7 @@ export function AudioStudio({
   loading,
   onGenerate,
   lastSpoken,
+  history = [],
 }: {
   text: string;
   setText: (t: string) => void;
@@ -41,6 +42,8 @@ export function AudioStudio({
   loading: boolean;
   onGenerate: () => void;
   lastSpoken?: { text: string; voice: string; audioUrl?: string } | null;
+  /** past voice generations restored from the server (Update #1 §4.5) */
+  history?: { id: string; text: string; voice: string; createdAt: string }[];
 }) {
   const [showAll, setShowAll] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -353,6 +356,42 @@ export function AudioStudio({
               </div>
             )}
           </div>
+
+          {/* Recent voices — restored from the server so past work survives a
+              reload (Update #1 §4.5). Tap one to load the script back in. */}
+          {history.length > 0 && (
+            <div className="mt-6">
+              <div
+                className="mb-2 text-[11px] font-semibold uppercase tracking-wide"
+                style={{ color: "var(--soft)" }}
+              >
+                Recent voices
+              </div>
+              <div className="flex flex-col gap-1.5">
+                {history.slice(0, 6).map((h) => (
+                  <button
+                    key={h.id}
+                    type="button"
+                    onClick={() => setText(h.text)}
+                    className="flex items-center gap-2 rounded-xl border px-3 py-2 text-left transition hover:opacity-80"
+                    style={{ borderColor: "var(--border)", background: "var(--card)" }}
+                  >
+                    <Volume2
+                      className="h-3.5 w-3.5 shrink-0"
+                      style={{ color: "var(--accent)" }}
+                    />
+                    <span className="min-w-0 flex-1 truncate text-xs">{h.text}</span>
+                    <span
+                      className="shrink-0 text-[10px] uppercase"
+                      style={{ color: "var(--soft)" }}
+                    >
+                      {h.voice}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

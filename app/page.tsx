@@ -82,6 +82,7 @@ import {
   detectAuto,
   deleteHistory,
   fetchHistory,
+  fetchGenerations,
   fetchMe,
   generateAudio,
   generateImage,
@@ -457,6 +458,10 @@ function Dashboard() {
   // image
   const [aspect, setAspect] = useState("1:1");
   const [images, setImages] = useState<StudioImage[]>([]);
+  /** past voice generations restored from the server (Update #1 §4.5) */
+  const [audioHistory, setAudioHistory] = useState<
+    { id: string; text: string; voice: string; createdAt: string }[]
+  >([]);
   const [imgLoading, setImgLoading] = useState(false);
   const [activeImg, setActiveImg] = useState<string | null>(null);
   const [imageModelId, setImageModelId] = useState("flux");
@@ -602,6 +607,52 @@ function Dashboard() {
     }
   }, []);
 
+  /**
+   * Restore past image/audio creations (Update #1 §4.5).
+   * These were always saved server-side, but the studios started empty on
+   * every reload, so a user's own gallery looked lost. Purely additive:
+   * restored rows sit behind anything made in the current session.
+   */
+  const refreshGenerations = useCallback(async () => {
+    try {
+      const [imgs, auds] = await Promise.all([
+        fetchGenerations("image", 30),
+        fetchGenerations("audio", 30),
+      ]);
+
+      const restored: StudioImage[] = imgs
+        // vision analyses are stored as type "image" too — those have no URL
+        .filter((g) => Boolean(g.outputUrl))
+        .map((g) => ({
+          id: g.id,
+          url: g.outputUrl as string,
+          prompt: g.prompt,
+          userPrompt: String(
+            (g.meta as { userPrompt?: string } | undefined)?.userPrompt || g.prompt
+          ),
+          aspect: String((g.meta as { aspect?: string } | undefined)?.aspect || "1:1"),
+          model: String((g.meta as { model?: string } | undefined)?.model || "BUILDWE Vision"),
+        }));
+
+      if (restored.length) {
+        setImages((prev) => {
+          const seen = new Set(prev.map((i) => i.id));
+          return [...prev, ...restored.filter((r) => !seen.has(r.id))];
+        });
+      }
+      setAudioHistory(
+        auds.map((g) => ({
+          id: g.id,
+          text: g.outputText || g.prompt,
+          voice: String((g.meta as { voice?: string } | undefined)?.voice || "nova"),
+          createdAt: g.createdAt,
+        }))
+      );
+    } catch {
+      /* history is a bonus — never block the workspace */
+    }
+  }, []);
+
   const refreshProjects = useCallback(async () => {
     try {
       const p = await fetchProjects();
@@ -623,6 +674,7 @@ function Dashboard() {
   useEffect(() => {
     refreshMe();
     refreshHistory();
+    refreshGenerations();
     refreshProjects();
     refreshTeams();
     fetchByok()
@@ -636,7 +688,7 @@ function Dashboard() {
     fetchModels()
       .then((m) => setModelsCatalog(m.all || []))
       .catch(() => {});
-  }, [refreshMe, refreshHistory, refreshProjects, refreshTeams]);
+  }, [refreshMe, refreshHistory, refreshGenerations, refreshProjects, refreshTeams]);
 
   const doSaveByok = async (which: "groq" | "openrouter", clear?: boolean) => {
     setByokBusy(true);
@@ -2087,6 +2139,7 @@ function Dashboard() {
               voices={VOICES}
               loading={audioBusy}
               lastSpoken={lastSpoken}
+              history={audioHistory}
               onGenerate={() => runAudioGenerate()}
             />
           ) : (

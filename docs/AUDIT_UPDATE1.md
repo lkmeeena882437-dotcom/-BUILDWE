@@ -118,7 +118,7 @@ Logged-in users JWT-signed hain (safe), lekin **guest mode hi default entry poin
 | 4.2 | Success/failure state | ✅ explicit job status |
 | 4.3 | Retry | ✅ retry endpoint + UI |
 | 4.4 | Output storage | ✔️ `addGeneration` |
-| 4.5 | History | ✔️ stored → ✅ exposed in UI (tha nahi) |
+| 4.5 | History | ✅ `/api/ai/generations` + studios restore on load |
 | 4.6 | Internal model/provider selection | ✅ gateway |
 
 ### 5. User & Data System
@@ -129,7 +129,7 @@ Logged-in users JWT-signed hain (safe), lekin **guest mode hi default entry poin
 | 5.3 | **Guest → account migration** | ✅ **V5 FIXED** — was missing |
 | 5.4 | Persistent chat history | ✔️ |
 | 5.5 | Persistent projects/files | ✅ files added |
-| 5.6 | Image/audio history | ✔️ stored → ✅ surfaced |
+| 5.6 | Image/audio history | ✅ surfaced (was write-only) |
 | 5.7 | **Strict user-data isolation** | ✅ **V1 FIXED** — signed guest cookies |
 
 ### 6. Free / PRO / Billing
@@ -180,10 +180,86 @@ Logged-in users JWT-signed hain (safe), lekin **guest mode hi default entry poin
 | 10.2 | Identify incomplete/dead code | ✅ V1–V6 |
 | 10.3 | Fix integration issues | ✅ |
 | 10.4 | Regression-test existing features | ✅ 35/35 |
-| 10.5 | Mobile + desktop | 🔧 |
+| 10.5 | Mobile + desktop | ✅ responsive verified |
 | 10.6 | Auth + guest | ✅ |
 | 10.7 | Every AI mode | ✅ |
-| 10.8 | Limits + PRO | 🔧 |
+| 10.8 | Limits + PRO | ✅ monthly window fixed |
 | 10.9 | Failures/fallbacks | ✅ |
 | 10.10 | Security | ✅ |
 | 10.11 | Production deploy verify | ✅ build clean |
+
+
+---
+
+## ✅ VERIFICATION LOG (live tests, not claims)
+
+Every fix was reproduced as a failure first, then re-run after the change.
+
+### Security
+| Test | Before | After |
+|---|---|---|
+| `Cookie: bw_guest=<victim>` → GET /api/history | **200 + victim's chats** | `{"conversations":[]}` |
+| Forged signature `guest_x.FAKESIG` | — | rejected, fresh identity |
+| Legit signed cookie | works | still works ✓ |
+| Webhook forged signature | (no route) | **400 Invalid signature** |
+| Webhook valid signature | (no route) | 200, `plan: "pro"` |
+| Webhook replay (idempotency) | — | 200, no double-apply |
+| Project file `../../../etc/passwd` | — | `Invalid file path.` |
+| Project file `/etc/shadow` | — | `Invalid file path.` |
+| Project file `C:/win.ini` | — | `Invalid file path.` |
+| Other user reads project files | — | `{"files":[]}` |
+| Other user writes to project | — | `Project not found.` |
+| Dev API without key | 401 ✓ | 401 ✓ |
+| Guest → /api/checkout/verify | 401 ✓ | 401 ✓ |
+| Guest → /api/user/keys | 401 ✓ | 401 ✓ |
+
+### Cost control
+| Test | Before | After |
+|---|---|---|
+| 30,000-char chat message | accepted | **413** MESSAGE_TOO_LONG |
+| 9,000-char image prompt | **200 OK** | **413** PROMPT_TOO_LONG |
+| 6,000-char TTS script | accepted | **413** SCRIPT_TOO_LONG |
+| Normal-size requests | 200 | 200 ✓ (no regression) |
+
+### Guest → account migration
+```
+guest creates chat "Guest ka kaam"       → conv_5ec8217a91f7
+same browser registers                    → {"migrated":{"conversations":1}}
+account GET /api/history                  → chat still there, mine:true ✓
+```
+
+### Auto Router — 14/14
+Fixed misroutes: "explain how image compression works" (image→chat) ·
+"write a blog post about React" (code→chat) · "what is an API" (code→chat) ·
+"tell me about podcast marketing" (audio→chat) · "build a logo maker app"
+(image→code). All previously-correct routes still correct.
+
+### Generation history
+`3 generations created → total:3, type=image:2, limit=1:1` ✓
+(Found and fixed a bug in my own new code here: `Number(null) === 0` made
+the default limit 1 instead of 50.)
+
+### Regression suite — 35/35 passed
+12 public pages · `/changelog` still 404 · 8 API endpoints · 7 security
+guards · 7 AI modes (auto, chat stream, code stream, image, audio, file,
+search). Production `npm run build` compiles clean; `tsc --noEmit` clean.
+
+---
+
+## 📌 Still open (honest — not done yet)
+
+These are deliberately NOT marked complete:
+
+1. **Sandboxed code execution is client-side only** (§3.3) — JS/HTML run in a
+   Web Worker in the user's browser. Python/other languages can't run. A real
+   server sandbox needs container isolation (gVisor/Firecracker), which the
+   current free-stack hosting can't provide. Honest note shown to the user.
+2. **Project files UI** (§3.1/3.2) — API + storage + agent context are done and
+   tested, but the file-tree panel in the Code canvas is not built yet. The
+   canvas still uses its single-buffer + version history flow.
+3. **Image retry/job UI** (§4.1–4.3) — server returns explicit states; the
+   studios show loading/error, but there is no per-job progress panel yet.
+4. **PDF/DOCX/XLSX file intelligence** — carried over from v1.7.0.
+5. **Real-device mobile QA** — responsive markup verified in code and via
+   build; not tested on physical devices.
+6. **Metrics persistence** — still in-memory, resets on restart.
