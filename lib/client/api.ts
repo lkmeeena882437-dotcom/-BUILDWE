@@ -228,6 +228,86 @@ export async function verifyApi(text: string) {
 
 /* ── Multi-model comparison (Update #2 · P1 mix) ────────── */
 
+/* ── Coding Agent ───────────────────────────────────────── */
+
+export type AgentEvent =
+  | { type: "meta"; projectId: string }
+  | { type: "plan"; text: string }
+  | { type: "step"; n: number; total: number; label: string }
+  | { type: "tool"; tool: string; path?: string; ok: boolean; detail: string }
+  | { type: "check"; ok: boolean; issues: string[]; path?: string }
+  | { type: "message"; text: string }
+  | { type: "done"; summary: string; filesChanged: string[]; verified: boolean }
+  | { type: "error"; text: string }
+  | {
+      type: "result";
+      ok: boolean;
+      summary: string;
+      filesChanged: string[];
+      steps: number;
+      verified: boolean;
+      primaryFile?: { path: string; content: string; lang: string };
+    };
+
+/**
+ * Run the coding agent, streaming progress events as they happen.
+ * Returns the final result event, or null if the run produced none.
+ */
+export async function runAgentApi(
+  input: {
+    goal: string;
+    projectId?: string | null;
+    canvasCode?: string;
+    canvasLang?: string;
+  },
+  onEvent: (e: AgentEvent) => void,
+  signal?: AbortSignal
+): Promise<Extract<AgentEvent, { type: "result" }> | null> {
+  const r = await fetch("/api/ai/agent", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+    ...(signal ? { signal } : {}),
+  });
+
+  if (!r.ok || !r.body) {
+    const j = await readJson(r);
+    const err = new Error(j.error || "The agent couldn't start.") as Error & {
+      code?: string;
+      hint?: string;
+    };
+    if (j.code) err.code = j.code;
+    if (j.hint) err.hint = j.hint;
+    throw err;
+  }
+
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let final: Extract<AgentEvent, { type: "result" }> | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t.startsWith("data:")) continue;
+      try {
+        const ev = JSON.parse(t.slice(5).trim()) as AgentEvent;
+        if (ev.type === "result") final = ev;
+        onEvent(ev);
+      } catch {
+        /* skip malformed frame */
+      }
+    }
+  }
+  return final;
+}
+
 export async function codeActionApi(
   code: string,
   lang: string,

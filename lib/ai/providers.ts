@@ -4,7 +4,14 @@
 
 import { AI_KEYS, AI_MODELS, APP } from "@/lib/config";
 import { SYSTEM_PROMPTS, publicModelLabel, type Plan } from "@/lib/ai/rules";
-import { pickModel, estimateComplexity } from "@/lib/ai/models-catalog";
+import { pickModel, estimateComplexity, modelChain } from "@/lib/ai/models-catalog";
+import {
+  streamVia,
+  completeVia,
+  availableProviders,
+  extractDelta,
+  providerForModel,
+} from "@/lib/ai/provider-registry";
 import {
   buildMind,
   packMessagesForModel,
@@ -174,6 +181,62 @@ async function openRouterStream(
   } catch {
     return null;
   }
+}
+
+/**
+ * Normalise ANY provider's SSE stream into BUILDWE's {token} protocol.
+ * Anthropic and Google use different payload shapes from OpenAI-compatible
+ * vendors, so the delta extractor is chosen by wire format.
+ */
+export function anyStreamToTextSSE(
+  body: ReadableStream<Uint8Array>,
+  wire: "openai" | "anthropic" | "google"
+) {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let buffer = "";
+
+  return new ReadableStream({
+    async start(controller) {
+      const reader = body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            const t = line.trim();
+            if (!t.startsWith("data:")) continue;
+            const data = t.slice(5).trim();
+            if (!data || data === "[DONE]") continue;
+            try {
+              const token = extractDelta(wire, JSON.parse(data));
+              if (token) {
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify({ token })}\n\n`)
+                );
+              }
+            } catch {
+              /* skip malformed frame */
+            }
+          }
+        }
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify({ done: true })}\n\n`)
+        );
+        controller.close();
+      } catch {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({ error: "Response interrupted. Try again." })}\n\n`
+          )
+        );
+        controller.close();
+      }
+    },
+  });
 }
 
 export function openAIStreamToTextSSE(body: ReadableStream<Uint8Array>) {
@@ -374,16 +437,35 @@ export async function streamChatOrCode(opts: {
         ? AI_MODELS.free.code
         : AI_MODELS.free.chat;
 
+  // Which vendors can actually be called on this deployment right now.
+  // Models from unconfigured vendors are dropped before scoring, so the
+  // router never "picks" a model it cannot reach.
+  const live = availableProviders(opts.userKeys);
+
   const catalog = pickModel({
     capability: opts.mode,
     plan: opts.plan,
     prompt: opts.promptForRouting || lastUser,
+    availableProviders: live,
   });
 
-  const preferred =
-    opts.mode === "code"
-      ? [envModel, catalog.id, ...GROQ_CODE_MODELS]
-      : [envModel, catalog.id, ...GROQ_CHAT_MODELS];
+  /**
+   * Build the model chain. Order matters:
+   *   1. explicit env override (operator's deliberate choice)
+   *   2. the router's scored pick
+   *   3. cross-vendor alternates, so one provider outage != capability down
+   *   4. the legacy hardcoded Groq list as a last resort
+   */
+  const chain = modelChain({
+    capability: opts.mode,
+    plan: opts.plan,
+    prompt: opts.promptForRouting || lastUser,
+    availableProviders: live,
+    max: 5,
+  }).map((m) => m.id);
+
+  const legacy = opts.mode === "code" ? GROQ_CODE_MODELS : GROQ_CHAT_MODELS;
+  const preferred = [envModel, catalog.id, ...chain, ...legacy];
 
   let tryModels = Array.from(new Set(preferred.filter(Boolean)));
   if (opts.forceModel) tryModels = [opts.forceModel];
@@ -392,44 +474,31 @@ export async function streamChatOrCode(opts: {
   }
 
   let fallbackNote: string | undefined;
-  let triedPrimary = false;
+  let attempts = 0;
 
-  for (const model of tryModels) {
-    const body = await groqStream(messages, model, opts.userKeys, budget);
-    if (body) {
+  // ── Pass 1: stream, walking the chain across vendors ──────
+  for (const model of tryModels.slice(0, 6)) {
+    const hit = await streamVia(model, messages, budget, opts.userKeys);
+    if (hit) {
       return {
-        stream: openAIStreamToTextSSE(body),
+        stream: anyStreamToTextSSE(hit.body, hit.wire),
         model: publicModelLabel(model, opts.mode),
         live: true,
         mind,
         ...(fallbackNote ? { fallbackNote } : {}),
       };
     }
-    triedPrimary = true;
-  }
-
-  if (triedPrimary) {
-    fallbackNote =
-      "The primary model was unavailable — BUILDWE switched to a backup automatically.";
-  }
-
-  for (const model of tryModels.slice(0, 3)) {
-    const body = await openRouterStream(messages, model, opts.userKeys, budget);
-    if (body) {
-      return {
-        stream: openAIStreamToTextSSE(body),
-        model: publicModelLabel(model, opts.mode),
-        live: true,
-        mind,
-        fallbackNote:
-          fallbackNote ||
-          "Answered via the backup provider — the usual one was busy.",
-      };
+    attempts++;
+    if (attempts === 1) {
+      fallbackNote =
+        "The primary model was unavailable — BUILDWE switched to a backup automatically.";
     }
   }
 
+  // ── Pass 2: non-streaming, same chain ─────────────────────
+  // Some providers reject streaming under load but still answer one-shot.
   for (const model of tryModels.slice(0, 4)) {
-    const text = await groqComplete(messages, model, opts.userKeys, budget);
+    const text = await completeVia(model, messages, budget, opts.userKeys);
     if (text) {
       return {
         stream: textToSSE(text),

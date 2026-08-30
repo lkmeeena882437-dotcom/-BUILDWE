@@ -113,6 +113,8 @@ import {
   verifyApi,
   compareApi,
   codeActionApi,
+  runAgentApi,
+  type AgentEvent as AgentEv,
   fetchProjectFiles,
   readProjectFile,
   saveProjectFileApi,
@@ -532,6 +534,19 @@ function Dashboard() {
   const [projFilesErr, setProjFilesErr] = useState("");
   const [openFileId, setOpenFileId] = useState<string | null>(null);
   const [newFilePath, setNewFilePath] = useState("");
+  // Coding Agent run state — the agent works autonomously, so the user needs
+  // to see each step as it happens rather than a single opaque spinner.
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentLog, setAgentLog] = useState<
+    { label: string; ok?: boolean; kind: "step" | "tool" | "check" | "msg" | "error" }[]
+  >([]);
+  const [agentResult, setAgentResult] = useState<{
+    ok: boolean;
+    summary: string;
+    filesChanged: string[];
+    verified: boolean;
+  } | null>(null);
+  const agentAbort = useRef<AbortController | null>(null);
   const [canvasVersions, setCanvasVersions] = useState<
     { ts: number; code: string; lang: string }[]
   >([]);
@@ -1365,6 +1380,121 @@ function Dashboard() {
     } finally {
       setProjFilesBusy(false);
     }
+  };
+
+
+  /* ── Coding Agent run ───────────────────────────────────── */
+
+  const runCodingAgent = async (goalText?: string) => {
+    const goal = (goalText ?? input).trim();
+    if (!goal || agentBusy) return;
+
+    setError("");
+    setAgentBusy(true);
+    setAgentLog([]);
+    setAgentResult(null);
+    setView("app");
+    setMode("code");
+    setInput("");
+    if (taRef.current) taRef.current.style.height = "48px";
+    beat("agent_run");
+
+    const ctrl = new AbortController();
+    agentAbort.current = ctrl;
+
+    // Show the goal in the transcript so the run has context in the thread.
+    setMessages((ms) => [...ms, { id: rid(), role: "user", content: goal }]);
+
+    try {
+      const result = await runAgentApi(
+        {
+          goal,
+          projectId: convProjectId ?? activeProject ?? undefined,
+          canvasCode: codePanel || undefined,
+          canvasLang: codeLang || undefined,
+        },
+        (ev: AgentEv) => {
+          if (ev.type === "step") {
+            setAgentLog((l) => [...l, { kind: "step", label: `${ev.label}…` }]);
+          } else if (ev.type === "tool") {
+            setAgentLog((l) => [
+              ...l,
+              {
+                kind: "tool",
+                ok: ev.ok,
+                label: `${ev.tool.replace(/_/g, " ")}${ev.path ? ` · ${ev.path}` : ""} — ${ev.detail}`,
+              },
+            ]);
+          } else if (ev.type === "check") {
+            setAgentLog((l) => [
+              ...l,
+              {
+                kind: "check",
+                ok: ev.ok,
+                label: ev.ok
+                  ? "Checks passed"
+                  : `Found ${ev.issues.length} issue(s) — fixing`,
+              },
+            ]);
+          } else if (ev.type === "message") {
+            setAgentLog((l) => [...l, { kind: "msg", label: ev.text }]);
+          } else if (ev.type === "error") {
+            setAgentLog((l) => [...l, { kind: "error", ok: false, label: ev.text }]);
+          }
+        },
+        ctrl.signal
+      );
+
+      if (result) {
+        setAgentResult({
+          ok: result.ok,
+          summary: result.summary,
+          filesChanged: result.filesChanged,
+          verified: result.verified,
+        });
+
+        // Drop the finished artifact straight into the canvas.
+        if (result.primaryFile) {
+          setCodePanel(result.primaryFile.content);
+          setCodeLang(result.primaryFile.lang || "html");
+          setCanvasTab("code");
+        }
+
+        setMessages((ms) => [
+          ...ms,
+          {
+            id: rid(),
+            role: "assistant",
+            content: [
+              result.summary,
+              result.filesChanged.length
+                ? `\n\n**Files changed:** ${result.filesChanged.join(", ")}`
+                : "",
+              result.verified ? "\n\n✓ Verified — checks passed." : "",
+            ]
+              .filter(Boolean)
+              .join(""),
+          },
+        ]);
+
+        void loadProjFiles();
+        refreshMe();
+      }
+    } catch (e) {
+      const msg = (e as Error).message || "The agent couldn't finish.";
+      setError(msg);
+      setAgentLog((l) => [...l, { kind: "error", ok: false, label: msg }]);
+    } finally {
+      setAgentBusy(false);
+      agentAbort.current = null;
+    }
+  };
+
+  const stopAgent = () => {
+    agentAbort.current?.abort();
+    agentAbort.current = null;
+    setAgentBusy(false);
+    setAgentLog((l) => [...l, { kind: "msg", label: "Stopped by you." }]);
   };
 
   const send = async (
@@ -2921,6 +3051,35 @@ function Dashboard() {
                     )}
                   </div>
                   <div className="flex items-center gap-1">
+                    {/* The agent is the headline action: it plans, writes files,
+                        verifies and fixes on its own, unlike the single-shot
+                        Fix/Optimize/Refactor buttons beside it. */}
+                    <button
+                      type="button"
+                      title="Agent: plans, writes project files, verifies and fixes them on its own"
+                      aria-label={agentBusy ? "Stop agent" : "Run coding agent"}
+                      onClick={() => (agentBusy ? stopAgent() : runCodingAgent())}
+                      disabled={!agentBusy && !input.trim()}
+                      className={clsx(
+                        "flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold transition disabled:opacity-35",
+                        agentBusy
+                          ? "bg-red-500/20 text-red-300 hover:bg-red-500/30"
+                          : "bg-[var(--accent)] text-white hover:opacity-90"
+                      )}
+                    >
+                      {agentBusy ? (
+                        <>
+                          <Square className="h-3.5 w-3.5" />
+                          <span className="hidden xl:inline">Stop</span>
+                        </>
+                      ) : (
+                        <>
+                          <Bot className="h-3.5 w-3.5" />
+                          <span className="hidden xl:inline">Agent</span>
+                        </>
+                      )}
+                    </button>
+                    <span className="mx-0.5 h-4 w-px bg-white/10" />
                     {([
                       ["run", "Run", Play, "HTML preview me chalao · JS sandboxed worker me"],
                       ["test", "Test", FlaskConical, "AI se runnable tests banao aur chalao"],
@@ -2961,6 +3120,90 @@ function Dashboard() {
                     }}>Save</button>
                   </div>
                 </div>
+                {(agentBusy || agentLog.length > 0) && (
+                  <div
+                    className="max-h-52 shrink-0 overflow-y-auto border-b border-white/10 px-4 py-2.5"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <div className="mb-1.5 flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--accent)]">
+                        <Bot className="h-3 w-3" />
+                        {agentBusy ? "Agent working" : "Agent run"}
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {agentBusy && (
+                          <Loader2 className="h-3 w-3 animate-spin text-white/50" />
+                        )}
+                        {!agentBusy && (
+                          <button
+                            type="button"
+                            aria-label="Clear agent log"
+                            className="rounded px-1.5 text-[11px] text-white/40 hover:bg-white/10 hover:text-white/80"
+                            onClick={() => {
+                              setAgentLog([]);
+                              setAgentResult(null);
+                            }}
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <ol className="flex flex-col gap-0.5">
+                      {agentLog.map((entry, i) => (
+                        <li
+                          key={i}
+                          className={clsx(
+                            "flex items-start gap-1.5 font-mono text-[11px] leading-relaxed",
+                            entry.kind === "error"
+                              ? "text-red-300"
+                              : entry.ok === false
+                                ? "text-amber-300"
+                                : entry.kind === "check" && entry.ok
+                                  ? "text-emerald-300"
+                                  : entry.kind === "step"
+                                    ? "text-white/75"
+                                    : "text-white/45"
+                          )}
+                        >
+                          <span aria-hidden className="shrink-0">
+                            {entry.kind === "error"
+                              ? "✕"
+                              : entry.kind === "check"
+                                ? entry.ok
+                                  ? "✓"
+                                  : "⚠"
+                                : entry.kind === "step"
+                                  ? "▸"
+                                  : "·"}
+                          </span>
+                          <span className="min-w-0 break-words">{entry.label}</span>
+                        </li>
+                      ))}
+                    </ol>
+                    {agentResult && (
+                      <div
+                        className={clsx(
+                          "mt-2 rounded-xl px-2.5 py-2 text-[11px]",
+                          agentResult.verified
+                            ? "bg-emerald-500/15 text-emerald-200"
+                            : "bg-amber-500/15 text-amber-200"
+                        )}
+                      >
+                        <strong className="font-semibold">
+                          {agentResult.verified ? "✓ Verified · " : "Finished · "}
+                        </strong>
+                        {agentResult.summary}
+                        {agentResult.filesChanged.length > 0 && (
+                          <div className="mt-1 text-white/50">
+                            {agentResult.filesChanged.join(" · ")}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {canvasTab === "files" ? (
                   <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4">
                     {!currentProjectId ? (

@@ -711,7 +711,7 @@ export function deleteProject(id: string, userId: string) {
 const MAX_FILES_PER_PROJECT = 60;
 const MAX_FILE_CHARS = 120_000;
 
-function normalizeFilePath(raw: string): string | null {
+export function normalizeFilePath(raw: string): string | null {
   const p = String(raw || "").trim().replace(/\\/g, "/");
 
   // Reject traversal, absolute paths, drive letters and control characters.
