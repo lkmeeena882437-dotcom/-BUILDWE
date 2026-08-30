@@ -27,7 +27,7 @@ export async function GET() {
     keyless.includes(provider) ||
     (kind === "image" ? imageProviders : chatProviders).includes(provider);
 
-  const selectable = (["chat", "code", "image", "audio"] as const).reduce(
+  const selectable = (["chat", "code", "image", "audio", "stt", "vision"] as const).reduce(
     (acc, cap) => {
       acc[cap] = MODEL_CATALOG.filter((m) => m.capability === cap).map((m) => ({
         id: m.id,

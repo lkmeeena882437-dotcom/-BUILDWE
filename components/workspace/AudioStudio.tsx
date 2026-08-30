@@ -10,8 +10,10 @@ import {
   Volume2,
   AlertTriangle,
   RotateCcw,
+  FileAudio,
 } from "lucide-react";
 import clsx from "clsx";
+import { transcribeAudio } from "@/lib/client/api";
 
 export type VoiceOpt = {
   id: string;
@@ -59,6 +61,77 @@ export function AudioStudio({
   const [showAll, setShowAll] = useState(false);
   const [playing, setPlaying] = useState(false);
   const utterRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  // Voice: Listen — record from the mic and turn it into text in the script box.
+  const [listening, setListening] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [sttError, setSttError] = useState<string | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  const stopRecording = () => {
+    recorderRef.current?.stop();
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    setListening(false);
+  };
+
+  const toggleListen = async () => {
+    if (listening) {
+      stopRecording();
+      return;
+    }
+    if (typeof window === "undefined" || !window.isSecureContext) {
+      setSttError("Microphone needs a secure (https) connection.");
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setSttError("This browser doesn't support microphone recording.");
+      return;
+    }
+    setSttError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const rec = new MediaRecorder(stream);
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
+      rec.onstop = async () => {
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        if (blob.size < 200) {
+          setTranscribing(false);
+          return;
+        }
+        setTranscribing(true);
+        try {
+          const res = await transcribeAudio(blob, "dictation.webm");
+          // Real transcript → prepend to the script box. Honest offline reply →
+          // surface it as an error banner instead of polluting the script.
+          if (res.text && res.live) {
+            setText(`${text}${text ? "\n" : ""}${res.text}`.slice(0, 5000));
+          }
+          setSttError(res.live ? null : res.text);
+        } catch (e) {
+          setSttError((e as Error)?.message || "Couldn't transcribe that audio.");
+        } finally {
+          setTranscribing(false);
+        }
+      };
+      recorderRef.current = rec;
+      rec.start();
+      setListening(true);
+    } catch {
+      setSttError("Microphone access was denied.");
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
 
   const liveVoices = useMemo(
     () => voices.filter((v) => v.tier !== "soon"),
@@ -216,9 +289,34 @@ export function AudioStudio({
                   Rendering voice…
                 </span>
               )}
+              {transcribing && (
+                <span
+                  className="inline-flex items-center gap-1.5 text-[11px]"
+                  style={{ color: "var(--muted)" }}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Listening back…
+                </span>
+              )}
               <button
                 type="button"
-                disabled={!text.trim() || loading}
+                disabled={loading || transcribing}
+                onClick={toggleListen}
+                className="inline-flex h-11 items-center gap-2 rounded-2xl border px-4 text-sm font-semibold"
+                style={
+                  listening
+                    ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" }
+                    : { borderColor: "var(--border)", color: "var(--muted)" }
+                }
+              >
+                <FileAudio className="h-4 w-4" />
+                {listening ? "Stop" : "Listen"}
+              </button>
+              <button
+                type="button"
+                disabled={!text.trim() || loading || transcribing}
                 onClick={onGenerate}
                 className="inline-flex h-11 items-center gap-2 rounded-2xl px-5 text-sm font-semibold text-white disabled:opacity-40"
                 style={{ background: "var(--accent)" }}
@@ -231,6 +329,17 @@ export function AudioStudio({
                 Convert to speech
               </button>
             </div>
+
+            {sttError && (
+              <div
+                className="mt-2 flex items-center gap-2 rounded-xl border px-3 py-1.5 text-[11px]"
+                style={{ borderColor: "var(--warn)", background: "var(--warn-soft)", color: "var(--warn)" }}
+                role="alert"
+              >
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                <span>{sttError}</span>
+              </div>
+            )}
 
             {failure && (
               <div

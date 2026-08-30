@@ -10,7 +10,14 @@
  * Add more rows here anytime — gateway reads by id.
  */
 
-export type Capability = "chat" | "code" | "image" | "audio" | "router";
+export type Capability =
+  | "chat"
+  | "code"
+  | "image"
+  | "audio"
+  | "stt"
+  | "vision"
+  | "router";
 export type ModelTier = "free" | "pro" | "byok";
 export type ProviderId =
   | "groq"
@@ -23,7 +30,14 @@ export type ProviderId =
   | "deepgram"
   | "elevenlabs"
   | "cartesia"
-  | "pollinations";
+  | "pollinations"
+  | "mistral"
+  | "deepseek"
+  | "together"
+  | "stability"
+  | "replicate"
+  | "goapi"
+  | "playht";
 
 export type CatalogModel = {
   id: string;
@@ -173,6 +187,67 @@ export const MODEL_CATALOG: CatalogModel[] = [
     latency: "medium",
     strengths: ["value", "reasoning", "multilingual"],
   },
+  {
+    id: "gpt-4o",
+    label: "GPT-4o",
+    provider: "openai",
+    capability: "chat",
+    tiers: ["pro", "byok"],
+    quality: 5,
+    cost: 4,
+    latency: "fast",
+    strengths: ["reasoning", "instruction", "multilingual", "tools"],
+    envKey: "AI_CHAT_MODEL_PRO",
+    notes: "All-rounder flagship — general questions and multi-step reasoning",
+  },
+  {
+    id: "gemini-1.5-pro",
+    label: "Gemini 1.5 Pro",
+    provider: "google",
+    capability: "chat",
+    tiers: ["pro", "byok"],
+    quality: 5,
+    cost: 4,
+    latency: "medium",
+    strengths: ["long-context", "multimodal", "summarisation", "document"],
+    notes: "2M-token context — routed for very large documents/PDFs",
+  },
+  {
+    id: "llama-3.1-70b-versatile",
+    label: "Llama 3.1 70B",
+    provider: "groq",
+    capability: "chat",
+    tiers: ["free", "pro"],
+    quality: 4,
+    cost: 2,
+    latency: "fast",
+    strengths: ["general", "reasoning", "hindi-english"],
+    notes: "Fast open-weight reasoning on Groq LPU",
+  },
+  {
+    id: "llama-3.1-405b-reasoning",
+    label: "Llama 3.1 405B",
+    provider: "groq",
+    capability: "chat",
+    tiers: ["pro"],
+    quality: 5,
+    cost: 4,
+    latency: "medium",
+    strengths: ["deep-reasoning", "complex", "analysis"],
+    notes: "Highest-capacity open-weight route — reserved for hard problems",
+  },
+  {
+    id: "mistral-large-latest",
+    label: "Mistral Large 2",
+    provider: "mistral",
+    capability: "chat",
+    tiers: ["pro", "byok"],
+    quality: 4,
+    cost: 3,
+    latency: "medium",
+    strengths: ["logic", "multilingual", "european", "code"],
+    notes: "Multilingual open-weight powerhouse — excellent backup/fallback",
+  },
 
   /* ── Code ─────────────────────────────────────────────── */
   {
@@ -247,6 +322,54 @@ export const MODEL_CATALOG: CatalogModel[] = [
     strengths: ["budget-code", "algorithms"],
     notes: "Cross-vendor backup so a Groq outage doesn't kill coding",
   },
+  {
+    id: "claude-3-opus-20240229",
+    label: "Claude 3 Opus",
+    provider: "anthropic",
+    capability: "code",
+    tiers: ["pro", "byok"],
+    quality: 5,
+    cost: 5,
+    latency: "slow",
+    strengths: ["architecture", "system-design", "deep-reasoning", "complex-apps"],
+    notes: "Heavy architecture/system-design — slower, deeper reasoning",
+  },
+  {
+    id: "gpt-4o",
+    label: "GPT-4o (Code)",
+    provider: "openai",
+    capability: "code",
+    tiers: ["pro", "byok"],
+    quality: 5,
+    cost: 4,
+    latency: "fast",
+    strengths: ["multi-language", "python", "data-analysis", "tools"],
+    notes: "Code Canvas — multi-language accuracy + data analysis",
+  },
+  {
+    id: "deepseek-coder-v2",
+    label: "DeepSeek Coder V2",
+    provider: "deepseek",
+    capability: "code",
+    tiers: ["free", "pro", "byok"],
+    quality: 5,
+    cost: 1,
+    latency: "medium",
+    strengths: ["code-gen", "edge-case", "value", "algorithms"],
+    notes: "GPT-4-level coding at a fraction of the cost — open weight",
+  },
+  {
+    id: "Qwen/Qwen2.5-Coder-32B-Instruct",
+    label: "Qwen 2.5 Coder (Together)",
+    provider: "together",
+    capability: "code",
+    tiers: ["free", "pro", "byok"],
+    quality: 4,
+    cost: 1,
+    latency: "medium",
+    strengths: ["code-gen", "edge-case", "logic-puzzles", "budget-code"],
+    notes: "Specialised edge-case/algorithm fallback model",
+  },
 
   /* ── Image ────────────────────────────────────────────── */
   {
@@ -319,6 +442,68 @@ export const MODEL_CATALOG: CatalogModel[] = [
     strengths: ["budget", "fallback", "styles"],
   },
 
+  /* ── Image ── premium top-tier (new providers) ───────────── */
+  {
+    id: "midjourney-v6.1",
+    label: "Midjourney v6.1",
+    provider: "goapi",
+    capability: "image",
+    tiers: ["pro", "byok"],
+    quality: 5,
+    cost: 5,
+    latency: "slow",
+    strengths: ["cinematic", "artistic", "premium", "style"],
+    notes: "Cinematic premium shots (via GoAPI wrapper — no official API)",
+  },
+  {
+    id: "dall-e-3",
+    label: "DALL·E 3",
+    provider: "openai",
+    capability: "image",
+    tiers: ["pro", "byok"],
+    quality: 5,
+    cost: 4,
+    latency: "medium",
+    strengths: ["prompt-adherence", "diagram", "vector-art", "instruction"],
+    notes: "Strong prompt adherence — exact diagrams & vector art",
+  },
+  {
+    id: "stabilityai/stable-diffusion-3-large",
+    label: "Stable Diffusion 3",
+    provider: "stability",
+    capability: "image",
+    tiers: ["pro", "byok"],
+    quality: 4,
+    cost: 3,
+    latency: "medium",
+    strengths: ["customizable", "aspect-ratio", "fast-render", "styles"],
+    notes: "Highly customisable + specific aspect ratios",
+  },
+  {
+    id: "gpt-4o",
+    label: "GPT-4o Vision",
+    provider: "openai",
+    capability: "vision",
+    tiers: ["pro", "byok"],
+    quality: 5,
+    cost: 4,
+    latency: "medium",
+    strengths: ["image-read", "screenshot-to-code", "ocr", "analysis"],
+    notes: "Reads images (UI screenshot → code). Not a generator.",
+  },
+  {
+    id: "claude-3-5-sonnet-20241022",
+    label: "Claude 3.5 Sonnet Vision",
+    provider: "anthropic",
+    capability: "vision",
+    tiers: ["pro", "byok"],
+    quality: 5,
+    cost: 4,
+    latency: "medium",
+    strengths: ["image-read", "screenshot-to-code", "analysis", "vision"],
+    notes: "Reads images. Not a generator.",
+  },
+
   /* ── Audio / TTS ──────────────────────────────────────── */
   {
     id: "openai-audio",
@@ -389,6 +574,56 @@ export const MODEL_CATALOG: CatalogModel[] = [
     cost: 2,
     latency: "fast",
     strengths: ["value-tts", "conversational"],
+  },
+  {
+    id: "eleven_flash_v2_5",
+    label: "ElevenLabs Flash v2.5",
+    provider: "elevenlabs",
+    capability: "audio",
+    tiers: ["pro", "byok"],
+    quality: 4,
+    cost: 3,
+    latency: "fast",
+    strengths: ["low-latency", "conversational", "voices"],
+    notes: "Fast ElevenLabs voice for interactive chat",
+  },
+  {
+    id: "playht",
+    label: "PlayHT",
+    provider: "playht",
+    capability: "audio",
+    tiers: ["pro", "byok"],
+    quality: 4,
+    cost: 3,
+    latency: "medium",
+    strengths: ["voice-clones", "expressive", "multilingual"],
+    notes: "Voice cloning + expressive TTS alternative to ElevenLabs",
+  },
+
+  /* ── Speech-to-Text (STT) — Voice: Listen ─────────────── */
+  {
+    id: "whisper-large-v3",
+    label: "Whisper v3 (Groq)",
+    provider: "groq",
+    capability: "stt",
+    tiers: ["free", "pro", "byok"],
+    quality: 5,
+    cost: 1,
+    latency: "fast",
+    strengths: ["transcribe", "real-time", "multilingual"],
+    notes: "Ultra-fast STT via Groq LPU — real-time speech recognition",
+  },
+  {
+    id: "nova-2",
+    label: "Deepgram Nova-2",
+    provider: "deepgram",
+    capability: "stt",
+    tiers: ["pro", "byok"],
+    quality: 5,
+    cost: 3,
+    latency: "fast",
+    strengths: ["streaming", "low-latency", "live-call"],
+    notes: "Fastest STT — near-zero latency for live voice chat",
   },
 ];
 
@@ -581,6 +816,56 @@ export function modelChain(opts: {
   return unique.slice(0, opts.max ?? 5);
 }
 
+/**
+ * BUILDWE Auto-Router model strategy (Phase 10).
+ *
+ * `pickModel` already ranks the catalog by capability + task-kind blending.
+ * This helper makes the operator's *intent → model* policy explicit on top of
+ * that, so a very large document is steered to a long-context model, a code
+ * ask is steered to the strongest coding model, and so on. It is additive: it
+ * returns a hand-picked id for the strong signals, otherwise `undefined` so the
+ * caller falls through to the normal scored pick.
+ *
+ * Policy (mirrors the product spec):
+ *   - "generate image" / "draw"  → premium image model (FLUX Pro / Midjourney)
+ *     is handled by the image studio route, which already routes by modelId.
+ *   - "React"/"Python"/"bug"     → coding flagship (Claude 3.5 Sonnet)
+ *   - normal question            → flagship chat (GPT-4o)
+ *   - very large file/document   → long-context (Gemini 1.5 Pro)
+ */
+export function routeModelFor(opts: {
+  capability: Exclude<Capability, "router">;
+  plan: "free" | "pro";
+  prompt: string;
+  /** char count of any attached (large) document context */
+  contextSize?: number;
+}): string | undefined {
+  const { capability, plan, prompt, contextSize } = opts;
+  if (plan !== "pro") return undefined; // free tier stays cost-driven
+
+  const p = prompt.toLowerCase();
+  const LARGE_DOC = "gemini-1.5-pro";
+
+  // Very large context → Gemini 1.5 Pro (2M tokens)
+  const largeContext = Boolean(contextSize && contextSize > 100_000);
+  const longDocAsk = /\b(pdf|book|report|research paper|thesis|long document|bade (document|pdf)|summary of this (file|doc))\b/.test(p);
+  if (capability === "chat" && (largeContext || longDocAsk)) {
+    return LARGE_DOC;
+  }
+
+  // Code ask → strongest coding model (Claude 3.5 Sonnet as the king of code)
+  if (capability === "code" && /\b(react|python|\bbug\b|debug|refactor|component|next\\.?js)\b/.test(p)) {
+    return "claude-3-5-sonnet-20241022";
+  }
+
+  // Normal question → flagship all-round chat model (GPT-4o)
+  if (capability === "chat" && !/\b(pdf|book|report|research paper|thesis|long document)\b/.test(p)) {
+    return "gpt-4o";
+  }
+
+  return undefined;
+}
+
 /** Human-readable matrix for About / docs */
 export function modelsByCapability() {
   const caps: Exclude<Capability, "router">[] = [
@@ -588,6 +873,8 @@ export function modelsByCapability() {
     "code",
     "image",
     "audio",
+    "stt",
+    "vision",
   ];
   return caps.map((c) => ({
     capability: c,

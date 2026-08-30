@@ -38,23 +38,33 @@ export const AI_KEYS = {
   openrouter: env("OPENROUTER_API_KEY"),
   openai: env("OPENAI_API_KEY"),
   anthropic: env("ANTHROPIC_API_KEY"),
+  google: env("GOOGLE_API_KEY"),
   hf: env("HF_TOKEN"),
   fal: env("FAL_KEY"),
+  mistral: env("MISTRAL_API_KEY"),
+  deepseek: env("DEEPSEEK_API_KEY"),
+  together: env("TOGETHER_API_KEY"),
+  stability: env("STABILITY_API_KEY"),
+  replicate: env("REPLICATE_API_TOKEN"),
+  goapi: env("GOAPI_API_KEY"),
+  playht: env("PLAYHT_API_KEY"),
+  elevenlabs: env("ELEVENLABS_API_KEY"),
+  deepgram: env("DEEPGRAM_API_KEY"),
   byokSecret: env("BYOK_ENCRYPTION_SECRET"),
 } as const;
 
 export const AI_MODELS = {
   free: {
     chat: env("AI_CHAT_MODEL", "llama-3.3-70b-versatile"),
-    code: env("AI_CODE_MODEL", "llama-3.3-70b-versatile"),
+    code: env("AI_CODE_MODEL", "qwen-2.5-coder-32b"),
     image: env("AI_IMAGE_MODEL", "fal-ai/flux/schnell"),
-    audio: env("AI_AUDIO_MODEL", "default-tts"),
+    audio: env("AI_AUDIO_MODEL", "openai-audio"),
   },
   pro: {
-    chat: env("AI_CHAT_MODEL_PRO", "llama-3.3-70b-versatile"),
-    code: env("AI_CODE_MODEL_PRO", "llama-3.3-70b-versatile"),
+    chat: env("AI_CHAT_MODEL_PRO", "gpt-4o"),
+    code: env("AI_CODE_MODEL_PRO", "claude-3-5-sonnet-20241022"),
     image: env("AI_IMAGE_MODEL_PRO", "fal-ai/flux/dev"),
-    audio: env("AI_AUDIO_MODEL_PRO", "premium-tts"),
+    audio: env("AI_AUDIO_MODEL_PRO", "eleven_multilingual_v2"),
   },
 } as const;
 

@@ -76,7 +76,8 @@ GROQ_API_KEY=gsk_...
 | `POST /api/ai/audio` | TTS plan |
 | `POST /api/ai/auto` | Intent detect |
 | `POST /api/ai/search` | Web search (DDG, key-free) |
-| `POST /api/ai/vision` | Image understanding |
+| `POST /api/ai/vision` | Image understanding (GPT-4o / Claude / Groq) |
+| `POST /api/ai/transcribe` | Speech-to-text (Deepgram Nova-2 / Whisper) |
 | `POST /api/ai/file` | CSV/text analysis |
 | `GET/POST/DELETE /api/projects` | Project folders |
 | `GET/POST /api/teams` | Team workspaces (create/join/invite/leave/assign) |
