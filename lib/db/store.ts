@@ -559,12 +559,42 @@ export function createConversation(input: {
     updatedAt: now,
   };
   db.conversations.unshift(c);
-  // keep memory bounded on serverless
-  if (db.conversations.length > 200) {
-    db.conversations = db.conversations.slice(0, 200);
-  }
+  // Keep memory bounded PER USER, never globally.
+  //
+  // This used to be `db.conversations.slice(0, 200)` across the whole table,
+  // which meant one busy user (or 200 visitors) silently deleted everyone
+  // else's chats — proven in testing: a user's chat vanished after 205 other
+  // conversations were created. Trimming per owner keeps the table bounded
+  // without ever touching another account's data.
+  trimPerUser(db, input.userId);
   write(db);
   return c;
+}
+
+/** Per-owner retention limits — bounded storage without cross-user deletion. */
+const RETENTION = {
+  conversationsPerUser: 200,
+  generationsPerUser: 300,
+  sharesPerUser: 50,
+  paymentsPerUser: 100,
+  /** messages inside a single conversation */
+  messagesPerConversation: 400,
+} as const;
+
+function trimPerUser(db: DB, userId: string) {
+  const mine = db.conversations.filter((c) => c.userId === userId);
+  if (mine.length <= RETENTION.conversationsPerUser) return;
+  // Oldest-first removal, and only from this owner's rows.
+  const keep = new Set(
+    mine
+      .slice()
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, RETENTION.conversationsPerUser)
+      .map((c) => c.id)
+  );
+  db.conversations = db.conversations.filter(
+    (c) => c.userId !== userId || keep.has(c.id)
+  );
 }
 
 export function appendMessages(
@@ -601,6 +631,16 @@ export function appendMessages(
     i = 0;
   }
   db.conversations[i].messages.push(...messages);
+  // Bound a single conversation (F3): without this one long-running chat grows
+  // without limit, and since every write serialises the whole store, that one
+  // chat slows down every request for every user. Oldest turns drop first —
+  // the model already works from a compressed window of recent turns.
+  const msgs = db.conversations[i].messages;
+  if (msgs.length > RETENTION.messagesPerConversation) {
+    db.conversations[i].messages = msgs.slice(
+      msgs.length - RETENTION.messagesPerConversation
+    );
+  }
   db.conversations[i].updatedAt = new Date().toISOString();
   if (title) db.conversations[i].title = title.slice(0, 80);
   write(db);
@@ -874,7 +914,14 @@ export function createShare(conversationId: string, userId: string) {
     createdAt: new Date().toISOString(),
   };
   db.shares.unshift(s);
-  db.shares = db.shares.slice(0, 200);
+  // Per-owner cap (was a global slice that evicted other users' share links).
+  const mineShares = db.shares.filter((x) => x.userId === userId);
+  if (mineShares.length > RETENTION.sharesPerUser) {
+    const keep = new Set(
+      mineShares.slice(0, RETENTION.sharesPerUser).map((x) => x.id)
+    );
+    db.shares = db.shares.filter((x) => x.userId !== userId || keep.has(x.id));
+  }
   write(db);
   return s;
 }
@@ -907,7 +954,17 @@ export function addPayment(input: Omit<Payment, "id" | "createdAt">) {
     createdAt: new Date().toISOString(),
   };
   db.payments.unshift(row);
-  db.payments = db.payments.slice(0, 300);
+  // Per-owner cap — a payment record is a financial trail; one user's
+  // activity must never evict another user's receipts.
+  const minePay = db.payments.filter((x) => x.userId === input.userId);
+  if (minePay.length > RETENTION.paymentsPerUser) {
+    const keep = new Set(
+      minePay.slice(0, RETENTION.paymentsPerUser).map((x) => x.id)
+    );
+    db.payments = db.payments.filter(
+      (x) => x.userId !== input.userId || keep.has(x.id)
+    );
+  }
   write(db);
   return row;
 }
@@ -1128,7 +1185,16 @@ export function addGeneration(g: Omit<Generation, "id" | "createdAt">) {
     createdAt: new Date().toISOString(),
   };
   db.generations.unshift(row);
-  db.generations = db.generations.slice(0, 300);
+  // Per-owner cap (was global slice(0,300), which deleted other users' work).
+  const mineGen = db.generations.filter((x) => x.userId === g.userId);
+  if (mineGen.length > RETENTION.generationsPerUser) {
+    const keep = new Set(
+      mineGen.slice(0, RETENTION.generationsPerUser).map((x) => x.id)
+    );
+    db.generations = db.generations.filter(
+      (x) => x.userId !== g.userId || keep.has(x.id)
+    );
+  }
   write(db);
   return row;
 }

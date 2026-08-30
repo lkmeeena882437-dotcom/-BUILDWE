@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
-import { webSearch } from "@/lib/ai/search";
+import { webSearchDetailed } from "@/lib/ai/search";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,8 +24,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Query required." }, { status: 400 });
     }
 
-    const results = await webSearch(query, { max: 5 });
-    const res = NextResponse.json({ ok: true, query, results });
+    const outcome = await webSearchDetailed(query, { max: 5 });
+    // Report the real outcome: an empty list with no explanation used to look
+    // identical to a broken backend from the client's point of view.
+    const res = NextResponse.json({
+      ok: outcome.status === "ok",
+      query,
+      results: outcome.results,
+      status: outcome.status,
+      ...(outcome.reason ? { reason: outcome.reason } : {}),
+    });
     attachGuestCookie(res, session.userId);
     return res;
   } catch (e) {

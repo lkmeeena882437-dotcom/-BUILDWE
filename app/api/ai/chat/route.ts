@@ -3,7 +3,12 @@ import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
 import { streamChatOrCode } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
-import { composeSearchAnswer, searchContextBlock, webSearch } from "@/lib/ai/search";
+import {
+  composeSearchAnswer,
+  searchContextBlock,
+  webSearchDetailed,
+  type SearchResult,
+} from "@/lib/ai/search";
 import { understandPrompt } from "@/lib/ai/understanding";
 import { qualityGate } from "@/lib/ai/quality";
 import { estimateComplexity } from "@/lib/ai/models-catalog";
@@ -71,9 +76,14 @@ export async function POST(req: NextRequest) {
     const wantSearch = Boolean(body.webSearch);
 
     // ── Web search grounding (free, no key needed) ──────────
-    let searchResults: Awaited<ReturnType<typeof webSearch>> = [];
+    let searchResults: SearchResult[] = [];
+    let searchReason: string | undefined;
     if (wantSearch && userText) {
-      searchResults = await webSearch(userText, { max: 5 });
+      const outcome = await webSearchDetailed(userText, { max: 5 });
+      searchResults = outcome.results;
+      // Keep the reason so an offline reply can explain the empty result set
+      // instead of silently pretending the search never happened.
+      if (!outcome.results.length) searchReason = outcome.reason;
     }
 
     let conversationId = (body.conversationId as string | undefined) || uid("conv");
@@ -212,8 +222,14 @@ export async function POST(req: NextRequest) {
       userKeys,
       ...(altModel ? { preferOffset: altModel } : {}),
       // when offline + search on, stream the composed sourced answer instead
-      ...(wantSearch && searchResults.length
-        ? { offlineOverrideText: composeSearchAnswer(userText, searchResults) }
+      ...(wantSearch
+        ? {
+            offlineOverrideText: composeSearchAnswer(
+              userText,
+              searchResults,
+              searchReason
+            ),
+          }
         : {}),
     });
 

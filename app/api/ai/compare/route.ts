@@ -92,7 +92,7 @@ export async function POST(req: NextRequest) {
     if (!liveLanes.length) bump("compare_offline");
     if (!liveLanes.length) {
       const message =
-        "Model comparison needs at least one live model — add a free Groq key in Settings → API keys (or platform keys on the server), then try again.";
+        "Model comparison needs at least one live model. Connect your own key in Settings → API keys, or try again shortly.";
       const res = NextResponse.json({
         ok: true,
         available: false,

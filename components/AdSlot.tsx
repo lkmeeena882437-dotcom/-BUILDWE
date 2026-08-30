@@ -19,7 +19,7 @@ const HOUSE_ADS = [
   {
     icon: Sparkles,
     title: "BUILDWE works offline-demo",
-    body: "Drop a free Groq key in Settings → API keys to go fully live in 30 seconds.",
+    body: "Connect your own model key in Settings → API keys to unlock full-quality answers.",
     cta: "Add key",
     href: "#byok",
   },

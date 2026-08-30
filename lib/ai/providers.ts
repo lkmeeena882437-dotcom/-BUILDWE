@@ -12,6 +12,7 @@ import {
   type MindProfile,
 } from "@/lib/ai/mind";
 import { mergeImagePrompt } from "@/lib/ai/image-prompt";
+import { offlineAnswer } from "@/lib/ai/offline-brain";
 import {
   fetchWithTimeout,
   guardMessages,
@@ -251,40 +252,17 @@ function smartOfflineChat(
   prompt: string,
   history: { role: string; content: string }[]
 ): string {
-  const raw = prompt.trim();
-  const p = raw.toLowerCase();
-  const isHinglish =
-    /kya|hai|ho|haan|nahi|kaise|kese|kyu|mujhe|tum|bhai|yaar|karo|kro|baat|hinglish|samajh|plan|kaam/.test(
-      p
-    );
-
-  if (
-    /^(hi+|h+e+y+|h+e+l+o+|hy+|hii+|hello|namaste)\b/i.test(p) ||
-    /kese ho|kaise ho|kya haal|what's up/.test(p)
-  ) {
-    return isHinglish
-      ? `Hey! Main theek hoon 👍\n\nMain **BUILDWE** hoon. Chat, code, image, voice — sab yahin.\n\nBolo aaj kya karna hai?`
-      : `Hey — all good.\n\nI'm **BUILDWE**. Chat, code, image, or voice — what do you need?`;
-  }
-
-  if (/hinglish|hindi me|hindi mein/.test(p)) {
-    return `Theek hai — ab **Hinglish** mein baat karta hoon.\n\nExact bolo kya chahiye.`;
-  }
-
-  if (raw.length < 50 && !/code|build|write|plan|help|explain/.test(p)) {
-    return isHinglish
-      ? `Samajh gaya: “${raw}”\n\nClear bolo — baat, draft, code, image, ya voice?`
-      : `Got “${raw}”.\n\nWhat do you need — answer, draft, code, image, or voice?`;
-  }
-
   void history;
-  return isHinglish
-    ? `Tumne kaha: **“${raw.slice(0, 280)}”**\n\nSeedha bolo result kya chahiye — explanation, plan, draft, ya code — next reply mein wahi dunga.`
-    : `You said: **“${raw.slice(0, 280)}”**\n\nTell me the result you want (answer / plan / draft / code) and I’ll deliver that.`;
+  // Delegated to the offline brain: computes real answers (math, conversions),
+  // returns usable structure for writing/code asks, and is honest — never
+  // echoes the user's prompt back as a question. See lib/ai/offline-brain.ts.
+  return offlineAnswer(prompt, "chat").text;
 }
 
 function smartOfflineCode(prompt: string): string {
-  return `Request: ${prompt.slice(0, 240)}\n\nBolo exact deliverable (HTML quiz / React todo / landing page) — next message mein complete code block dunga.`;
+  // Offline code mode always hands back runnable starter code, never a
+  // "tell me more" bounce. See lib/ai/offline-brain.ts.
+  return offlineAnswer(prompt, "code").text;
 }
 
 export async function streamChatOrCode(opts: {
@@ -477,7 +455,7 @@ export async function streamChatOrCode(opts: {
     mind,
     fallbackNote: opts.offlineOverrideText
       ? undefined
-      : "No live model is reachable right now — this is BUILDWE's offline mode (add a free key in Settings → API keys for full quality).",
+      : "Offline mode — no live model is reachable right now. Maths, conversions, starter code, image, voice and web search all still work. Connect your own key in Settings → API keys for full-quality answers.",
   };
 }
 
@@ -550,9 +528,9 @@ export async function visionComplete(opts: {
         ? `You asked: _${question.slice(0, 200)}_`
         : "",
       "",
-      "Full AI vision needs a `GROQ_API_KEY` (free at console.groq.com) set in `.env.local` — drop it in and image understanding goes live instantly.",
+      "Image understanding needs the vision model, which isn't connected right now. An administrator can enable it from the server configuration.",
       "",
-      "Till then: images are attached to this chat and will be sent with your question the moment a key is added.",
+      "Your image stays attached to this chat and will be analysed automatically the moment vision comes online.",
     ]
       .filter(Boolean)
       .join("\n"),

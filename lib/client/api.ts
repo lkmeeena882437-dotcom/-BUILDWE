@@ -358,6 +358,9 @@ export async function webSearchApi(query: string) {
   return j as {
     ok: boolean;
     results: { title: string; url: string; snippet: string; host: string }[];
+    status?: "ok" | "empty" | "unreachable" | "blocked" | "timeout";
+    /** User-safe explanation when results are empty. */
+    reason?: string;
   };
 }
 

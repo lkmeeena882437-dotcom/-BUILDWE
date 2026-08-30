@@ -145,7 +145,7 @@ export async function POST(req: NextRequest) {
         ok: false,
         available: false,
         message:
-          "Code actions ko live model chahiye — Settings → API keys me free Groq key add karo (2 minute ka kaam), phir Fix/Optimize/Refactor/Test yahin chalega.",
+          "Code actions need a live model, which isn't reachable right now. You can connect your own key in Settings → API keys, or try again in a moment.",
       });
     }
 

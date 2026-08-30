@@ -12,6 +12,7 @@ Boss bhejte hue updates yahan track hote hain. Public changelog page hata diya g
 | Code Canvas actions + status review + main push | boss ("ha kr bhai… pahle status review do, phir main me push") | ✅ v1.7.0 — Run/Test/Fix/Optimize/Refactor + docs/STATUS_REVIEW.md |
 | Update #3 — Product/UX/Brand/Trust plan | boss (chat paste) | ✅ Implemented earlier (v1.4.0) |
 | **Full Platform Audit & Completion** | boss (PDF → pasted) | ✅ **v1.8.0** — 6 confirmed vulns fixed + router/gateway/agent foundations (`docs/AUDIT_UPDATE1.md`) |
+| **Real-user experience audit** | boss ("ek AI user ki tarah review karo, jo galat hai khojo, phir sab complete karo") | ✅ **v1.9.0** — F1–F7 sab fix (`docs/USER_EXPERIENCE_AUDIT.md`) |
 
 ## Update #2 — kya implement hua (v1.6.0)
 
@@ -133,3 +134,53 @@ har vuln ka before/after live test `docs/AUDIT_UPDATE1.md` me.
 Server-side code sandbox (§3.3 — free hosting me container isolation nahi),
 project files ka UI panel, image job progress UI, PDF/DOCX/XLSX, real-device
 mobile QA, metrics persistence. Detail audit doc me.
+
+
+---
+
+## v1.9.0 — Real-user experience audit (F1–F7)
+
+Boss ki shikayat thi: *"jese koi real ai platform work krta h, wese hamara abhi
+nahi kr rha h"*. Pehle ek asli user ki tarah pura platform chala kar 7 problems
+dhundhi (F1–F7), phir saari fix ki. Detail + before/after transcripts
+`docs/USER_EXPERIENCE_AUDIT.md` me.
+
+### Jo galat mila aur fix hua
+
+| # | Problem | Severity | Status |
+|---|---|---|---|
+| F1 | Offline chat sirf prompt wapas bolta tha — "What is 2+2?" ka jawab "What do you need?" | **P0** | ✅ naya `lib/ai/offline-brain.ts` |
+| F2 | Global `slice(0,200)` caps doosre user ka data delete kar dete the | **P0 CRITICAL** | ✅ per-user `RETENTION` + `trimPerUser()` |
+| F3 | Per-conversation message cap nahi tha — unbounded growth, har write pe puri DB serialize | P1 | ✅ 400 messages/conversation |
+| F4 | `GROQ_API_KEY` / `.env.local` / vendor naam user-facing messages me leak | P1 | ✅ 6 jagah saaf |
+| F5 | Search chup-chaap `{ok:true, results:[]}` — user ko pata hi nahi kya hua | P1 | ✅ `webSearchDetailed()` + status/reason |
+| F6 | Offline reply par koi recovery action nahi | P1 | ✅ Retry live + Connect a key |
+| F7 | Adhure kaam: generation progress/retry UI, project-files panel | P2 | ✅ dono ban gaye |
+
+### F1 sabse bada tha (yahi boss ki asli complaint thi)
+
+Ab offline mode: maths aur unit/temperature conversion **exactly compute** karta
+hai, code maange to **chalne wala poora code** deta hai, writing maange to
+**asli structure** deta hai, aur jo cheez offline verify nahi ho sakti uske liye
+**imaandari se** bolta hai + web search ka rasta dikhata hai. Language ab input
+se match karti hai — English sawaal ka English jawab.
+
+Kabhi bluff nahi, kabhi sawaal wapas nahi, kabhi vendor/env ka naam nahi.
+
+### F2 ka live proof
+
+```
+fix se pehle:  Victim's chats now: 0   *** DELETED — DATA LOSS ***
+fix ke baad:   Victim's chats now: 1   STILL THERE ✓
+```
+
+### Verification
+34/34 regression pass · `tsc --noEmit` clean · production build clean ·
+project files end-to-end (traversal 400, cross-user isolation empty).
+
+### Abhi bhi pending (honest)
+Server-side sandbox (container host chahiye), auto error-detect-fix loop,
+PDF/DOCX/XLSX, metrics persistence, durable rate limit, audio MP3 storage,
+conversation rename UI. Aur: is sandbox se har provider ka outbound TLS blocked
+hai, isliye **live provider response deploy hone ke baad hi test ho sakta hai** —
+uske liye ek free key chahiye hogi.

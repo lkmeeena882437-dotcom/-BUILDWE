@@ -8,6 +8,8 @@ import {
   Download,
   Loader2,
   Volume2,
+  AlertTriangle,
+  RotateCcw,
 } from "lucide-react";
 import clsx from "clsx";
 
@@ -31,6 +33,9 @@ export function AudioStudio({
   onGenerate,
   lastSpoken,
   history = [],
+  failure,
+  onRetry,
+  onDismissFailure,
 }: {
   text: string;
   setText: (t: string) => void;
@@ -44,6 +49,12 @@ export function AudioStudio({
   lastSpoken?: { text: string; voice: string; audioUrl?: string } | null;
   /** past voice generations restored from the server (Update #1 §4.5) */
   history?: { id: string; text: string; voice: string; createdAt: string }[];
+  /** Set when the last voice job failed — user-safe message. */
+  failure?: string | null;
+  /** Clears the failure and re-runs the last script. */
+  onRetry?: () => void;
+  /** Dismiss the failure without retrying. */
+  onDismissFailure?: () => void;
 }) {
   const [showAll, setShowAll] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -186,6 +197,25 @@ export function AudioStudio({
                 </button>
               ))}
               <div className="flex-1" />
+              {loading && (
+                <span
+                  className="inline-flex items-center gap-1.5 text-[11px]"
+                  style={{ color: "var(--muted)" }}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span
+                    className="h-1.5 w-16 overflow-hidden rounded-full"
+                    style={{ background: "var(--border)" }}
+                  >
+                    <span
+                      className="block h-full w-1/3 animate-pulse rounded-full"
+                      style={{ background: "var(--accent)" }}
+                    />
+                  </span>
+                  Rendering voice…
+                </span>
+              )}
               <button
                 type="button"
                 disabled={!text.trim() || loading}
@@ -201,6 +231,40 @@ export function AudioStudio({
                 Convert to speech
               </button>
             </div>
+
+            {failure && (
+              <div
+                className="mt-3 flex flex-wrap items-center gap-2 rounded-2xl border px-3 py-2"
+                style={{ borderColor: "var(--warn)", background: "var(--warn-soft)" }}
+                role="alert"
+              >
+                <AlertTriangle className="h-4 w-4 shrink-0" style={{ color: "var(--warn)" }} />
+                <span className="text-[12px]" style={{ color: "var(--warn)" }}>
+                  {failure}
+                </span>
+                <div className="flex-1" />
+                {onRetry && (
+                  <button
+                    type="button"
+                    onClick={onRetry}
+                    className="inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-[11px] font-semibold text-white"
+                    style={{ background: "var(--accent)" }}
+                  >
+                    <RotateCcw className="h-3 w-3" /> Try again
+                  </button>
+                )}
+                {onDismissFailure && (
+                  <button
+                    type="button"
+                    onClick={onDismissFailure}
+                    className="rounded-xl border px-2.5 py-1 text-[11px] font-medium"
+                    style={{ borderColor: "var(--border)" }}
+                  >
+                    Dismiss
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
