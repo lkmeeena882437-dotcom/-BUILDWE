@@ -7,6 +7,7 @@ import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { addGeneration, uid } from "@/lib/db/store";
 import { INPUT_LIMITS } from "@/lib/ai/gateway";
 import { mirrorRemoteImage, mediaStorageEnabled } from "@/lib/storage/media";
+import { MODEL_CATALOG } from "@/lib/ai/models-catalog";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -50,13 +51,18 @@ export async function POST(req: NextRequest) {
       : undefined;
     const modelId = body?.modelId ? String(body.modelId) : "flux";
 
-    // Pro model seat — soft gate
-    if (modelId === "pro" && session.plan !== "pro") {
+    // PRO seat gate, driven by the catalogue rather than one hardcoded id.
+    // Before this, the check only matched the literal id "pro", so the real
+    // premium models (fal FLUX Dev / Pro) were reachable on a free plan.
+    const picked = MODEL_CATALOG.find(
+      (m) => m.capability === "image" && m.id === modelId
+    );
+    if (picked && !picked.tiers.includes("free") && session.plan !== "pro") {
       return NextResponse.json(
         {
-          error: "Vision Pro is a PRO model. Switch model or upgrade.",
+          error: `${picked.label} is a PRO model. Switch model or upgrade.`,
           code: "PRO_MODEL",
-          comingSoon: true,
+          hint: "Free plan par FLUX aur FLUX Turbo dono available hain.",
         },
         { status: 402 }
       );
@@ -129,6 +135,9 @@ export async function POST(req: NextRequest) {
       promptUsed: result.promptUsed,
       editMode: result.editMode,
       userPrompt: prompt,
+      // True when the requested model was unreachable and another one served
+      // the request — the user should know they didn't get what they picked.
+      fellBack: result.fellBack || false,
     });
     attachGuestCookie(res, session.userId);
     return res;

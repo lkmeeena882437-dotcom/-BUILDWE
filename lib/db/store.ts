@@ -323,8 +323,20 @@ function bootRemote() {
   })();
 }
 
-export function storageMode(): "disk" | "memory" {
+/**
+ * What the data is actually persisted to, in order of durability.
+ *
+ * "supabase" means the Postgres mirror is configured, so the data survives a
+ * serverless instance being recycled. "disk" is a local JSON file — fine for
+ * a VPS, lost on most serverless platforms. "memory" means even the file
+ * isn't writable and everything dies with the process.
+ *
+ * The health endpoint reports this so an operator can tell at a glance
+ * whether their deployment is actually durable, instead of assuming it is.
+ */
+export function storageMode(): "supabase" | "disk" | "memory" {
   getPath();
+  if (remoteDbEnabled()) return "supabase";
   return writable && resolvedPath ? "disk" : "memory";
 }
 

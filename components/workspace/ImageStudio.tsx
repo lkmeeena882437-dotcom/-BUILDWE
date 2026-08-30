@@ -32,10 +32,24 @@ const ASPECTS = [
   { id: "3:4", label: "3:4" },
 ];
 
-const MODELS = [
+export type ImageModelOption = {
+  id: string;
+  label: string;
+  badge: string;
+  disabled: boolean;
+  /** PRO-only seat — shown, but gated. */
+  pro?: boolean;
+};
+
+/**
+ * Shown only until /api/ai/models answers. The real list comes from the
+ * backend catalogue (section 1 of the brief: models configurable from the
+ * backend, never hardcoded in a component), filtered to what this deployment
+ * can actually call — so the picker can't offer a model that will fail.
+ */
+const FALLBACK_MODELS: ImageModelOption[] = [
   { id: "flux", label: "Vision", badge: "Live", disabled: false },
-  { id: "turbo", label: "Vision Fast", badge: "Live", disabled: false },
-  { id: "pro", label: "Vision Pro", badge: "Soon", disabled: true },
+  { id: "turbo", label: "Vision Fast", badge: "Fast", disabled: false },
 ];
 
 const PRESETS = [
@@ -103,6 +117,54 @@ export function ImageStudio({
     }, 250);
     return () => clearInterval(t);
   }, [loading]);
+
+  // Model list from the backend. Only models this deployment can actually
+  // reach are offered; a PRO-tier model stays visible but gated so users can
+  // see what upgrading buys them.
+  const [models, setModels] = useState<ImageModelOption[]>(FALLBACK_MODELS);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/ai/models", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const list: ImageModelOption[] = (data?.selectable?.image || [])
+          .filter((m: { available?: boolean }) => m.available)
+          .map(
+            (m: {
+              id: string;
+              label: string;
+              latency?: string;
+              tiers?: string[];
+            }) => {
+              const proOnly = Array.isArray(m.tiers) && !m.tiers.includes("free");
+              return {
+                id: m.id,
+                label: m.label,
+                badge: proOnly ? "PRO" : m.latency === "fast" ? "Fast" : "Live",
+                disabled: false,
+                pro: proOnly,
+              };
+            }
+          );
+        if (!cancelled && list.length) setModels(list);
+      } catch {
+        /* keep the fallback — a picker that works beats an empty one */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // If the selected model isn't in the reachable list, fall back to the first
+  // one rather than silently posting an id the server will reject.
+  useEffect(() => {
+    if (models.length && !models.some((m) => m.id === modelId)) {
+      setModelId(models[0].id);
+    }
+  }, [models, modelId, setModelId]);
 
 
   return (
@@ -305,7 +367,7 @@ export function ImageStudio({
 
             {/* Model */}
             <div className="flex flex-wrap gap-1">
-              {MODELS.map((m) => (
+              {models.map((m) => (
                 <button
                   key={m.id}
                   type="button"
@@ -324,7 +386,7 @@ export function ImageStudio({
                         }
                       : { borderColor: "var(--border)", color: "var(--muted)" }
                   }
-                  title={m.disabled ? "Coming soon" : m.label}
+                  title={m.pro ? `${m.label} — PRO plan` : m.label}
                 >
                   {m.label}
                   <span className="ml-1 opacity-60">{m.badge}</span>

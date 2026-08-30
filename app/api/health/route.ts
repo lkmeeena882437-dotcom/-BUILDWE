@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 import { APP } from "@/lib/config";
 import { storageMode } from "@/lib/db/store";
 import { availableProviders, providerLabel } from "@/lib/ai/provider-registry";
+import { availableImageProviders } from "@/lib/ai/image-providers";
 import { MODEL_CATALOG } from "@/lib/ai/models-catalog";
+import { durableRateLimitAvailable } from "@/lib/rate-limit/durable";
+import { mediaStorageEnabled } from "@/lib/storage/media";
 
 export const dynamic = "force-dynamic";
 
@@ -13,11 +16,14 @@ export const dynamic = "force-dynamic";
  */
 export async function GET() {
   const live = availableProviders();
+  const imageLive = availableImageProviders();
   const keyless = ["pollinations"];
-  const reachable = [...live, ...keyless];
 
-  // How many models are actually callable per capability right now.
+  // How many models are actually callable per capability right now. Image
+  // models resolve against the image provider set (fal/HF), not the chat one.
   const byCapability = (["chat", "code", "image", "audio"] as const).map((cap) => {
+    const reachable =
+      cap === "image" ? [...imageLive, ...keyless] : [...live, ...keyless];
     const all = MODEL_CATALOG.filter((m) => m.capability === cap);
     const usable = all.filter((m) => reachable.includes(m.provider));
     return { capability: cap, total: all.length, reachable: usable.length };
@@ -44,6 +50,13 @@ export async function GET() {
       byCapability,
     },
     db: storageMode(),
+    // Durability at a glance. Every one of these degrades safely when
+    // unconfigured, so this reports what you HAVE rather than what failed.
+    durability: {
+      database: storageMode(),
+      rateLimits: durableRateLimitAvailable() ? "shared" : "per-instance",
+      mediaStorage: mediaStorageEnabled() ? "supabase" : "ephemeral",
+    },
     time: new Date().toISOString(),
   });
 }

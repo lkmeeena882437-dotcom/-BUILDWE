@@ -283,3 +283,84 @@ Poori report: **`docs/PLATFORM_STATUS.md`**
 ### Verification
 38/38 regression · 19/19 agent unit tests · 8/8 router picks · agent loop
 end-to-end · `tsc` clean · production build clean.
+
+---
+
+## v1.11.0 — Audit ke fixes + durable infrastructure
+
+Boss ne poochha: *"koi feature double to nahi bana? kuch adhura to nahi
+chhoda?"* Poora repo dobara padha, apna pichhla kaam bhi shaq se dekha.
+**Double kuch nahi mila. Adhura 6 cheezein milin — sab fix.**
+
+### Apni hi galtiyaan pakdi
+
+**1. 182 line dead code** — v1.10.0 me provider registry banaya tha, par
+purane `groqStream`, `groqComplete`, `openRouterStream`, `openAIStreamToTextSSE`
+delete karna bhool gaya tha. Koi call site nahi tha. Ye registry ka hi
+timeout/retry logic duplicate karte the — matlab koi bhi future fix do jagah
+karna padta. Hata diye.
+
+**2. Image catalog abhi bhi jhooth bol raha tha** — v1.10.0 me chat aur code
+ke liye multi-provider bana diya tha, par **image chhod diya tha**. Catalog me
+fal aur HuggingFace models list the, lekin `generateImage()` sirf Pollinations
+URL banata tha. "FLUX Pro" chuno ya "FLUX" — bilkul same image aati thi.
+
+`lib/ai/image-providers.ts` naya: asli fal + HuggingFace adapters,
+availability-aware selection, cross-vendor fallback, aur `fellBack` flag taaki
+UI bata sake ki user ka pick unavailable tha. Pollinations keyless free default
+hi raha — kuch regress nahi hua.
+
+### Adhuri cheezein poori kin
+
+**3. Audio kabhi save hi nahi hota tha** — generated MP3 sirf base64 data URL
+me thi. History row banta tha par refresh ke baad aawaz gayab. Images doosre ke
+server se hot-link hoti thin. `lib/storage/media.ts` naya — Supabase Storage
+par upload, stable public URL. Best-effort: storage na ho to purana behaviour.
+
+**4. Rate limiting bypass ho sakti thi** — in-memory limiter per-instance hai.
+Serverless par ek caller requests spread karke apni limit multiply kar leta,
+aur har cold start counter reset kar deta. `lib/rate-limit/durable.ts` — atomic
+Postgres function (ek hi statement me check + increment, concurrency-safe).
+11 AI endpoints + login + register par laga. **Redis/Upstash ki zarurat khatam**
+— jo Supabase waise bhi chahiye, usi se ho gaya.
+
+**5. Do auth kamzoriyan:**
+- `SESSION_SECRET` missing ho to chupchaap ek **publicly-known dev string** use
+  hoti thi — koi bhi kisi ka session forge kar sakta tha. Ab production me
+  throw karta hai. Wahi `BYOK_ENCRYPTION_SECRET` aur verify-token ke liye.
+- `userFromPayload()` JWT ke andar ka `plan` claim trust karta tha. Matlab PRO
+  rehte hue bana token, subscription khatam hone ke baad bhi PRO deta rehta.
+  Ab paid entitlement hamesha DB se aati hai.
+
+**6. Setup SQL kahin thi hi nahi** — `supabase/schema.sql` naya. Ek paste me
+durable store + rate-limit table + atomic function + media bucket, sab RLS ke
+saath jo anon/authenticated ko block karta hai.
+
+---
+
+## v1.11.1 — UI ko backend se joda + PRO gate ka bug
+
+**7. ImageStudio abhi bhi hardcoded thi** — v1.11.0 me `/api/ai/models` ka
+`selectable` bana diya tha par component use hi nahi kar raha tha. Ab karta
+hai: sirf reachable models dikhte hain, `FAL_KEY` daalte hi FLUX Dev/Pro apne
+aap aa jaate hain. Selected model list me na ho to auto-switch.
+
+**8. PRO gate free users ko premium models de raha tha** — gate sirf literal id
+`"pro"` check karta tha, par asli premium ids `fal-ai/flux/dev` aur
+`fal-ai/flux-pro/v1.1` hain. **Free user premium image models chala sakta tha.**
+Ab catalog ke `tiers` se gate lagta hai.
+
+Verified: free user → `fal-ai/flux/dev` → 402 · free user → `turbo` → 200.
+
+**9. Health endpoint sach nahi bolta tha** — `db` hamesha `disk`/`memory` kehta
+tha chahe Supabase laga ho. Naya `durability` block: `database`, `rateLimits`,
+`mediaStorage`. Ab ek nazar me pata chalta hai setup poora hua ya adhura.
+Saath me: health image models ko chat providers ke against gin raha tha — fix.
+
+### Verification
+38/38 regression · 19/19 agent unit · 8/8 router picks · `tsc` clean ·
+production build clean · PRO gate dono direction live verify.
+
+### Boss ke liye
+- `docs/SETUP_GUIDE.md` — Supabase steps, Redis kyun nahi chahiye, 5 test
+- `docs/REMAINING_WORK.md` — kaun kya karega, aur kya jaanbujh kar chhoda

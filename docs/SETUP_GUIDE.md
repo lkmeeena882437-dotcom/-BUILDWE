@@ -175,21 +175,29 @@ https://aapka-domain.com/api/health
       { "capability": "code", "total": 6, "reachable": 3 }
     ]
   },
-  "db": "supabase"
+  "durability": {
+    "database": "supabase",
+    "rateLimits": "shared",
+    "mediaStorage": "supabase"
+  }
 }
 ```
 
-**Kya dekhna hai:**
+**`durability` block sabse important hai** — ye teen line batati hain ki setup
+poora hua ya adhura:
+
+| Field | ✅ Sahi | ❌ Galat | Galat ho to |
+|---|---|---|---|
+| `database` | `supabase` | `disk` / `memory` | Env vars nahi lage, ya redeploy nahi kiya |
+| `rateLimits` | `shared` | `per-instance` | Wahi — dono ek hi env se chalte hain |
+| `mediaStorage` | `supabase` | `ephemeral` | SQL me bucket wala hissa nahi chala |
 
 | Field | Sahi value | Galat ho to matlab |
 |---|---|---|
 | `providers.configured` | `["Groq"]` | Khaali `[]` = key nahi lagi ya galat hai |
-| `db` | `"supabase"` | `"disk"` = Supabase env vars nahi lage |
 | `chat.reachable` | `5` | `0` = koi chat model nahi mil raha |
 
 Agar `configured` khaali hai to key galat hai ya redeploy nahi kiya.
-
----
 
 ## Chalne ke baad ye zaroor test karna
 
