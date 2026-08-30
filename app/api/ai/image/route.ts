@@ -4,6 +4,7 @@ import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
 import { generateImage } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { addGeneration, uid } from "@/lib/db/store";
+import { INPUT_LIMITS } from "@/lib/ai/gateway";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,9 +29,23 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+    // Cost guard (audit V3): reject absurd prompts at the edge instead of
+    // silently truncating deep inside the provider.
+    if (prompt.length > INPUT_LIMITS.promptChars) {
+      return NextResponse.json(
+        {
+          error: "That prompt is too long — keep it under 8,000 characters.",
+          code: "PROMPT_TOO_LONG",
+          hint: "Prompt chhota karo — sirf zaroori detail rakho, result bhi behtar aayega.",
+        },
+        { status: 413 }
+      );
+    }
 
     const aspect = String(body?.aspect || "1:1");
-    const basePrompt = body?.basePrompt ? String(body.basePrompt) : undefined;
+    const basePrompt = body?.basePrompt
+      ? String(body.basePrompt).slice(0, INPUT_LIMITS.promptChars)
+      : undefined;
     const modelId = body?.modelId ? String(body.modelId) : "flux";
 
     // Pro model seat — soft gate

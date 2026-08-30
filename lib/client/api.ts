@@ -554,3 +554,92 @@ export async function saveSkills(skills: string[]) {
   if (!r.ok) throw new Error(j.error || "Couldn’t save skills");
   return j as { skills: string[] };
 }
+
+/* ── Generation history (Update #1 §4.5) ──────────────────── */
+
+export type GenerationItem = {
+  id: string;
+  type: "image" | "audio" | "code";
+  prompt: string;
+  outputUrl?: string;
+  outputText?: string;
+  meta?: Record<string, unknown>;
+  createdAt: string;
+};
+
+/**
+ * Past image/audio/code generations for the signed-in user or guest.
+ * Image and audio results were always saved server-side but had no reader —
+ * this makes "my previous creations" reachable from the UI.
+ */
+export async function fetchGenerations(
+  type?: "image" | "audio" | "code",
+  limit = 50
+): Promise<GenerationItem[]> {
+  const qs = new URLSearchParams();
+  if (type) qs.set("type", type);
+  qs.set("limit", String(limit));
+  const r = await fetch(`/api/ai/generations?${qs.toString()}`, {
+    credentials: "include",
+  });
+  const j = await readJson(r);
+  if (!r.ok) return [];
+  return (j.generations || []) as GenerationItem[];
+}
+
+/* ── Project files — Coding Agent (Update #1 §3) ──────────── */
+
+export type ProjectFileMeta = {
+  id: string;
+  path: string;
+  lang: string;
+  size: number;
+  updatedAt: string;
+};
+
+export async function fetchProjectFiles(
+  projectId: string
+): Promise<ProjectFileMeta[]> {
+  const r = await fetch(
+    `/api/projects/files?projectId=${encodeURIComponent(projectId)}`,
+    { credentials: "include" }
+  );
+  const j = await readJson(r);
+  if (!r.ok) return [];
+  return (j.files || []) as ProjectFileMeta[];
+}
+
+export async function readProjectFile(id: string) {
+  const r = await fetch(`/api/projects/files?id=${encodeURIComponent(id)}`, {
+    credentials: "include",
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn't open that file");
+  return j.file as ProjectFileMeta & { content: string; projectId: string };
+}
+
+/** Create or update a file by path (upsert). */
+export async function saveProjectFileApi(input: {
+  projectId: string;
+  path: string;
+  content: string;
+  lang?: string;
+}) {
+  const r = await fetch("/api/projects/files", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn't save that file");
+  return j.file as ProjectFileMeta & { content: string };
+}
+
+export async function deleteProjectFileApi(id: string) {
+  const r = await fetch(`/api/projects/files?id=${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  return r.ok;
+}

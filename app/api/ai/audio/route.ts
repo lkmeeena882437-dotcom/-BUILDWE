@@ -4,6 +4,7 @@ import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
 import { generateAudioPlan } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { addGeneration, uid } from "@/lib/db/store";
+import { INPUT_LIMITS } from "@/lib/ai/gateway";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +22,17 @@ export async function POST(req: NextRequest) {
     const text = String(body?.text || "").trim();
     if (!text) {
       return NextResponse.json({ error: "Paste a script first." }, { status: 400 });
+    }
+    // Cost guard (audit V3) — TTS is billed per character.
+    if (text.length > INPUT_LIMITS.audioChars) {
+      return NextResponse.json(
+        {
+          error: "That script is too long — keep it under 5,000 characters.",
+          code: "SCRIPT_TOO_LONG",
+          hint: "Script ko chhote hisso me todo aur alag-alag generate karo.",
+        },
+        { status: 413 }
+      );
     }
 
     const limit = checkLimit(session.userId, session.plan, "audio");

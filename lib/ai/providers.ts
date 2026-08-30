@@ -12,6 +12,13 @@ import {
   type MindProfile,
 } from "@/lib/ai/mind";
 import { mergeImagePrompt } from "@/lib/ai/image-prompt";
+import {
+  fetchWithTimeout,
+  guardMessages,
+  errorFromStatus,
+  TIMEOUTS,
+  withRetry,
+} from "@/lib/ai/gateway";
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -43,27 +50,41 @@ async function groqStream(
   const key = userKeys?.groq || AI_KEYS.groq;
   if (!key) return null;
   try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
+    // Timeout + retry via the gateway (audit V4) — this call previously had
+    // no AbortController, so a stalled provider hung the whole request.
+    return await withRetry(
+      async () => {
+        const res = await fetchWithTimeout(
+          "https://api.groq.com/openai/v1/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${key}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model,
+              messages,
+              temperature: budget?.temperature ?? 0.7,
+              stream: true,
+              max_tokens: budget?.maxTokens ?? 4096,
+            }),
+          },
+          TIMEOUTS.stream,
+          "groq"
+        );
+        if (!res.ok || !res.body) {
+          console.error("[bw] groq stream fail", model, res.status);
+          throw errorFromStatus(res.status);
+        }
+        return res.body;
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: budget?.temperature ?? 0.7,
-        stream: true,
-        max_tokens: budget?.maxTokens ?? 4096,
-      }),
-    });
-    if (!res.ok || !res.body) {
-      console.error("[bw] groq stream fail", model, res.status);
-      return null;
-    }
-    return res.body;
+      { attempts: 2, label: "groq" }
+    );
   } catch (e) {
-    console.error("[bw] groq stream error", e);
+    // Returning null keeps the existing contract: the caller walks its
+    // fallback chain (next model → OpenRouter → one-shot → offline).
+    console.error("[bw] groq stream error", model, (e as Error)?.message);
     return null;
   }
 }
@@ -77,24 +98,34 @@ async function groqComplete(
   const key = userKeys?.groq || AI_KEYS.groq;
   if (!key) return null;
   try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
+    return await withRetry(
+      async () => {
+        const res = await fetchWithTimeout(
+          "https://api.groq.com/openai/v1/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${key}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model,
+              messages,
+              temperature: budget?.temperature ?? 0.7,
+              stream: false,
+              max_tokens: budget?.maxTokens ?? 4096,
+            }),
+          },
+          TIMEOUTS.complete,
+          "groq"
+        );
+        if (!res.ok) throw errorFromStatus(res.status);
+        const data = await res.json();
+        const text = data?.choices?.[0]?.message?.content;
+        return typeof text === "string" && text.trim() ? text : null;
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: budget?.temperature ?? 0.7,
-        stream: false,
-        max_tokens: budget?.maxTokens ?? 4096,
-      }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const text = data?.choices?.[0]?.message?.content;
-    return typeof text === "string" && text.trim() ? text : null;
+      { attempts: 2, label: "groq" }
+    );
   } catch {
     return null;
   }
@@ -109,26 +140,36 @@ async function openRouterStream(
   const key = userKeys?.openrouter || AI_KEYS.openrouter;
   if (!key) return null;
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": APP.url || "https://buildwe.vercel.app",
-        "X-Title": APP.name || "BUILDWE",
+    return await withRetry(
+      async () => {
+        const res = await fetchWithTimeout(
+          "https://openrouter.ai/api/v1/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${key}`,
+              "Content-Type": "application/json",
+              "HTTP-Referer": APP.url || "https://buildwe.vercel.app",
+              "X-Title": APP.name || "BUILDWE",
+            },
+            body: JSON.stringify({
+              model: model.includes("/")
+                ? model
+                : "meta-llama/llama-3.3-70b-instruct",
+              messages,
+              temperature: budget?.temperature ?? 0.7,
+              stream: true,
+              max_tokens: budget?.maxTokens ?? 4096,
+            }),
+          },
+          TIMEOUTS.stream,
+          "openrouter"
+        );
+        if (!res.ok || !res.body) throw errorFromStatus(res.status);
+        return res.body;
       },
-      body: JSON.stringify({
-        model: model.includes("/")
-          ? model
-          : "meta-llama/llama-3.3-70b-instruct",
-        messages,
-        temperature: budget?.temperature ?? 0.7,
-        stream: true,
-        max_tokens: budget?.maxTokens ?? 4096,
-      }),
-    });
-    if (!res.ok || !res.body) return null;
-    return res.body;
+      { attempts: 2, label: "openrouter" }
+    );
   } catch {
     return null;
   }
@@ -269,7 +310,13 @@ export async function streamChatOrCode(opts: {
   mind: MindProfile;
   fallbackNote?: string;
 }> {
-  const turnsAll: ChatTurn[] = opts.messages
+  // Cost guard (audit V2): clamp oversized payloads BEFORE tokenising.
+  // Rate limits cap how often someone can ask; this caps how expensive a
+  // single ask can be. Keeps the newest turns — those drive the answer.
+  const guarded = guardMessages(opts.messages);
+  const inputMessages = guarded.messages;
+
+  const turnsAll: ChatTurn[] = inputMessages
     .filter((m) => m.role === "user" || m.role === "assistant")
     .map((m) => ({
       role: m.role as "user" | "assistant",
@@ -295,7 +342,7 @@ export async function streamChatOrCode(opts: {
   // base system prompt — previously they were dropped in live mode
   const extraSystem = [
     compressed,
-    opts.messages
+    inputMessages
       .filter((m) => m.role === "system")
       .map((m) => String(m.content || ""))
       .filter(Boolean)
@@ -453,7 +500,9 @@ export async function visionComplete(opts: {
   for (const model of VISION_MODELS) {
     if (!groqKey) break;
     try {
-      const res = await fetch(
+      // Vision gets the longest budget (large image payload) but is still
+      // bounded — audit V4: no provider call may hang forever.
+      const res = await fetchWithTimeout(
         "https://api.groq.com/openai/v1/chat/completions",
         {
           method: "POST",
@@ -477,7 +526,9 @@ export async function visionComplete(opts: {
               },
             ],
           }),
-        }
+        },
+        TIMEOUTS.vision,
+        "vision"
       );
       if (!res.ok) continue;
       const data = await res.json();

@@ -1,7 +1,8 @@
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
-import { findUserById, publicUser, type User, uid } from "@/lib/db/store";
+import { findUserById, publicUser, type User } from "@/lib/db/store";
+import { newGuestId, signGuestId, verifyGuestCookie } from "@/lib/auth/guest";
 
 const COOKIE = "bw_session";
 const GUEST_COOKIE = "bw_guest";
@@ -123,10 +124,11 @@ export async function getSession(): Promise<{
     }
   }
 
-  let guest = jar.get(GUEST_COOKIE)?.value;
-  if (!guest) guest = `guest_${uid("g").slice(2)}`;
+  // Guest ids must be HMAC-signed (audit V1) — a forged/unsigned cookie is
+  // discarded and the visitor simply starts a fresh guest identity.
+  const guest = verifyGuestCookie(jar.get(GUEST_COOKIE)?.value) || newGuestId();
   return {
-    userId: guest.startsWith("guest") ? guest : `guest_${guest}`,
+    userId: guest,
     kind: "guest",
     user: null,
     plan: "free",
@@ -161,10 +163,10 @@ export async function getSessionFromRequest(req: NextRequest) {
       };
     }
   }
-  const g =
-    req.cookies.get(GUEST_COOKIE)?.value || `guest_${uid("g").slice(2)}`;
+  // Signature-verified guest id (audit V1); forged cookies get a fresh identity.
+  const g = verifyGuestCookie(req.cookies.get(GUEST_COOKIE)?.value) || newGuestId();
   return {
-    userId: g.startsWith("guest") ? g : `guest_${g}`,
+    userId: g,
     kind: "guest" as const,
     user: null,
     plan: "free" as const,
@@ -172,9 +174,13 @@ export async function getSessionFromRequest(req: NextRequest) {
   };
 }
 
+/**
+ * Re-issue the guest cookie in SIGNED form. Same call signature as before, so
+ * every existing route keeps working — only the stored value gains an HMAC.
+ */
 export function attachGuestCookie(res: NextResponse, userId: string) {
   if (userId.startsWith("guest")) {
-    res.cookies.set(GUEST_COOKIE, userId, {
+    res.cookies.set(GUEST_COOKIE, signGuestId(userId), {
       httpOnly: true,
       sameSite: "lax",
       path: "/",
@@ -182,6 +188,17 @@ export function attachGuestCookie(res: NextResponse, userId: string) {
       maxAge: 60 * 60 * 24 * 365,
     });
   }
+}
+
+/** Clear the guest cookie once its data has been migrated into a real account. */
+export function clearGuestCookie(res: NextResponse) {
+  res.cookies.set(GUEST_COOKIE, "", {
+    httpOnly: true,
+    path: "/",
+    maxAge: 0,
+    secure: cookieSecure(),
+    sameSite: "lax",
+  });
 }
 
 export type { User };
