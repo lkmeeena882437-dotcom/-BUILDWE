@@ -7,12 +7,25 @@ import { newGuestId, signGuestId, verifyGuestCookie } from "@/lib/auth/guest";
 const COOKIE = "bw_session";
 const GUEST_COOKIE = "bw_guest";
 
+const DEV_FALLBACK_SECRET = "buildwe-dev-secret-change-me-in-production-32b";
+
+/**
+ * Signing secret for session tokens.
+ *
+ * In development a fallback keeps local setup frictionless. In production a
+ * missing secret means every deployment signs with the SAME publicly-known
+ * string, which lets anyone forge a session for any account. That must be a
+ * hard failure, not a silent default.
+ */
 function secret() {
-  const s =
-    process.env.SESSION_SECRET ||
-    process.env.BYOK_ENCRYPTION_SECRET ||
-    "buildwe-dev-secret-change-me-in-production-32b";
-  return new TextEncoder().encode(s);
+  const configured = process.env.SESSION_SECRET || process.env.BYOK_ENCRYPTION_SECRET;
+
+  if (!configured && process.env.NODE_ENV === "production") {
+    throw new Error(
+      "SESSION_SECRET is not set. Refusing to sign sessions with the public development key."
+    );
+  }
+  return new TextEncoder().encode(configured || DEV_FALLBACK_SECRET);
 }
 
 export type SessionPayload = {
@@ -71,6 +84,16 @@ export function clearSessionCookie(res: NextResponse) {
   });
 }
 
+/**
+ * Reconstruct a session from the token alone.
+ *
+ * Used only when the database has no record of the user, which happens on
+ * serverless instances that lost their local store. The `plan` claim is
+ * deliberately NOT trusted here: a token minted while the user was PRO would
+ * otherwise keep granting PRO forever, even after the subscription lapsed or
+ * the row was removed. Paid entitlement must always come from the database,
+ * so an unverifiable session is treated as free.
+ */
 function userFromPayload(payload: SessionPayload) {
   return {
     userId: payload.sub,
@@ -79,11 +102,11 @@ function userFromPayload(payload: SessionPayload) {
       id: payload.sub,
       email: payload.email || "",
       name: payload.name || "User",
-      plan: (payload.plan || "free") as "free" | "pro",
+      plan: "free" as const,
       skills: [] as string[],
       createdAt: "",
     },
-    plan: (payload.plan || "free") as "free" | "pro",
+    plan: "free" as const,
     name: payload.name || "User",
   };
 }

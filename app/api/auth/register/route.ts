@@ -10,6 +10,7 @@ import {
 } from "@/lib/auth/session";
 import { verifyGuestCookie } from "@/lib/auth/guest";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
+import { rateLimitDurable } from "@/lib/rate-limit/durable";
 
 const schema = z.object({
   email: z.string().email(),
@@ -20,7 +21,7 @@ const schema = z.object({
 export async function POST(req: NextRequest) {
   try {
     const ip = clientIp(req);
-    const rl = rateLimit(`reg:${ip}`, 10, 60_000);
+    const rl = await rateLimitDurable(`reg:${ip}`, 10, 60_000);
     if (!rl.ok) {
       return NextResponse.json({ error: "Too many attempts. Wait a minute." }, { status: 429 });
     }

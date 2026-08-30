@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
+import { rateLimitDurable } from "@/lib/rate-limit/durable";
 import { streamChatOrCode } from "@/lib/ai/providers";
 import { findApiKeyByHash, findUserById, touchApiKey } from "@/lib/db/store";
 import { sha256Hex, decryptSecret } from "@/lib/crypto";
@@ -32,7 +33,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const rl = rateLimit(`devapi:${apiKey.id}:${clientIp(req)}`, 30, 60_000);
+    const rl = await rateLimitDurable(`devapi:${apiKey.id}:${clientIp(req)}`, 30, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
         { ok: false, error: "Rate limit — 30 requests/min per key." },

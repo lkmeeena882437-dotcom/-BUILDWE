@@ -19,6 +19,7 @@ import {
   type MindProfile,
 } from "@/lib/ai/mind";
 import { mergeImagePrompt } from "@/lib/ai/image-prompt";
+import { generateImageMulti } from "@/lib/ai/image-providers";
 import { offlineAnswer } from "@/lib/ai/offline-brain";
 import {
   fetchWithTimeout,
@@ -49,139 +50,8 @@ const GROQ_CODE_MODELS = [
 
 export type ProviderKeys = { groq?: string; openrouter?: string };
 
-async function groqStream(
-  messages: ChatMessage[],
-  model: string,
-  userKeys?: ProviderKeys,
-  budget?: { maxTokens: number; temperature: number }
-) {
-  const key = userKeys?.groq || AI_KEYS.groq;
-  if (!key) return null;
-  try {
-    // Timeout + retry via the gateway (audit V4) — this call previously had
-    // no AbortController, so a stalled provider hung the whole request.
-    return await withRetry(
-      async () => {
-        const res = await fetchWithTimeout(
-          "https://api.groq.com/openai/v1/chat/completions",
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${key}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model,
-              messages,
-              temperature: budget?.temperature ?? 0.7,
-              stream: true,
-              max_tokens: budget?.maxTokens ?? 4096,
-            }),
-          },
-          TIMEOUTS.stream,
-          "groq"
-        );
-        if (!res.ok || !res.body) {
-          console.error("[bw] groq stream fail", model, res.status);
-          throw errorFromStatus(res.status);
-        }
-        return res.body;
-      },
-      { attempts: 2, label: "groq" }
-    );
-  } catch (e) {
-    // Returning null keeps the existing contract: the caller walks its
-    // fallback chain (next model → OpenRouter → one-shot → offline).
-    console.error("[bw] groq stream error", model, (e as Error)?.message);
-    return null;
-  }
-}
 
-async function groqComplete(
-  messages: ChatMessage[],
-  model: string,
-  userKeys?: ProviderKeys,
-  budget?: { maxTokens: number; temperature: number }
-): Promise<string | null> {
-  const key = userKeys?.groq || AI_KEYS.groq;
-  if (!key) return null;
-  try {
-    return await withRetry(
-      async () => {
-        const res = await fetchWithTimeout(
-          "https://api.groq.com/openai/v1/chat/completions",
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${key}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model,
-              messages,
-              temperature: budget?.temperature ?? 0.7,
-              stream: false,
-              max_tokens: budget?.maxTokens ?? 4096,
-            }),
-          },
-          TIMEOUTS.complete,
-          "groq"
-        );
-        if (!res.ok) throw errorFromStatus(res.status);
-        const data = await res.json();
-        const text = data?.choices?.[0]?.message?.content;
-        return typeof text === "string" && text.trim() ? text : null;
-      },
-      { attempts: 2, label: "groq" }
-    );
-  } catch {
-    return null;
-  }
-}
 
-async function openRouterStream(
-  messages: ChatMessage[],
-  model: string,
-  userKeys?: ProviderKeys,
-  budget?: { maxTokens: number; temperature: number }
-) {
-  const key = userKeys?.openrouter || AI_KEYS.openrouter;
-  if (!key) return null;
-  try {
-    return await withRetry(
-      async () => {
-        const res = await fetchWithTimeout(
-          "https://openrouter.ai/api/v1/chat/completions",
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${key}`,
-              "Content-Type": "application/json",
-              "HTTP-Referer": APP.url || "https://buildwe.vercel.app",
-              "X-Title": APP.name || "BUILDWE",
-            },
-            body: JSON.stringify({
-              model: model.includes("/")
-                ? model
-                : "meta-llama/llama-3.3-70b-instruct",
-              messages,
-              temperature: budget?.temperature ?? 0.7,
-              stream: true,
-              max_tokens: budget?.maxTokens ?? 4096,
-            }),
-          },
-          TIMEOUTS.stream,
-          "openrouter"
-        );
-        if (!res.ok || !res.body) throw errorFromStatus(res.status);
-        return res.body;
-      },
-      { attempts: 2, label: "openrouter" }
-    );
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Normalise ANY provider's SSE stream into BUILDWE's {token} protocol.
@@ -239,57 +109,6 @@ export function anyStreamToTextSSE(
   });
 }
 
-export function openAIStreamToTextSSE(body: ReadableStream<Uint8Array>) {
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  let buffer = "";
-
-  return new ReadableStream({
-    async start(controller) {
-      const reader = body.getReader();
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-          for (const line of lines) {
-            const t = line.trim();
-            if (!t.startsWith("data:")) continue;
-            const data = t.slice(5).trim();
-            if (!data || data === "[DONE]") continue;
-            try {
-              const json = JSON.parse(data);
-              const token =
-                json.choices?.[0]?.delta?.content ||
-                json.choices?.[0]?.message?.content ||
-                "";
-              if (token) {
-                controller.enqueue(
-                  encoder.encode(`data: ${JSON.stringify({ token })}\n\n`)
-                );
-              }
-            } catch {
-              /* */
-            }
-          }
-        }
-        controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify({ done: true })}\n\n`)
-        );
-        controller.close();
-      } catch {
-        controller.enqueue(
-          encoder.encode(
-            `data: ${JSON.stringify({ error: "Response interrupted. Try again." })}\n\n`
-          )
-        );
-        controller.close();
-      }
-    },
-  });
-}
 
 function textToSSE(text: string): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -648,26 +467,32 @@ export async function generateImage(opts: {
     aspect: opts.aspect === "yt" ? "16:9" : opts.aspect,
   });
 
-  const url = buildImageUrl(
-    merged.prompt,
-    opts.aspect === "yt" ? "16:9" : opts.aspect,
-    opts.modelId || "flux"
-  );
+  // Real cross-vendor generation: fal and HuggingFace are used when their
+  // keys exist, Pollinations otherwise. Previously every model id produced
+  // the same Pollinations image, which made the model picker a lie.
+  const result = await generateImageMulti({
+    prompt: merged.prompt,
+    aspect: opts.aspect === "yt" ? "16:9" : opts.aspect,
+    plan: opts.plan === "pro" ? "pro" : "free",
+    ...(opts.modelId ? { modelId: opts.modelId } : {}),
+  });
 
   return {
-    url,
+    url: result.url,
     promptUsed: merged.prompt,
     editMode: merged.mode,
     model:
-      opts.modelId === "turbo"
+      result.modelId === "turbo"
         ? "BUILDWE Vision Fast"
-        : opts.modelId === "pro"
+        : /pro|dev/.test(result.modelId)
           ? "BUILDWE Vision Pro"
           : "BUILDWE Vision",
-    modelId: opts.modelId || "flux",
-    provider: "buildwe",
+    modelId: result.modelId,
+    provider: result.provider,
     live: true,
-    comingSoon: opts.modelId === "pro",
+    // Surfaced so the UI can tell the user their pick was unavailable
+    // instead of silently handing them a different model's output.
+    fellBack: result.fellBack,
   };
 }
 

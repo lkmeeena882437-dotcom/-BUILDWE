@@ -5,10 +5,17 @@
 import crypto from "crypto";
 
 function keyMaterial(): Buffer {
+  const configured =
+    process.env.BYOK_ENCRYPTION_SECRET || process.env.SESSION_SECRET;
+  // A known key would make every stored BYOK key decryptable by anyone with
+  // the database — refuse rather than pretend the encryption is real.
+  if (!configured && process.env.NODE_ENV === "production") {
+    throw new Error(
+      "BYOK_ENCRYPTION_SECRET is not set. Refusing to encrypt user keys with the public development key."
+    );
+  }
   const secret =
-    process.env.BYOK_ENCRYPTION_SECRET ||
-    process.env.SESSION_SECRET ||
-    "buildwe-dev-byok-secret-change-me-in-production-32b";
+    configured || "buildwe-dev-byok-secret-change-me-in-production-32b";
   // derive a stable 32-byte key from whatever-length secret
   return crypto.createHash("sha256").update(secret).digest();
 }
@@ -60,8 +67,13 @@ export function newApiKey(): string {
 /* ── Stateless email-verification tokens ─────────────────── */
 
 function hmac(s: string): string {
-  const secret =
-    process.env.SESSION_SECRET || "buildwe-dev-secret-change-me-in-production-32b";
+  const configured = process.env.SESSION_SECRET;
+  if (!configured && process.env.NODE_ENV === "production") {
+    throw new Error(
+      "SESSION_SECRET is not set. Refusing to sign verification tokens with the public development key."
+    );
+  }
+  const secret = configured || "buildwe-dev-secret-change-me-in-production-32b";
   return crypto.createHmac("sha256", secret).update(s).digest("base64url");
 }
 

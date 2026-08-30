@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
+import { rateLimitDurable } from "@/lib/rate-limit/durable";
 import { generateImage } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { addGeneration, uid } from "@/lib/db/store";
 import { INPUT_LIMITS } from "@/lib/ai/gateway";
+import { mirrorRemoteImage, mediaStorageEnabled } from "@/lib/storage/media";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,7 +15,7 @@ export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
     const ip = clientIp(req);
-    const rl = rateLimit(`ai:image:${session.userId}:${ip}`, 20, 60_000);
+    const rl = await rateLimitDurable(`ai:image:${session.userId}:${ip}`, 20, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
         { error: "Too many requests — wait a moment." },
@@ -83,12 +85,28 @@ export async function POST(req: NextRequest) {
     }
 
     let id = uid("gen");
+
+    // Mirror the artwork onto our own storage when configured. Previously the
+    // history row pointed at a third-party hot-link we don't control, so an
+    // upstream change would silently break every past generation.
+    let finalUrl = result.url;
+    if (mediaStorageEnabled() && /^https?:/.test(result.url)) {
+      try {
+        finalUrl = await mirrorRemoteImage(
+          result.url,
+          `images/${session.userId}/${id}.jpg`
+        );
+      } catch (e) {
+        console.error("[bw] image mirror", e);
+      }
+    }
+
     try {
       const gen = addGeneration({
         userId: session.userId,
         type: "image",
         prompt: result.promptUsed || prompt,
-        outputUrl: result.url,
+        outputUrl: finalUrl,
         meta: {
           aspect,
           model: result.model,
@@ -104,7 +122,7 @@ export async function POST(req: NextRequest) {
 
     const res = NextResponse.json({
       id,
-      url: result.url,
+      url: finalUrl,
       model: result.model,
       provider: "buildwe",
       aspect,

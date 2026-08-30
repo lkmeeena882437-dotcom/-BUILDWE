@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
+import { rateLimitDurable } from "@/lib/rate-limit/durable";
 import { generateAudioPlan } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { addGeneration, uid } from "@/lib/db/store";
 import { INPUT_LIMITS } from "@/lib/ai/gateway";
+import { persistDataUrl, mediaStorageEnabled } from "@/lib/storage/media";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,7 +15,7 @@ export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
     const ip = clientIp(req);
-    const rl = rateLimit(`ai:audio:${session.userId}:${ip}`, 20, 60_000);
+    const rl = await rateLimitDurable(`ai:audio:${session.userId}:${ip}`, 20, 60_000);
     if (!rl.ok) {
       return NextResponse.json({ error: "Too many requests — wait a moment." }, { status: 429 });
     }
@@ -60,12 +62,33 @@ export async function POST(req: NextRequest) {
     }
 
     let id = uid("gen");
+
+    // Persist the audio itself, not just a row saying it existed. Previously
+    // the MP3 lived only in a base64 data URL held in memory, so history
+    // showed the entry but the sound was gone after a refresh.
+    let storedUrl: string | undefined;
+    const rawAudio =
+      "audioUrl" in plan && typeof plan.audioUrl === "string" ? plan.audioUrl : undefined;
+    if (rawAudio?.startsWith("data:") && mediaStorageEnabled()) {
+      try {
+        const hosted = await persistDataUrl(
+          rawAudio,
+          `audio/${session.userId}/${id}.mp3`
+        );
+        if (hosted !== rawAudio) storedUrl = hosted;
+      } catch (e) {
+        // Storage is best-effort — never fail a generation over it.
+        console.error("[bw] audio store", e);
+      }
+    }
+
     try {
       const gen = addGeneration({
         userId: session.userId,
         type: "audio",
         prompt: text.slice(0, 500),
         outputText: text,
+        ...(storedUrl ? { outputUrl: storedUrl } : {}),
         meta: { voice, speed, model: plan.model },
       });
       id = gen.id;
@@ -76,6 +99,8 @@ export async function POST(req: NextRequest) {
     const res = NextResponse.json({
       id,
       ...plan,
+      // Prefer the hosted URL so the client caches a real file, not base64.
+      ...(storedUrl ? { audioUrl: storedUrl, stored: true } : {}),
     });
     attachGuestCookie(res, session.userId);
     return res;
