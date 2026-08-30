@@ -11,6 +11,7 @@ Boss bhejte hue updates yahan track hote hain. Public changelog page hata diya g
 | Update #2 re-check pass | boss ("recheck karo, kuch adhura to nahi") | ✅ v1.6.1 — 4 gaps mile aur fix hue (niche) |
 | Code Canvas actions + status review + main push | boss ("ha kr bhai… pahle status review do, phir main me push") | ✅ v1.7.0 — Run/Test/Fix/Optimize/Refactor + docs/STATUS_REVIEW.md |
 | Update #3 — Product/UX/Brand/Trust plan | boss (chat paste) | ✅ Implemented earlier (v1.4.0) |
+| **Full Platform Audit & Completion** | boss (PDF → pasted) | ✅ **v1.8.0** — 6 confirmed vulns fixed + router/gateway/agent foundations (`docs/AUDIT_UPDATE1.md`) |
 
 ## Update #2 — kya implement hua (v1.6.0)
 
@@ -93,3 +94,42 @@ Koi naya mode/nav item nahi — sab intelligence existing UI ke andar (composer 
 
 ## Ops notes
 - `/changelog` public page REMOVED (404) — links + sitemap se bhi hataya. Internal history `docs/COMPETITOR_GAP_ANALYSIS.md` me.
+
+
+## v1.8.0 — Full Platform Audit & Completion (boss Update #1 PDF)
+
+Poora audit `docs/AUDIT_UPDATE1.md` me hai — har PDF point numbered, aur har
+fix ka **live test log** (before/after) diya hai. Yahan sirf summary.
+
+### 6 confirmed vulnerabilities (guess nahi — live reproduce karke fix)
+
+| # | Kya tha | Severity |
+|---|---|---|
+| V1 | Guest cookie plaintext thi → `Cookie: bw_guest=<victim>` se doosre guest ka poora data mil jaata tha | **CRITICAL** |
+| V2 | Chat/code me input size cap nahi tha → ek hi request se token cost blow | HIGH |
+| V3 | Image/audio prompt API par unbounded | MEDIUM |
+| V4 | Kisi bhi LLM call par timeout nahi tha → hanging provider = latka hua request | HIGH |
+| V5 | Guest→account migration hi nahi thi → register karte hi guest ka saara kaam orphan | HIGH (data loss) |
+| V6 | Payment webhook nahi tha → paisa katne ke baad tab band = PRO nahi milta | MEDIUM |
+
+Plus: PRO ke "monthly" limits actually **daily** counter se compare ho rahe the
+(~30x zyada allowance mil rahi thi) — ab real calendar-month.
+
+### Naya (additive — kuch bhi purana hataya nahi)
+
+- `lib/auth/guest.ts` — HMAC-signed guest identities
+- `lib/ai/gateway.ts` — har provider call par timeout + retry + sanitised error + input guard
+- `lib/ai/router.ts` — scored Auto Router (14/14 test pass; 5 purane misroutes fix)
+- `lib/db/store.ts` — project files (agent context), `migrateGuestData`, `getMonthlyUsage`
+- `/api/projects/files` — coding agent read/write (path traversal blocked, owner-scoped)
+- `/api/ai/generations` — image/audio history jo save to hoti thi par kabhi padhi nahi jaati thi
+- `/api/checkout/webhook` — signed, idempotent, subscription downgrade ke saath
+
+### Verification
+36/36 regression pass · `tsc --noEmit` clean · production build clean ·
+har vuln ka before/after live test `docs/AUDIT_UPDATE1.md` me.
+
+### Abhi bhi pending (honest)
+Server-side code sandbox (§3.3 — free hosting me container isolation nahi),
+project files ka UI panel, image job progress UI, PDF/DOCX/XLSX, real-device
+mobile QA, metrics persistence. Detail audit doc me.
