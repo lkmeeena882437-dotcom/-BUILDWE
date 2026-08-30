@@ -364,3 +364,29 @@ production build clean · PRO gate dono direction live verify.
 ### Boss ke liye
 - `docs/SETUP_GUIDE.md` — Supabase steps, Redis kyun nahi chahiye, 5 test
 - `docs/REMAINING_WORK.md` — kaun kya karega, aur kya jaanbujh kar chhoda
+
+---
+
+## v1.11.3 — Env variables audit
+
+Boss ne poocha "kaun kaun se variables add karne hain". List banane ke bajaye
+**code se nikaali** — har `process.env.*` grep karke `.env.example` se milaya.
+Do mismatch mile:
+
+**1. `GOOGLE_AI_API_KEY` galat naam tha** — `.env.example` me yehi likha tha,
+par code `GOOGLE_API_KEY` padhta hai. Jo bhi is file ko follow karta, wo aisa
+variable set karta jise **koi padhta hi nahi**. Gemini chalu hi na hota aur
+wajah samajh na aati. Theek kiya, saath me note bhi.
+
+**2. ElevenLabs / Cartesia / Deepgram ke keys listed the, adapter nahi hai** —
+catalog me teeno ke audio models hain, par sirf Pollinations implement hai.
+Yani wahi "catalog jhooth bolta hai" problem jo image me v1.11.0 me fix ki
+thi — **audio me abhi bhi hai**. Keys `.env.example` se hata di (set karne ka
+koi fayda nahi tha), aur `docs/ROADMAP.md` me P1 kaam bana diya.
+
+Naya: `docs/ENV_VARIABLES.md` — priority ke hisaab se (zaroori / payments /
+optional), har variable ka asar, aur "ye mat daalna" section.
+Naya: `docs/ROADMAP.md` — aage ka plan, aur kya jaanbujh kar nahi banana.
+
+### Verification
+38/38 regression · `tsc` clean · production build clean.
