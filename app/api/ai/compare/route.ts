@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
+import { rateLimitDurable } from "@/lib/rate-limit/durable";
 import { streamChatOrCode } from "@/lib/ai/providers";
 import { estimateComplexity } from "@/lib/ai/models-catalog";
 import { bump } from "@/lib/metrics/metrics";
@@ -47,7 +48,7 @@ async function collect(stream: ReadableStream<Uint8Array>): Promise<string> {
 export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
-    const rl = rateLimit(`compare:${session.userId}:${clientIp(req)}`, 10, 60_000);
+    const rl = await rateLimitDurable(`compare:${session.userId}:${clientIp(req)}`, 10, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
         {
@@ -92,7 +93,7 @@ export async function POST(req: NextRequest) {
     if (!liveLanes.length) bump("compare_offline");
     if (!liveLanes.length) {
       const message =
-        "Model comparison needs at least one live model — add a free Groq key in Settings → API keys (or platform keys on the server), then try again.";
+        "Model comparison needs at least one live model. Connect your own key in Settings → API keys, or try again shortly.";
       const res = NextResponse.json({
         ok: true,
         available: false,

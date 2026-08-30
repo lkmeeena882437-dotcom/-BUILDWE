@@ -82,6 +82,7 @@ import {
   detectAuto,
   deleteHistory,
   fetchHistory,
+  fetchGenerations,
   fetchMe,
   generateAudio,
   generateImage,
@@ -112,6 +113,13 @@ import {
   verifyApi,
   compareApi,
   codeActionApi,
+  runAgentApi,
+  type AgentEvent as AgentEv,
+  fetchProjectFiles,
+  readProjectFile,
+  saveProjectFileApi,
+  deleteProjectFileApi,
+  type ProjectFileMeta,
   type TeamView,
   type MeResponse,
 } from "@/lib/client/api";
@@ -133,6 +141,8 @@ type Msg = {
   clarifier?: string;
   quality?: { label: "good" | "review"; notes: string[] };
   fallbackNote?: string;
+  /** true when the reply came from offline mode (no live provider reached) */
+  offline?: boolean;
   recovery?: {
     text: string;
     mode: "chat" | "code";
@@ -457,7 +467,17 @@ function Dashboard() {
   // image
   const [aspect, setAspect] = useState("1:1");
   const [images, setImages] = useState<StudioImage[]>([]);
+  /** past voice generations restored from the server (Update #1 §4.5) */
+  const [audioHistory, setAudioHistory] = useState<
+    { id: string; text: string; voice: string; createdAt: string }[]
+  >([]);
   const [imgLoading, setImgLoading] = useState(false);
+  // Generation-job failure state, kept per studio so a failed image job shows
+  // its own retry affordance instead of only a transient global error strip.
+  const [imgFailure, setImgFailure] = useState<string | null>(null);
+  const [imgLastPrompt, setImgLastPrompt] = useState("");
+  const [audioFailure, setAudioFailure] = useState<string | null>(null);
+  const [audioLastScript, setAudioLastScript] = useState("");
   const [activeImg, setActiveImg] = useState<string | null>(null);
   const [imageModelId, setImageModelId] = useState("flux");
   const [imagePrompt, setImagePrompt] = useState("");
@@ -507,7 +527,26 @@ function Dashboard() {
   const [teamNote, setTeamNote] = useState("");
 
   // canvas
-  const [canvasTab, setCanvasTab] = useState<"code" | "preview">("code");
+  const [canvasTab, setCanvasTab] = useState<"code" | "preview" | "files">("code");
+  // Project files panel (Update #1 §3.1/§3.6 — the API existed, the UI didn't)
+  const [projFiles, setProjFiles] = useState<ProjectFileMeta[]>([]);
+  const [projFilesBusy, setProjFilesBusy] = useState(false);
+  const [projFilesErr, setProjFilesErr] = useState("");
+  const [openFileId, setOpenFileId] = useState<string | null>(null);
+  const [newFilePath, setNewFilePath] = useState("");
+  // Coding Agent run state — the agent works autonomously, so the user needs
+  // to see each step as it happens rather than a single opaque spinner.
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentLog, setAgentLog] = useState<
+    { label: string; ok?: boolean; kind: "step" | "tool" | "check" | "msg" | "error" }[]
+  >([]);
+  const [agentResult, setAgentResult] = useState<{
+    ok: boolean;
+    summary: string;
+    filesChanged: string[];
+    verified: boolean;
+  } | null>(null);
+  const agentAbort = useRef<AbortController | null>(null);
   const [canvasVersions, setCanvasVersions] = useState<
     { ts: number; code: string; lang: string }[]
   >([]);
@@ -602,6 +641,52 @@ function Dashboard() {
     }
   }, []);
 
+  /**
+   * Restore past image/audio creations (Update #1 §4.5).
+   * These were always saved server-side, but the studios started empty on
+   * every reload, so a user's own gallery looked lost. Purely additive:
+   * restored rows sit behind anything made in the current session.
+   */
+  const refreshGenerations = useCallback(async () => {
+    try {
+      const [imgs, auds] = await Promise.all([
+        fetchGenerations("image", 30),
+        fetchGenerations("audio", 30),
+      ]);
+
+      const restored: StudioImage[] = imgs
+        // vision analyses are stored as type "image" too — those have no URL
+        .filter((g) => Boolean(g.outputUrl))
+        .map((g) => ({
+          id: g.id,
+          url: g.outputUrl as string,
+          prompt: g.prompt,
+          userPrompt: String(
+            (g.meta as { userPrompt?: string } | undefined)?.userPrompt || g.prompt
+          ),
+          aspect: String((g.meta as { aspect?: string } | undefined)?.aspect || "1:1"),
+          model: String((g.meta as { model?: string } | undefined)?.model || "BUILDWE Vision"),
+        }));
+
+      if (restored.length) {
+        setImages((prev) => {
+          const seen = new Set(prev.map((i) => i.id));
+          return [...prev, ...restored.filter((r) => !seen.has(r.id))];
+        });
+      }
+      setAudioHistory(
+        auds.map((g) => ({
+          id: g.id,
+          text: g.outputText || g.prompt,
+          voice: String((g.meta as { voice?: string } | undefined)?.voice || "nova"),
+          createdAt: g.createdAt,
+        }))
+      );
+    } catch {
+      /* history is a bonus — never block the workspace */
+    }
+  }, []);
+
   const refreshProjects = useCallback(async () => {
     try {
       const p = await fetchProjects();
@@ -623,6 +708,7 @@ function Dashboard() {
   useEffect(() => {
     refreshMe();
     refreshHistory();
+    refreshGenerations();
     refreshProjects();
     refreshTeams();
     fetchByok()
@@ -636,7 +722,7 @@ function Dashboard() {
     fetchModels()
       .then((m) => setModelsCatalog(m.all || []))
       .catch(() => {});
-  }, [refreshMe, refreshHistory, refreshProjects, refreshTeams]);
+  }, [refreshMe, refreshHistory, refreshGenerations, refreshProjects, refreshTeams]);
 
   const doSaveByok = async (which: "groq" | "openrouter", clear?: boolean) => {
     setByokBusy(true);
@@ -1124,6 +1210,8 @@ function Dashboard() {
     const promptText = text.trim();
     if (!promptText || imgLoading) return;
     setError("");
+    setImgFailure(null);
+    setImgLastPrompt(promptText);
     setImgLoading(true);
     setView("app");
     setMode("image");
@@ -1147,7 +1235,9 @@ function Dashboard() {
       setModelTag(img.model || "BUILDWE Vision");
       refreshMe();
     } catch (e) {
-      setError((e as Error).message);
+      const msg = (e as Error).message || "Image generation failed.";
+      setError(msg);
+      setImgFailure(msg);
     } finally {
       setImgLoading(false);
     }
@@ -1157,6 +1247,8 @@ function Dashboard() {
     const script = (text ?? audioText).trim();
     if (!script || audioBusy) return;
     setError("");
+    setAudioFailure(null);
+    setAudioLastScript(script);
     setAudioBusy(true);
     setView("app");
     setMode("audio");
@@ -1197,12 +1289,213 @@ function Dashboard() {
       }
       refreshMe();
     } catch (e) {
-      setError((e as Error).message);
+      const msg = (e as Error).message || "Voice generation failed.";
+      setError(msg);
+      setAudioFailure(msg);
     } finally {
       setAudioBusy(false);
     }
   };
 
+
+
+  /* ── Project files (Coding Agent workspace) ─────────────── */
+
+  const currentProjectId = convProjectId ?? activeProject ?? null;
+
+  const loadProjFiles = useCallback(async () => {
+    if (!currentProjectId) {
+      setProjFiles([]);
+      return;
+    }
+    setProjFilesBusy(true);
+    setProjFilesErr("");
+    try {
+      setProjFiles(await fetchProjectFiles(currentProjectId));
+    } catch (e) {
+      setProjFilesErr((e as Error).message || "Couldn't load project files.");
+    } finally {
+      setProjFilesBusy(false);
+    }
+  }, [currentProjectId]);
+
+  useEffect(() => {
+    if (canvasTab === "files") void loadProjFiles();
+  }, [canvasTab, loadProjFiles]);
+
+  const openProjFile = async (id: string) => {
+    setProjFilesErr("");
+    try {
+      const f = await readProjectFile(id);
+      setCodePanel(f.content);
+      setCodeLang(f.lang || "text");
+      setOpenFileId(id);
+      setCanvasTab("code");
+    } catch (e) {
+      setProjFilesErr((e as Error).message || "Couldn't open that file.");
+    }
+  };
+
+  const saveCanvasToFile = async (path?: string) => {
+    if (!currentProjectId) {
+      setProjFilesErr("Pick a project first — files are saved inside a project.");
+      return;
+    }
+    const target =
+      path ||
+      projFiles.find((f) => f.id === openFileId)?.path ||
+      newFilePath.trim();
+    if (!target) {
+      setProjFilesErr("Give the file a name, e.g. index.html");
+      return;
+    }
+    setProjFilesBusy(true);
+    setProjFilesErr("");
+    try {
+      await saveProjectFileApi({
+        projectId: currentProjectId,
+        path: target,
+        content: codePanel,
+        lang: codeLang,
+      });
+      setNewFilePath("");
+      beat("project_file_save");
+      await loadProjFiles();
+    } catch (e) {
+      setProjFilesErr((e as Error).message || "Save failed.");
+    } finally {
+      setProjFilesBusy(false);
+    }
+  };
+
+  const removeProjFile = async (id: string) => {
+    setProjFilesBusy(true);
+    setProjFilesErr("");
+    try {
+      await deleteProjectFileApi(id);
+      if (openFileId === id) setOpenFileId(null);
+      await loadProjFiles();
+    } catch (e) {
+      setProjFilesErr((e as Error).message || "Delete failed.");
+    } finally {
+      setProjFilesBusy(false);
+    }
+  };
+
+
+  /* ── Coding Agent run ───────────────────────────────────── */
+
+  const runCodingAgent = async (goalText?: string) => {
+    const goal = (goalText ?? input).trim();
+    if (!goal || agentBusy) return;
+
+    setError("");
+    setAgentBusy(true);
+    setAgentLog([]);
+    setAgentResult(null);
+    setView("app");
+    setMode("code");
+    setInput("");
+    if (taRef.current) taRef.current.style.height = "48px";
+    beat("agent_run");
+
+    const ctrl = new AbortController();
+    agentAbort.current = ctrl;
+
+    // Show the goal in the transcript so the run has context in the thread.
+    setMessages((ms) => [...ms, { id: rid(), role: "user", content: goal }]);
+
+    try {
+      const result = await runAgentApi(
+        {
+          goal,
+          projectId: convProjectId ?? activeProject ?? undefined,
+          canvasCode: codePanel || undefined,
+          canvasLang: codeLang || undefined,
+        },
+        (ev: AgentEv) => {
+          if (ev.type === "step") {
+            setAgentLog((l) => [...l, { kind: "step", label: `${ev.label}…` }]);
+          } else if (ev.type === "tool") {
+            setAgentLog((l) => [
+              ...l,
+              {
+                kind: "tool",
+                ok: ev.ok,
+                label: `${ev.tool.replace(/_/g, " ")}${ev.path ? ` · ${ev.path}` : ""} — ${ev.detail}`,
+              },
+            ]);
+          } else if (ev.type === "check") {
+            setAgentLog((l) => [
+              ...l,
+              {
+                kind: "check",
+                ok: ev.ok,
+                label: ev.ok
+                  ? "Checks passed"
+                  : `Found ${ev.issues.length} issue(s) — fixing`,
+              },
+            ]);
+          } else if (ev.type === "message") {
+            setAgentLog((l) => [...l, { kind: "msg", label: ev.text }]);
+          } else if (ev.type === "error") {
+            setAgentLog((l) => [...l, { kind: "error", ok: false, label: ev.text }]);
+          }
+        },
+        ctrl.signal
+      );
+
+      if (result) {
+        setAgentResult({
+          ok: result.ok,
+          summary: result.summary,
+          filesChanged: result.filesChanged,
+          verified: result.verified,
+        });
+
+        // Drop the finished artifact straight into the canvas.
+        if (result.primaryFile) {
+          setCodePanel(result.primaryFile.content);
+          setCodeLang(result.primaryFile.lang || "html");
+          setCanvasTab("code");
+        }
+
+        setMessages((ms) => [
+          ...ms,
+          {
+            id: rid(),
+            role: "assistant",
+            content: [
+              result.summary,
+              result.filesChanged.length
+                ? `\n\n**Files changed:** ${result.filesChanged.join(", ")}`
+                : "",
+              result.verified ? "\n\n✓ Verified — checks passed." : "",
+            ]
+              .filter(Boolean)
+              .join(""),
+          },
+        ]);
+
+        void loadProjFiles();
+        refreshMe();
+      }
+    } catch (e) {
+      const msg = (e as Error).message || "The agent couldn't finish.";
+      setError(msg);
+      setAgentLog((l) => [...l, { kind: "error", ok: false, label: msg }]);
+    } finally {
+      setAgentBusy(false);
+      agentAbort.current = null;
+    }
+  };
+
+  const stopAgent = () => {
+    agentAbort.current?.abort();
+    agentAbort.current = null;
+    setAgentBusy(false);
+    setAgentLog((l) => [...l, { kind: "msg", label: "Stopped by you." }]);
+  };
 
   const send = async (
     override?: string,
@@ -1347,7 +1640,12 @@ function Dashboard() {
             };
             if (meta.conversationId) setConvId(meta.conversationId);
             if (meta.model) setModelTag(String(meta.model));
-            if (meta.understood || meta.sources?.length || meta.fallbackNote) {
+            if (
+              meta.understood ||
+              meta.sources?.length ||
+              meta.fallbackNote ||
+              meta.live === false
+            ) {
               setMessages((ms) =>
                 ms.map((m) =>
                   m.id === aId
@@ -1357,6 +1655,7 @@ function Dashboard() {
                         ...(meta.clarifier ? { clarifier: meta.clarifier } : {}),
                         ...(meta.sources?.length ? { sources: meta.sources } : {}),
                         ...(meta.fallbackNote ? { fallbackNote: meta.fallbackNote } : {}),
+                        ...(meta.live === false ? { offline: true } : {}),
                       }
                     : m
                 )
@@ -2075,6 +2374,16 @@ function Dashboard() {
               setPrompt={setImagePrompt}
               lastPrompt={lastImagePrompt}
               onGenerate={(text) => runImageGenerate(text)}
+              failure={imgFailure}
+              onRetry={() => {
+                if (!imgLastPrompt) return;
+                setImgFailure(null);
+                void runImageGenerate(imgLastPrompt);
+              }}
+              onDismissFailure={() => {
+                setImgFailure(null);
+                setError("");
+              }}
             />
           ) : mode === "audio" ? (
             <AudioStudio
@@ -2087,7 +2396,18 @@ function Dashboard() {
               voices={VOICES}
               loading={audioBusy}
               lastSpoken={lastSpoken}
+              history={audioHistory}
               onGenerate={() => runAudioGenerate()}
+              failure={audioFailure}
+              onRetry={() => {
+                if (!audioLastScript) return;
+                setAudioFailure(null);
+                void runAudioGenerate(audioLastScript);
+              }}
+              onDismissFailure={() => {
+                setAudioFailure(null);
+                setError("");
+              }}
             />
           ) : (
           <div className={clsx("flex min-h-0 flex-1", mode === "code" ? "flex-col lg:flex-row" : "flex-col")}>
@@ -2204,11 +2524,50 @@ function Dashboard() {
                                   style={{ background: "var(--warn-soft)", color: "var(--warn)" }}
                                   title="Provider transparency — what happened behind the scenes"
                                 >
-                                  <span aria-hidden>⚙</span>
+                                  <span aria-hidden>{m.offline ? "◍" : "⚙"}</span>
                                   <span>
-                                    <strong className="font-semibold">Model switched:</strong> {m.fallbackNote}
+                                    <strong className="font-semibold">
+                                      {m.offline ? "Offline mode:" : "Model switched:"}
+                                    </strong>{" "}
+                                    {m.fallbackNote}
                                   </span>
                                 </p>
+                              )}
+                              {/* Offline replies are not errors, so they never got the
+                                  recovery bar — but the user still needs a way out.
+                                  Give them a retry and a one-tap route to connect a key. */}
+                              {!isUser && m.offline && !m.recovery && !m.streaming && (
+                                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                                  <Btn
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={streaming || visionBusy}
+                                    onClick={() => {
+                                      const idx = messages.findIndex((x) => x.id === m.id);
+                                      const prevUser = [...messages.slice(0, idx)]
+                                        .reverse()
+                                        .find((x) => x.role === "user");
+                                      if (!prevUser || streaming) return;
+                                      beat("offline_retry_live");
+                                      setMessages((ms) => ms.filter((x) => x.id !== m.id));
+                                      setTimeout(() => send(prevUser.content), 30);
+                                    }}
+                                    title="Try the live model again"
+                                  >
+                                    <RotateCcw className="h-3.5 w-3.5" /> Retry live
+                                  </Btn>
+                                  <Btn
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => {
+                                      beat("offline_open_keys");
+                                      setModal("byok");
+                                    }}
+                                    title="Connect your own model key for full-quality answers"
+                                  >
+                                    <KeyRound className="h-3.5 w-3.5" /> Connect a key
+                                  </Btn>
+                                </div>
                               )}
                               {!isUser && m.recovery && !m.streaming && (
                                 <div
@@ -2646,6 +3005,17 @@ function Dashboard() {
                         <Eye className="h-3.5 w-3.5" /> Preview
                       </button>
                     ) : null}
+                    <button
+                      type="button"
+                      onClick={() => setCanvasTab("files")}
+                      title="Project files — read, edit and save files the agent can see"
+                      className={clsx("flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium", canvasTab === "files" ? "bg-white/15 text-white" : "text-white/45 hover:bg-white/10")}
+                    >
+                      <FolderOpen className="h-3.5 w-3.5" /> Files
+                      {projFiles.length > 0 && (
+                        <span className="rounded bg-white/15 px-1 text-[9px]">{projFiles.length}</span>
+                      )}
+                    </button>
                     {canvasVersions.length > 1 && (
                       <div className="relative ml-1">
                         <button
@@ -2681,6 +3051,35 @@ function Dashboard() {
                     )}
                   </div>
                   <div className="flex items-center gap-1">
+                    {/* The agent is the headline action: it plans, writes files,
+                        verifies and fixes on its own, unlike the single-shot
+                        Fix/Optimize/Refactor buttons beside it. */}
+                    <button
+                      type="button"
+                      title="Agent: plans, writes project files, verifies and fixes them on its own"
+                      aria-label={agentBusy ? "Stop agent" : "Run coding agent"}
+                      onClick={() => (agentBusy ? stopAgent() : runCodingAgent())}
+                      disabled={!agentBusy && !input.trim()}
+                      className={clsx(
+                        "flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold transition disabled:opacity-35",
+                        agentBusy
+                          ? "bg-red-500/20 text-red-300 hover:bg-red-500/30"
+                          : "bg-[var(--accent)] text-white hover:opacity-90"
+                      )}
+                    >
+                      {agentBusy ? (
+                        <>
+                          <Square className="h-3.5 w-3.5" />
+                          <span className="hidden xl:inline">Stop</span>
+                        </>
+                      ) : (
+                        <>
+                          <Bot className="h-3.5 w-3.5" />
+                          <span className="hidden xl:inline">Agent</span>
+                        </>
+                      )}
+                    </button>
+                    <span className="mx-0.5 h-4 w-px bg-white/10" />
                     {([
                       ["run", "Run", Play, "HTML preview me chalao · JS sandboxed worker me"],
                       ["test", "Test", FlaskConical, "AI se runnable tests banao aur chalao"],
@@ -2721,7 +3120,187 @@ function Dashboard() {
                     }}>Save</button>
                   </div>
                 </div>
-                {canvasTab === "preview" ? (
+                {(agentBusy || agentLog.length > 0) && (
+                  <div
+                    className="max-h-52 shrink-0 overflow-y-auto border-b border-white/10 px-4 py-2.5"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <div className="mb-1.5 flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--accent)]">
+                        <Bot className="h-3 w-3" />
+                        {agentBusy ? "Agent working" : "Agent run"}
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {agentBusy && (
+                          <Loader2 className="h-3 w-3 animate-spin text-white/50" />
+                        )}
+                        {!agentBusy && (
+                          <button
+                            type="button"
+                            aria-label="Clear agent log"
+                            className="rounded px-1.5 text-[11px] text-white/40 hover:bg-white/10 hover:text-white/80"
+                            onClick={() => {
+                              setAgentLog([]);
+                              setAgentResult(null);
+                            }}
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <ol className="flex flex-col gap-0.5">
+                      {agentLog.map((entry, i) => (
+                        <li
+                          key={i}
+                          className={clsx(
+                            "flex items-start gap-1.5 font-mono text-[11px] leading-relaxed",
+                            entry.kind === "error"
+                              ? "text-red-300"
+                              : entry.ok === false
+                                ? "text-amber-300"
+                                : entry.kind === "check" && entry.ok
+                                  ? "text-emerald-300"
+                                  : entry.kind === "step"
+                                    ? "text-white/75"
+                                    : "text-white/45"
+                          )}
+                        >
+                          <span aria-hidden className="shrink-0">
+                            {entry.kind === "error"
+                              ? "✕"
+                              : entry.kind === "check"
+                                ? entry.ok
+                                  ? "✓"
+                                  : "⚠"
+                                : entry.kind === "step"
+                                  ? "▸"
+                                  : "·"}
+                          </span>
+                          <span className="min-w-0 break-words">{entry.label}</span>
+                        </li>
+                      ))}
+                    </ol>
+                    {agentResult && (
+                      <div
+                        className={clsx(
+                          "mt-2 rounded-xl px-2.5 py-2 text-[11px]",
+                          agentResult.verified
+                            ? "bg-emerald-500/15 text-emerald-200"
+                            : "bg-amber-500/15 text-amber-200"
+                        )}
+                      >
+                        <strong className="font-semibold">
+                          {agentResult.verified ? "✓ Verified · " : "Finished · "}
+                        </strong>
+                        {agentResult.summary}
+                        {agentResult.filesChanged.length > 0 && (
+                          <div className="mt-1 text-white/50">
+                            {agentResult.filesChanged.join(" · ")}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {canvasTab === "files" ? (
+                  <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4">
+                    {!currentProjectId ? (
+                      <div className="m-auto max-w-xs text-center text-[12px] text-white/55">
+                        <FolderOpen className="mx-auto mb-2 h-8 w-8 opacity-40" />
+                        <p className="font-medium text-white/80">No project selected</p>
+                        <p className="mt-1">
+                          Pick or create a project in the sidebar. Files saved there stay with
+                          your account and are given to the agent as context.
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="mb-3 flex items-center gap-2">
+                          <input
+                            value={newFilePath}
+                            onChange={(e) => setNewFilePath(e.target.value)}
+                            placeholder="index.html"
+                            aria-label="New file path"
+                            className="min-w-0 flex-1 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[12px] text-white outline-none placeholder:text-white/30"
+                          />
+                          <button
+                            type="button"
+                            disabled={projFilesBusy}
+                            onClick={() => void saveCanvasToFile()}
+                            className="shrink-0 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold text-white disabled:opacity-40"
+                            style={{ background: "var(--accent)" }}
+                            title="Save what's in the canvas to this path"
+                          >
+                            Save canvas
+                          </button>
+                          <button
+                            type="button"
+                            disabled={projFilesBusy}
+                            onClick={() => void loadProjFiles()}
+                            aria-label="Refresh file list"
+                            className="shrink-0 rounded-lg border border-white/10 px-2 py-1.5 text-[11px] text-white/60 hover:bg-white/10 disabled:opacity-40"
+                          >
+                            <RotateCcw className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+
+                        {projFilesErr && (
+                          <p className="mb-2 rounded-lg bg-red-500/15 px-2.5 py-1.5 text-[11px] text-red-300" role="alert">
+                            {projFilesErr}
+                          </p>
+                        )}
+
+                        {projFilesBusy && !projFiles.length ? (
+                          <p className="text-[12px] text-white/45">Loading files…</p>
+                        ) : !projFiles.length ? (
+                          <p className="text-[12px] text-white/45">
+                            No files yet. Write something in the canvas, name it above and hit
+                            <strong className="text-white/70"> Save canvas</strong>.
+                          </p>
+                        ) : (
+                          <ul className="flex flex-col gap-1">
+                            {projFiles.map((f) => (
+                              <li
+                                key={f.id}
+                                className={clsx(
+                                  "flex items-center gap-2 rounded-lg px-2.5 py-2 text-[12px]",
+                                  openFileId === f.id ? "bg-white/15" : "hover:bg-white/10"
+                                )}
+                              >
+                                <FileCode2 className="h-3.5 w-3.5 shrink-0 text-white/40" />
+                                <button
+                                  type="button"
+                                  onClick={() => void openProjFile(f.id)}
+                                  className="min-w-0 flex-1 truncate text-left text-white/85"
+                                  title={`Open ${f.path}`}
+                                >
+                                  {f.path}
+                                </button>
+                                <span className="shrink-0 text-[10px] text-white/35">
+                                  {f.size < 1024 ? `${f.size} B` : `${Math.round(f.size / 1024)} KB`}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => void removeProjFile(f.id)}
+                                  aria-label={`Delete ${f.path}`}
+                                  className="shrink-0 rounded px-1.5 text-[11px] text-white/35 hover:bg-white/10 hover:text-red-300"
+                                >
+                                  ✕
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        <p className="mt-3 text-[10px] leading-relaxed text-white/35">
+                          Files are private to your account and are sent to the agent as project
+                          context so it can reason across your whole project, not just one snippet.
+                        </p>
+                      </>
+                    )}
+                  </div>
+                ) : canvasTab === "preview" ? (
                   <iframe
                     title="Live preview"
                     sandbox="allow-scripts"

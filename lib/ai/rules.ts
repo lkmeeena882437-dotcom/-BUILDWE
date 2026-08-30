@@ -1,3 +1,5 @@
+import { routeIntent } from "@/lib/ai/router";
+
 export type AIMode = "chat" | "code" | "image" | "audio" | "auto";
 export type Plan = "free" | "pro";
 
@@ -39,36 +41,16 @@ Rules:
   auto: `Route and solve. Detect chat vs code vs image vs audio, then deliver.`,
 } as const;
 
+/**
+ * Intent detection — delegates to the scored Auto Router (lib/ai/router.ts).
+ *
+ * Signature and return type are unchanged, so every existing caller keeps
+ * working; only the accuracy improves. The old implementation was first-match
+ * regex and mis-routed common asks like "explain how image compression works"
+ * (→ image) or "write a blog post about React" (→ code).
+ */
 export function detectIntent(prompt: string): Exclude<AIMode, "auto"> {
-  const p = prompt.toLowerCase();
-
-  if (
-    /(generate|create|draw|render|imagine).*(image|picture|logo|poster|art|photo|thumbnail)/i.test(
-      p
-    ) ||
-    /\b(image|logo|thumbnail|illustration|wallpaper|banner)\b/.test(p)
-  ) {
-    return "image";
-  }
-
-  if (
-    /(speak|voice|tts|narrat|read aloud|text to speech|audio|podcast|voiceover)/i.test(
-      p
-    )
-  ) {
-    return "audio";
-  }
-
-  if (
-    /(code|function|component|api|bug|debug|refactor|typescript|python|react|next\.?js|html|css|sql|build (a|an|the)|landing page|website|app|game|script)/i.test(
-      p
-    ) ||
-    /```/.test(prompt)
-  ) {
-    return "code";
-  }
-
-  return "chat";
+  return routeIntent(prompt).mode;
 }
 
 export function isComplexCodePrompt(text: string): boolean {

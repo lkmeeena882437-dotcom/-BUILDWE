@@ -4,7 +4,14 @@
 
 import { AI_KEYS, AI_MODELS, APP } from "@/lib/config";
 import { SYSTEM_PROMPTS, publicModelLabel, type Plan } from "@/lib/ai/rules";
-import { pickModel, estimateComplexity } from "@/lib/ai/models-catalog";
+import { pickModel, estimateComplexity, modelChain } from "@/lib/ai/models-catalog";
+import {
+  streamVia,
+  completeVia,
+  availableProviders,
+  extractDelta,
+  providerForModel,
+} from "@/lib/ai/provider-registry";
 import {
   buildMind,
   packMessagesForModel,
@@ -12,6 +19,15 @@ import {
   type MindProfile,
 } from "@/lib/ai/mind";
 import { mergeImagePrompt } from "@/lib/ai/image-prompt";
+import { generateImageMulti } from "@/lib/ai/image-providers";
+import { offlineAnswer } from "@/lib/ai/offline-brain";
+import {
+  fetchWithTimeout,
+  guardMessages,
+  errorFromStatus,
+  TIMEOUTS,
+  withRetry,
+} from "@/lib/ai/gateway";
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -34,107 +50,18 @@ const GROQ_CODE_MODELS = [
 
 export type ProviderKeys = { groq?: string; openrouter?: string };
 
-async function groqStream(
-  messages: ChatMessage[],
-  model: string,
-  userKeys?: ProviderKeys,
-  budget?: { maxTokens: number; temperature: number }
+
+
+
+/**
+ * Normalise ANY provider's SSE stream into BUILDWE's {token} protocol.
+ * Anthropic and Google use different payload shapes from OpenAI-compatible
+ * vendors, so the delta extractor is chosen by wire format.
+ */
+export function anyStreamToTextSSE(
+  body: ReadableStream<Uint8Array>,
+  wire: "openai" | "anthropic" | "google"
 ) {
-  const key = userKeys?.groq || AI_KEYS.groq;
-  if (!key) return null;
-  try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: budget?.temperature ?? 0.7,
-        stream: true,
-        max_tokens: budget?.maxTokens ?? 4096,
-      }),
-    });
-    if (!res.ok || !res.body) {
-      console.error("[bw] groq stream fail", model, res.status);
-      return null;
-    }
-    return res.body;
-  } catch (e) {
-    console.error("[bw] groq stream error", e);
-    return null;
-  }
-}
-
-async function groqComplete(
-  messages: ChatMessage[],
-  model: string,
-  userKeys?: ProviderKeys,
-  budget?: { maxTokens: number; temperature: number }
-): Promise<string | null> {
-  const key = userKeys?.groq || AI_KEYS.groq;
-  if (!key) return null;
-  try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: budget?.temperature ?? 0.7,
-        stream: false,
-        max_tokens: budget?.maxTokens ?? 4096,
-      }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const text = data?.choices?.[0]?.message?.content;
-    return typeof text === "string" && text.trim() ? text : null;
-  } catch {
-    return null;
-  }
-}
-
-async function openRouterStream(
-  messages: ChatMessage[],
-  model: string,
-  userKeys?: ProviderKeys,
-  budget?: { maxTokens: number; temperature: number }
-) {
-  const key = userKeys?.openrouter || AI_KEYS.openrouter;
-  if (!key) return null;
-  try {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": APP.url || "https://buildwe.vercel.app",
-        "X-Title": APP.name || "BUILDWE",
-      },
-      body: JSON.stringify({
-        model: model.includes("/")
-          ? model
-          : "meta-llama/llama-3.3-70b-instruct",
-        messages,
-        temperature: budget?.temperature ?? 0.7,
-        stream: true,
-        max_tokens: budget?.maxTokens ?? 4096,
-      }),
-    });
-    if (!res.ok || !res.body) return null;
-    return res.body;
-  } catch {
-    return null;
-  }
-}
-
-export function openAIStreamToTextSSE(body: ReadableStream<Uint8Array>) {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let buffer = "";
@@ -155,18 +82,14 @@ export function openAIStreamToTextSSE(body: ReadableStream<Uint8Array>) {
             const data = t.slice(5).trim();
             if (!data || data === "[DONE]") continue;
             try {
-              const json = JSON.parse(data);
-              const token =
-                json.choices?.[0]?.delta?.content ||
-                json.choices?.[0]?.message?.content ||
-                "";
+              const token = extractDelta(wire, JSON.parse(data));
               if (token) {
                 controller.enqueue(
                   encoder.encode(`data: ${JSON.stringify({ token })}\n\n`)
                 );
               }
             } catch {
-              /* */
+              /* skip malformed frame */
             }
           }
         }
@@ -185,6 +108,7 @@ export function openAIStreamToTextSSE(body: ReadableStream<Uint8Array>) {
     },
   });
 }
+
 
 function textToSSE(text: string): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -210,40 +134,17 @@ function smartOfflineChat(
   prompt: string,
   history: { role: string; content: string }[]
 ): string {
-  const raw = prompt.trim();
-  const p = raw.toLowerCase();
-  const isHinglish =
-    /kya|hai|ho|haan|nahi|kaise|kese|kyu|mujhe|tum|bhai|yaar|karo|kro|baat|hinglish|samajh|plan|kaam/.test(
-      p
-    );
-
-  if (
-    /^(hi+|h+e+y+|h+e+l+o+|hy+|hii+|hello|namaste)\b/i.test(p) ||
-    /kese ho|kaise ho|kya haal|what's up/.test(p)
-  ) {
-    return isHinglish
-      ? `Hey! Main theek hoon 👍\n\nMain **BUILDWE** hoon. Chat, code, image, voice — sab yahin.\n\nBolo aaj kya karna hai?`
-      : `Hey — all good.\n\nI'm **BUILDWE**. Chat, code, image, or voice — what do you need?`;
-  }
-
-  if (/hinglish|hindi me|hindi mein/.test(p)) {
-    return `Theek hai — ab **Hinglish** mein baat karta hoon.\n\nExact bolo kya chahiye.`;
-  }
-
-  if (raw.length < 50 && !/code|build|write|plan|help|explain/.test(p)) {
-    return isHinglish
-      ? `Samajh gaya: “${raw}”\n\nClear bolo — baat, draft, code, image, ya voice?`
-      : `Got “${raw}”.\n\nWhat do you need — answer, draft, code, image, or voice?`;
-  }
-
   void history;
-  return isHinglish
-    ? `Tumne kaha: **“${raw.slice(0, 280)}”**\n\nSeedha bolo result kya chahiye — explanation, plan, draft, ya code — next reply mein wahi dunga.`
-    : `You said: **“${raw.slice(0, 280)}”**\n\nTell me the result you want (answer / plan / draft / code) and I’ll deliver that.`;
+  // Delegated to the offline brain: computes real answers (math, conversions),
+  // returns usable structure for writing/code asks, and is honest — never
+  // echoes the user's prompt back as a question. See lib/ai/offline-brain.ts.
+  return offlineAnswer(prompt, "chat").text;
 }
 
 function smartOfflineCode(prompt: string): string {
-  return `Request: ${prompt.slice(0, 240)}\n\nBolo exact deliverable (HTML quiz / React todo / landing page) — next message mein complete code block dunga.`;
+  // Offline code mode always hands back runnable starter code, never a
+  // "tell me more" bounce. See lib/ai/offline-brain.ts.
+  return offlineAnswer(prompt, "code").text;
 }
 
 export async function streamChatOrCode(opts: {
@@ -269,7 +170,13 @@ export async function streamChatOrCode(opts: {
   mind: MindProfile;
   fallbackNote?: string;
 }> {
-  const turnsAll: ChatTurn[] = opts.messages
+  // Cost guard (audit V2): clamp oversized payloads BEFORE tokenising.
+  // Rate limits cap how often someone can ask; this caps how expensive a
+  // single ask can be. Keeps the newest turns — those drive the answer.
+  const guarded = guardMessages(opts.messages);
+  const inputMessages = guarded.messages;
+
+  const turnsAll: ChatTurn[] = inputMessages
     .filter((m) => m.role === "user" || m.role === "assistant")
     .map((m) => ({
       role: m.role as "user" | "assistant",
@@ -295,7 +202,7 @@ export async function streamChatOrCode(opts: {
   // base system prompt — previously they were dropped in live mode
   const extraSystem = [
     compressed,
-    opts.messages
+    inputMessages
       .filter((m) => m.role === "system")
       .map((m) => String(m.content || ""))
       .filter(Boolean)
@@ -349,16 +256,35 @@ export async function streamChatOrCode(opts: {
         ? AI_MODELS.free.code
         : AI_MODELS.free.chat;
 
+  // Which vendors can actually be called on this deployment right now.
+  // Models from unconfigured vendors are dropped before scoring, so the
+  // router never "picks" a model it cannot reach.
+  const live = availableProviders(opts.userKeys);
+
   const catalog = pickModel({
     capability: opts.mode,
     plan: opts.plan,
     prompt: opts.promptForRouting || lastUser,
+    availableProviders: live,
   });
 
-  const preferred =
-    opts.mode === "code"
-      ? [envModel, catalog.id, ...GROQ_CODE_MODELS]
-      : [envModel, catalog.id, ...GROQ_CHAT_MODELS];
+  /**
+   * Build the model chain. Order matters:
+   *   1. explicit env override (operator's deliberate choice)
+   *   2. the router's scored pick
+   *   3. cross-vendor alternates, so one provider outage != capability down
+   *   4. the legacy hardcoded Groq list as a last resort
+   */
+  const chain = modelChain({
+    capability: opts.mode,
+    plan: opts.plan,
+    prompt: opts.promptForRouting || lastUser,
+    availableProviders: live,
+    max: 5,
+  }).map((m) => m.id);
+
+  const legacy = opts.mode === "code" ? GROQ_CODE_MODELS : GROQ_CHAT_MODELS;
+  const preferred = [envModel, catalog.id, ...chain, ...legacy];
 
   let tryModels = Array.from(new Set(preferred.filter(Boolean)));
   if (opts.forceModel) tryModels = [opts.forceModel];
@@ -367,44 +293,31 @@ export async function streamChatOrCode(opts: {
   }
 
   let fallbackNote: string | undefined;
-  let triedPrimary = false;
+  let attempts = 0;
 
-  for (const model of tryModels) {
-    const body = await groqStream(messages, model, opts.userKeys, budget);
-    if (body) {
+  // ── Pass 1: stream, walking the chain across vendors ──────
+  for (const model of tryModels.slice(0, 6)) {
+    const hit = await streamVia(model, messages, budget, opts.userKeys);
+    if (hit) {
       return {
-        stream: openAIStreamToTextSSE(body),
+        stream: anyStreamToTextSSE(hit.body, hit.wire),
         model: publicModelLabel(model, opts.mode),
         live: true,
         mind,
         ...(fallbackNote ? { fallbackNote } : {}),
       };
     }
-    triedPrimary = true;
-  }
-
-  if (triedPrimary) {
-    fallbackNote =
-      "The primary model was unavailable — BUILDWE switched to a backup automatically.";
-  }
-
-  for (const model of tryModels.slice(0, 3)) {
-    const body = await openRouterStream(messages, model, opts.userKeys, budget);
-    if (body) {
-      return {
-        stream: openAIStreamToTextSSE(body),
-        model: publicModelLabel(model, opts.mode),
-        live: true,
-        mind,
-        fallbackNote:
-          fallbackNote ||
-          "Answered via the backup provider — the usual one was busy.",
-      };
+    attempts++;
+    if (attempts === 1) {
+      fallbackNote =
+        "The primary model was unavailable — BUILDWE switched to a backup automatically.";
     }
   }
 
+  // ── Pass 2: non-streaming, same chain ─────────────────────
+  // Some providers reject streaming under load but still answer one-shot.
   for (const model of tryModels.slice(0, 4)) {
-    const text = await groqComplete(messages, model, opts.userKeys, budget);
+    const text = await completeVia(model, messages, budget, opts.userKeys);
     if (text) {
       return {
         stream: textToSSE(text),
@@ -430,7 +343,7 @@ export async function streamChatOrCode(opts: {
     mind,
     fallbackNote: opts.offlineOverrideText
       ? undefined
-      : "No live model is reachable right now — this is BUILDWE's offline mode (add a free key in Settings → API keys for full quality).",
+      : "Offline mode — no live model is reachable right now. Maths, conversions, starter code, image, voice and web search all still work. Connect your own key in Settings → API keys for full-quality answers.",
   };
 }
 
@@ -453,7 +366,9 @@ export async function visionComplete(opts: {
   for (const model of VISION_MODELS) {
     if (!groqKey) break;
     try {
-      const res = await fetch(
+      // Vision gets the longest budget (large image payload) but is still
+      // bounded — audit V4: no provider call may hang forever.
+      const res = await fetchWithTimeout(
         "https://api.groq.com/openai/v1/chat/completions",
         {
           method: "POST",
@@ -477,7 +392,9 @@ export async function visionComplete(opts: {
               },
             ],
           }),
-        }
+        },
+        TIMEOUTS.vision,
+        "vision"
       );
       if (!res.ok) continue;
       const data = await res.json();
@@ -499,9 +416,9 @@ export async function visionComplete(opts: {
         ? `You asked: _${question.slice(0, 200)}_`
         : "",
       "",
-      "Full AI vision needs a `GROQ_API_KEY` (free at console.groq.com) set in `.env.local` — drop it in and image understanding goes live instantly.",
+      "Image understanding needs the vision model, which isn't connected right now. An administrator can enable it from the server configuration.",
       "",
-      "Till then: images are attached to this chat and will be sent with your question the moment a key is added.",
+      "Your image stays attached to this chat and will be analysed automatically the moment vision comes online.",
     ]
       .filter(Boolean)
       .join("\n"),
@@ -550,26 +467,32 @@ export async function generateImage(opts: {
     aspect: opts.aspect === "yt" ? "16:9" : opts.aspect,
   });
 
-  const url = buildImageUrl(
-    merged.prompt,
-    opts.aspect === "yt" ? "16:9" : opts.aspect,
-    opts.modelId || "flux"
-  );
+  // Real cross-vendor generation: fal and HuggingFace are used when their
+  // keys exist, Pollinations otherwise. Previously every model id produced
+  // the same Pollinations image, which made the model picker a lie.
+  const result = await generateImageMulti({
+    prompt: merged.prompt,
+    aspect: opts.aspect === "yt" ? "16:9" : opts.aspect,
+    plan: opts.plan === "pro" ? "pro" : "free",
+    ...(opts.modelId ? { modelId: opts.modelId } : {}),
+  });
 
   return {
-    url,
+    url: result.url,
     promptUsed: merged.prompt,
     editMode: merged.mode,
     model:
-      opts.modelId === "turbo"
+      result.modelId === "turbo"
         ? "BUILDWE Vision Fast"
-        : opts.modelId === "pro"
+        : /pro|dev/.test(result.modelId)
           ? "BUILDWE Vision Pro"
           : "BUILDWE Vision",
-    modelId: opts.modelId || "flux",
-    provider: "buildwe",
+    modelId: result.modelId,
+    provider: result.provider,
     live: true,
-    comingSoon: opts.modelId === "pro",
+    // Surfaced so the UI can tell the user their pick was unavailable
+    // instead of silently handing them a different model's output.
+    fellBack: result.fellBack,
   };
 }
 

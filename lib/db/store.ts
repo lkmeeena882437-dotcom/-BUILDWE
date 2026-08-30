@@ -75,6 +75,22 @@ export type Project = {
   createdAt: string;
 };
 
+/**
+ * A file inside a project — gives the Coding Agent real, persistent project
+ * context instead of a single throwaway canvas buffer (Update #1 section 3).
+ */
+export type ProjectFile = {
+  id: string;
+  userId: string;
+  projectId: string;
+  /** relative path, e.g. "src/app.js" */
+  path: string;
+  content: string;
+  lang: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type TeamMember = {
   userId: string;
   email?: string;
@@ -141,6 +157,7 @@ export type DB = {
   generations: Generation[];
   usage: UsageRow[];
   projects: Project[];
+  projectFiles: ProjectFile[];
   shares: Share[];
   payments: Payment[];
   apiKeys: ApiKey[];
@@ -154,6 +171,7 @@ const emptyDb = (): DB => ({
   generations: [],
   usage: [],
   projects: [],
+  projectFiles: [],
   shares: [],
   payments: [],
   apiKeys: [],
@@ -224,6 +242,7 @@ function read(): DB {
       generations: parsed.generations || [],
       usage: parsed.usage || [],
       projects: parsed.projects || [],
+      projectFiles: parsed.projectFiles || [],
       shares: parsed.shares || [],
       payments: parsed.payments || [],
       apiKeys: parsed.apiKeys || [],
@@ -238,6 +257,9 @@ function read(): DB {
 
 function write(db: DB) {
   memoryDb = db;
+  // A local write happened. If bootRemote() is still awaiting its pull, this
+  // tells it to abandon the adopt rather than overwrite what we just wrote.
+  localWriteSinceBoot = true;
   const file = getPath();
   if (file && writable) {
     try {
@@ -257,6 +279,8 @@ function write(db: DB) {
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let latestDb: DB | null = null;
 let bootedRemote = false;
+/** Set by write(); blocks a late remote adopt from clobbering local data. */
+let localWriteSinceBoot = false;
 
 function scheduleRemotePush(db: DB) {
   if (!remoteDbEnabled()) return;
@@ -270,7 +294,15 @@ function scheduleRemotePush(db: DB) {
   }, 1500);
 }
 
-/** One-time boot: adopt the remote snapshot when local storage is fresh. */
+/**
+ * One-time boot: adopt the remote snapshot when local storage is fresh.
+ *
+ * The pull is async, so writes can land while it is in flight. Before the
+ * `localWriteSinceBoot` guard, a signup during that window was silently
+ * destroyed: the adopt overwrote memoryDb with the older remote snapshot, the
+ * account vanished, and the next push persisted the loss. Only adopt if the
+ * process still hasn't written anything by the time the snapshot arrives.
+ */
 function bootRemote() {
   if (bootedRemote || !remoteDbEnabled()) return;
   bootedRemote = true;
@@ -280,12 +312,16 @@ function bootRemote() {
     if (localHadData) return; // local wins on warm starts
     const remote = await pullRemoteDb();
     if (!remote) return;
+    // Re-check AFTER the await — this is the race the guard exists for.
+    if (localWriteSinceBoot) return;
+    if (memoryDb.users.length > 0 || memoryDb.conversations.length > 0) return;
     memoryDb = {
       users: remote.users || [],
       conversations: remote.conversations || [],
       generations: remote.generations || [],
       usage: remote.usage || [],
       projects: remote.projects || [],
+      projectFiles: remote.projectFiles || [],
       shares: remote.shares || [],
       payments: remote.payments || [],
       apiKeys: remote.apiKeys || [],
@@ -303,8 +339,20 @@ function bootRemote() {
   })();
 }
 
-export function storageMode(): "disk" | "memory" {
+/**
+ * What the data is actually persisted to, in order of durability.
+ *
+ * "supabase" means the Postgres mirror is configured, so the data survives a
+ * serverless instance being recycled. "disk" is a local JSON file — fine for
+ * a VPS, lost on most serverless platforms. "memory" means even the file
+ * isn't writable and everything dies with the process.
+ *
+ * The health endpoint reports this so an operator can tell at a glance
+ * whether their deployment is actually durable, instead of assuming it is.
+ */
+export function storageMode(): "supabase" | "disk" | "memory" {
   getPath();
+  if (remoteDbEnabled()) return "supabase";
   return writable && resolvedPath ? "disk" : "memory";
 }
 
@@ -494,6 +542,7 @@ export function deleteUserCascade(userId: string) {
   db.generations = db.generations.filter((g) => g.userId !== userId);
   db.usage = db.usage.filter((u) => u.userId !== userId);
   db.projects = db.projects.filter((p) => p.userId !== userId);
+  db.projectFiles = db.projectFiles.filter((f) => f.userId !== userId);
   db.shares = db.shares.filter((s) => s.userId !== userId);
   db.payments = db.payments.filter((p) => p.userId !== userId);
   db.apiKeys = db.apiKeys.filter((k) => k.userId !== userId);
@@ -538,12 +587,42 @@ export function createConversation(input: {
     updatedAt: now,
   };
   db.conversations.unshift(c);
-  // keep memory bounded on serverless
-  if (db.conversations.length > 200) {
-    db.conversations = db.conversations.slice(0, 200);
-  }
+  // Keep memory bounded PER USER, never globally.
+  //
+  // This used to be `db.conversations.slice(0, 200)` across the whole table,
+  // which meant one busy user (or 200 visitors) silently deleted everyone
+  // else's chats — proven in testing: a user's chat vanished after 205 other
+  // conversations were created. Trimming per owner keeps the table bounded
+  // without ever touching another account's data.
+  trimPerUser(db, input.userId);
   write(db);
   return c;
+}
+
+/** Per-owner retention limits — bounded storage without cross-user deletion. */
+const RETENTION = {
+  conversationsPerUser: 200,
+  generationsPerUser: 300,
+  sharesPerUser: 50,
+  paymentsPerUser: 100,
+  /** messages inside a single conversation */
+  messagesPerConversation: 400,
+} as const;
+
+function trimPerUser(db: DB, userId: string) {
+  const mine = db.conversations.filter((c) => c.userId === userId);
+  if (mine.length <= RETENTION.conversationsPerUser) return;
+  // Oldest-first removal, and only from this owner's rows.
+  const keep = new Set(
+    mine
+      .slice()
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, RETENTION.conversationsPerUser)
+      .map((c) => c.id)
+  );
+  db.conversations = db.conversations.filter(
+    (c) => c.userId !== userId || keep.has(c.id)
+  );
 }
 
 export function appendMessages(
@@ -580,6 +659,16 @@ export function appendMessages(
     i = 0;
   }
   db.conversations[i].messages.push(...messages);
+  // Bound a single conversation (F3): without this one long-running chat grows
+  // without limit, and since every write serialises the whole store, that one
+  // chat slows down every request for every user. Oldest turns drop first —
+  // the model already works from a compressed window of recent turns.
+  const msgs = db.conversations[i].messages;
+  if (msgs.length > RETENTION.messagesPerConversation) {
+    db.conversations[i].messages = msgs.slice(
+      msgs.length - RETENTION.messagesPerConversation
+    );
+  }
   db.conversations[i].updatedAt = new Date().toISOString();
   if (title) db.conversations[i].title = title.slice(0, 80);
   write(db);
@@ -629,13 +718,181 @@ export function renameProject(id: string, userId: string, name: string) {
 
 export function deleteProject(id: string, userId: string) {
   const db = read();
+  const owned = db.projects.some((p) => p.id === id && p.userId === userId);
   db.projects = db.projects.filter((p) => !(p.id === id && p.userId === userId));
   // detach conversations from the deleted project
   for (const c of db.conversations) {
     if (c.projectId === id) c.projectId = null;
   }
+  // remove the project's files too — otherwise they'd linger unreachable
+  if (owned) {
+    db.projectFiles = db.projectFiles.filter(
+      (f) => !(f.projectId === id && f.userId === userId)
+    );
+  }
   write(db);
   return true;
+}
+
+/* ── Project files — Coding Agent context (Update #1 §3) ──── */
+
+const MAX_FILES_PER_PROJECT = 60;
+const MAX_FILE_CHARS = 120_000;
+
+export function normalizeFilePath(raw: string): string | null {
+  const p = String(raw || "").trim().replace(/\\/g, "/");
+
+  // Reject traversal, absolute paths, drive letters and control characters.
+  // These never touch the real filesystem (files live in the JSON store), but
+  // rejecting them keeps paths honest: "/etc/shadow" should fail loudly rather
+  // than be silently rewritten into a lookalike project file.
+  if (!p || p.length > 200) return null;
+  if (p.startsWith("/") || /^[a-zA-Z]:/.test(p)) return null;
+  if (p.includes("..") || /[\0<>:"|?*]/.test(p)) return null;
+
+  const cleaned = p.replace(/^\.\//, "");
+  if (!cleaned) return null;
+  if (cleaned.split("/").some((seg) => !seg || seg === "." || seg === "..")) {
+    return null;
+  }
+  return cleaned;
+}
+
+function guessLang(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() || "";
+  const map: Record<string, string> = {
+    js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript",
+    ts: "typescript", tsx: "typescript",
+    py: "python", rb: "ruby", go: "go", rs: "rust", java: "java",
+    php: "php", cs: "csharp", cpp: "cpp", c: "c", swift: "swift", kt: "kotlin",
+    html: "html", htm: "html", css: "css", scss: "scss",
+    json: "json", md: "markdown", yml: "yaml", yaml: "yaml", sql: "sql",
+    sh: "bash", txt: "text",
+  };
+  return map[ext] || "text";
+}
+
+export function listProjectFiles(projectId: string, userId: string) {
+  return read()
+    .projectFiles.filter((f) => f.projectId === projectId && f.userId === userId)
+    .sort((a, b) => a.path.localeCompare(b.path));
+}
+
+export function getProjectFile(id: string, userId: string) {
+  return (
+    read().projectFiles.find((f) => f.id === id && f.userId === userId) || null
+  );
+}
+
+/** Create or update a file by path (upsert), scoped to one owner + project. */
+export function saveProjectFile(input: {
+  userId: string;
+  projectId: string;
+  path: string;
+  content: string;
+  lang?: string;
+}): { file: ProjectFile } | { error: string } {
+  const path = normalizeFilePath(input.path);
+  if (!path) return { error: "Invalid file path." };
+
+  const content = String(input.content ?? "");
+  if (content.length > MAX_FILE_CHARS) {
+    return { error: "File too large — keep it under 120,000 characters." };
+  }
+
+  const db = read();
+  const project = db.projects.find(
+    (p) => p.id === input.projectId && p.userId === input.userId
+  );
+  if (!project) return { error: "Project not found." };
+
+  const now = new Date().toISOString();
+  const existing = db.projectFiles.find(
+    (f) =>
+      f.projectId === input.projectId &&
+      f.userId === input.userId &&
+      f.path === path
+  );
+
+  if (existing) {
+    existing.content = content;
+    existing.lang = input.lang || existing.lang || guessLang(path);
+    existing.updatedAt = now;
+    write(db);
+    return { file: existing };
+  }
+
+  const count = db.projectFiles.filter(
+    (f) => f.projectId === input.projectId && f.userId === input.userId
+  ).length;
+  if (count >= MAX_FILES_PER_PROJECT) {
+    return { error: `Project file limit reached (${MAX_FILES_PER_PROJECT}).` };
+  }
+
+  const file: ProjectFile = {
+    id: uid("file"),
+    userId: input.userId,
+    projectId: input.projectId,
+    path,
+    content,
+    lang: input.lang || guessLang(path),
+    createdAt: now,
+    updatedAt: now,
+  };
+  db.projectFiles.push(file);
+  write(db);
+  return { file };
+}
+
+export function deleteProjectFile(id: string, userId: string) {
+  const db = read();
+  const before = db.projectFiles.length;
+  db.projectFiles = db.projectFiles.filter(
+    (f) => !(f.id === id && f.userId === userId)
+  );
+  const removed = db.projectFiles.length < before;
+  if (removed) write(db);
+  return removed;
+}
+
+/**
+ * Compact project snapshot for the model's context window.
+ * Full text for small files, head+tail excerpt for large ones — the agent needs
+ * shape and entry points, not every byte.
+ */
+export function buildProjectContext(
+  projectId: string,
+  userId: string,
+  budgetChars = 12_000
+): string {
+  const files = listProjectFiles(projectId, userId);
+  if (!files.length) return "";
+
+  const lines: string[] = [
+    `PROJECT FILES (${files.length}) — this is the user's current project. Modify these files; don't invent new structure unless asked.`,
+    "",
+    "Structure:",
+    ...files.map((f) => `  ${f.path} (${f.lang}, ${f.content.length} chars)`),
+    "",
+  ];
+
+  let used = lines.join("\n").length;
+  for (const f of files) {
+    const remaining = budgetChars - used;
+    if (remaining < 400) {
+      lines.push(`--- ${f.path} — omitted (context budget reached) ---`);
+      continue;
+    }
+    const body =
+      f.content.length <= remaining
+        ? f.content
+        : `${f.content.slice(0, Math.floor(remaining * 0.6))}\n… (truncated) …\n${f.content.slice(-Math.floor(remaining * 0.25))}`;
+    const block = `--- ${f.path} ---\n${body}\n`;
+    lines.push(block);
+    used += block.length;
+  }
+
+  return lines.join("\n");
 }
 
 export function setConversationProject(
@@ -685,7 +942,14 @@ export function createShare(conversationId: string, userId: string) {
     createdAt: new Date().toISOString(),
   };
   db.shares.unshift(s);
-  db.shares = db.shares.slice(0, 200);
+  // Per-owner cap (was a global slice that evicted other users' share links).
+  const mineShares = db.shares.filter((x) => x.userId === userId);
+  if (mineShares.length > RETENTION.sharesPerUser) {
+    const keep = new Set(
+      mineShares.slice(0, RETENTION.sharesPerUser).map((x) => x.id)
+    );
+    db.shares = db.shares.filter((x) => x.userId !== userId || keep.has(x.id));
+  }
   write(db);
   return s;
 }
@@ -718,7 +982,17 @@ export function addPayment(input: Omit<Payment, "id" | "createdAt">) {
     createdAt: new Date().toISOString(),
   };
   db.payments.unshift(row);
-  db.payments = db.payments.slice(0, 300);
+  // Per-owner cap — a payment record is a financial trail; one user's
+  // activity must never evict another user's receipts.
+  const minePay = db.payments.filter((x) => x.userId === input.userId);
+  if (minePay.length > RETENTION.paymentsPerUser) {
+    const keep = new Set(
+      minePay.slice(0, RETENTION.paymentsPerUser).map((x) => x.id)
+    );
+    db.payments = db.payments.filter(
+      (x) => x.userId !== input.userId || keep.has(x.id)
+    );
+  }
   write(db);
   return row;
 }
@@ -939,7 +1213,16 @@ export function addGeneration(g: Omit<Generation, "id" | "createdAt">) {
     createdAt: new Date().toISOString(),
   };
   db.generations.unshift(row);
-  db.generations = db.generations.slice(0, 300);
+  // Per-owner cap (was global slice(0,300), which deleted other users' work).
+  const mineGen = db.generations.filter((x) => x.userId === g.userId);
+  if (mineGen.length > RETENTION.generationsPerUser) {
+    const keep = new Set(
+      mineGen.slice(0, RETENTION.generationsPerUser).map((x) => x.id)
+    );
+    db.generations = db.generations.filter(
+      (x) => x.userId !== g.userId || keep.has(x.id)
+    );
+  }
   write(db);
   return row;
 }
@@ -984,4 +1267,105 @@ export function publicUser(u: User) {
     skills: u.skills,
     createdAt: u.createdAt,
   };
+}
+
+/* ── Guest → account migration (audit V5) ─────────────────────
+ *
+ * Before this, registering as a guest silently orphaned everything the
+ * visitor had made: conversations, projects, shares and generations stayed
+ * bound to the old `guest_…` id and vanished from their account forever.
+ *
+ * migrateGuestData() re-points those rows at the real user id. It is
+ * deliberately additive and idempotent:
+ *   - only ever moves rows still owned by the guest id
+ *   - never overwrites or deletes anything already owned by the account
+ *   - usage counters are MERGED (summed per day) so migrating can't be used
+ *     to reset a spent daily quota
+ */
+export function migrateGuestData(guestId: string, userId: string) {
+  const moved = { conversations: 0, projects: 0, generations: 0, shares: 0 };
+
+  if (
+    !guestId ||
+    !userId ||
+    guestId === userId ||
+    !guestId.startsWith("guest_")
+  ) {
+    return moved;
+  }
+
+  const db = read();
+
+  for (const c of db.conversations) {
+    if (c.userId === guestId) {
+      c.userId = userId;
+      moved.conversations += 1;
+    }
+  }
+  for (const p of db.projects) {
+    if (p.userId === guestId) {
+      p.userId = userId;
+      moved.projects += 1;
+    }
+  }
+  for (const g of db.generations) {
+    if (g.userId === guestId) {
+      g.userId = userId;
+      moved.generations += 1;
+    }
+  }
+  for (const s of db.shares) {
+    if (s.userId === guestId) {
+      s.userId = userId;
+      moved.shares += 1;
+    }
+  }
+
+  // Merge usage rather than transfer — no quota laundering.
+  const guestUsage = db.usage.filter((u) => u.userId === guestId);
+  for (const gu of guestUsage) {
+    const target = db.usage.find(
+      (u) => u.userId === userId && u.day === gu.day
+    );
+    if (target) {
+      target.chat += gu.chat;
+      target.code += gu.code;
+      target.image += gu.image;
+      target.audio += gu.audio;
+    } else {
+      db.usage.push({ ...gu, userId });
+    }
+  }
+  db.usage = db.usage.filter((u) => u.userId !== guestId);
+
+  const touched =
+    moved.conversations + moved.projects + moved.generations + moved.shares;
+  if (touched > 0 || guestUsage.length > 0) write(db);
+
+  return moved;
+}
+
+/**
+ * Sum a user's usage across the current calendar month.
+ *
+ * PRO allowances are advertised as monthly, but the counters are stored per
+ * day, so a monthly ceiling has to be aggregated — comparing a monthly limit
+ * against a single day's row silently multiplied the real allowance by ~30.
+ */
+export function getMonthlyUsage(userId: string) {
+  const prefix = todayKey().slice(0, 7); // "YYYY-MM"
+  const rows = read().usage.filter(
+    (u) => u.userId === userId && u.day.startsWith(prefix)
+  );
+  return rows.reduce(
+    (acc, r) => ({
+      userId,
+      month: prefix,
+      chat: acc.chat + r.chat,
+      code: acc.code + r.code,
+      image: acc.image + r.image,
+      audio: acc.audio + r.audio,
+    }),
+    { userId, month: prefix, chat: 0, code: 0, image: 0, audio: 0 }
+  );
 }

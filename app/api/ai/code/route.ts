@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
+import { rateLimitDurable } from "@/lib/rate-limit/durable";
 import { streamChatOrCode } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { understandPrompt } from "@/lib/ai/understanding";
@@ -8,11 +9,13 @@ import { qualityGate } from "@/lib/ai/quality";
 import {
   addGeneration,
   appendMessages,
+  buildProjectContext,
   createConversation,
   findUserById,
   uid,
 } from "@/lib/db/store";
 import { decryptSecret } from "@/lib/crypto";
+import { INPUT_LIMITS, toUserFacingError } from "@/lib/ai/gateway";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,7 +24,7 @@ export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
     const ip = clientIp(req);
-    const rl = rateLimit(`ai:code:${session.userId}:${ip}`, 30, 60_000);
+    const rl = await rateLimitDurable(`ai:code:${session.userId}:${ip}`, 30, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
         { error: "Too many requests — wait a moment.", code: "RATE_LIMIT", hint: "Thoda ruk ke Try again dabao — 1 minute me limit reset ho jaati hai." },
@@ -32,6 +35,23 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null);
     if (!body?.messages || !Array.isArray(body.messages)) {
       return NextResponse.json({ error: "Message required." }, { status: 400 });
+    }
+
+    // Cost guard (audit V2) — same ceiling as chat.
+    const longest = body.messages.reduce(
+      (n: number, m: { content?: unknown }) =>
+        Math.max(n, String(m?.content ?? "").length),
+      0
+    );
+    if (longest > INPUT_LIMITS.messageChars) {
+      return NextResponse.json(
+        {
+          error: "That message is too long. Shorten it or attach it as a file.",
+          code: "MESSAGE_TOO_LONG",
+          hint: "Bada code file me attach karo — BUILDWE usko padh ke kaam karega.",
+        },
+        { status: 413 }
+      );
     }
 
     const limit = checkLimit(session.userId, session.plan, "code");
@@ -90,8 +110,27 @@ export async function POST(req: NextRequest) {
 
     // Prompt Understanding Layer (Update #1) — same benefits for Code
     const understood = understandPrompt(String(userText));
-    const codeMessages = understood.systemHint
-      ? [{ role: "system", content: understood.systemHint }, ...body.messages]
+
+    // Coding-agent project context (Update #1 §3.1): when the request belongs
+    // to a project, the model sees that project's real files instead of
+    // guessing at structure from the chat alone. buildProjectContext is
+    // owner-scoped and budget-capped, so this can't leak or blow up cost.
+    let projectContext = "";
+    const projectId = body.projectId ? String(body.projectId) : "";
+    if (projectId) {
+      try {
+        projectContext = buildProjectContext(projectId, session.userId);
+      } catch (e) {
+        console.error("[bw] project context", e);
+      }
+    }
+
+    const codeSystemParts = [understood.systemHint, projectContext].filter(Boolean);
+    const codeMessages = codeSystemParts.length
+      ? [
+          { role: "system", content: codeSystemParts.join("\n\n---\n\n") },
+          ...body.messages,
+        ]
       : body.messages;
 
     const { stream, model, live, fallbackNote } = await streamChatOrCode({
@@ -188,9 +227,11 @@ export async function POST(req: NextRequest) {
     return res;
   } catch (e) {
     console.error("[bw] code route", e);
+    // Sanitised, typed error (Update #1 §9.4).
+    const safe = toUserFacingError(e);
     return NextResponse.json(
-      { error: "Something went wrong. Please try again." },
-      { status: 500 }
+      { error: safe.message, code: safe.code, ...(safe.hint ? { hint: safe.hint } : {}) },
+      { status: safe.code === "RATE_LIMIT" ? 429 : safe.code === "TIMEOUT" ? 504 : 500 }
     );
   }
 }

@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
+import { rateLimitDurable } from "@/lib/rate-limit/durable";
 import { generateImage } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { addGeneration, uid } from "@/lib/db/store";
+import { INPUT_LIMITS } from "@/lib/ai/gateway";
+import { mirrorRemoteImage, mediaStorageEnabled } from "@/lib/storage/media";
+import { MODEL_CATALOG } from "@/lib/ai/models-catalog";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,7 +16,7 @@ export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
     const ip = clientIp(req);
-    const rl = rateLimit(`ai:image:${session.userId}:${ip}`, 20, 60_000);
+    const rl = await rateLimitDurable(`ai:image:${session.userId}:${ip}`, 20, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
         { error: "Too many requests — wait a moment." },
@@ -28,18 +32,37 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-
-    const aspect = String(body?.aspect || "1:1");
-    const basePrompt = body?.basePrompt ? String(body.basePrompt) : undefined;
-    const modelId = body?.modelId ? String(body.modelId) : "flux";
-
-    // Pro model seat — soft gate
-    if (modelId === "pro" && session.plan !== "pro") {
+    // Cost guard (audit V3): reject absurd prompts at the edge instead of
+    // silently truncating deep inside the provider.
+    if (prompt.length > INPUT_LIMITS.promptChars) {
       return NextResponse.json(
         {
-          error: "Vision Pro is a PRO model. Switch model or upgrade.",
+          error: "That prompt is too long — keep it under 8,000 characters.",
+          code: "PROMPT_TOO_LONG",
+          hint: "Prompt chhota karo — sirf zaroori detail rakho, result bhi behtar aayega.",
+        },
+        { status: 413 }
+      );
+    }
+
+    const aspect = String(body?.aspect || "1:1");
+    const basePrompt = body?.basePrompt
+      ? String(body.basePrompt).slice(0, INPUT_LIMITS.promptChars)
+      : undefined;
+    const modelId = body?.modelId ? String(body.modelId) : "flux";
+
+    // PRO seat gate, driven by the catalogue rather than one hardcoded id.
+    // Before this, the check only matched the literal id "pro", so the real
+    // premium models (fal FLUX Dev / Pro) were reachable on a free plan.
+    const picked = MODEL_CATALOG.find(
+      (m) => m.capability === "image" && m.id === modelId
+    );
+    if (picked && !picked.tiers.includes("free") && session.plan !== "pro") {
+      return NextResponse.json(
+        {
+          error: `${picked.label} is a PRO model. Switch model or upgrade.`,
           code: "PRO_MODEL",
-          comingSoon: true,
+          hint: "Free plan par FLUX aur FLUX Turbo dono available hain.",
         },
         { status: 402 }
       );
@@ -68,12 +91,28 @@ export async function POST(req: NextRequest) {
     }
 
     let id = uid("gen");
+
+    // Mirror the artwork onto our own storage when configured. Previously the
+    // history row pointed at a third-party hot-link we don't control, so an
+    // upstream change would silently break every past generation.
+    let finalUrl = result.url;
+    if (mediaStorageEnabled() && /^https?:/.test(result.url)) {
+      try {
+        finalUrl = await mirrorRemoteImage(
+          result.url,
+          `images/${session.userId}/${id}.jpg`
+        );
+      } catch (e) {
+        console.error("[bw] image mirror", e);
+      }
+    }
+
     try {
       const gen = addGeneration({
         userId: session.userId,
         type: "image",
         prompt: result.promptUsed || prompt,
-        outputUrl: result.url,
+        outputUrl: finalUrl,
         meta: {
           aspect,
           model: result.model,
@@ -89,13 +128,16 @@ export async function POST(req: NextRequest) {
 
     const res = NextResponse.json({
       id,
-      url: result.url,
+      url: finalUrl,
       model: result.model,
       provider: "buildwe",
       aspect,
       promptUsed: result.promptUsed,
       editMode: result.editMode,
       userPrompt: prompt,
+      // True when the requested model was unreachable and another one served
+      // the request — the user should know they didn't get what they picked.
+      fellBack: result.fellBack || false,
     });
     attachGuestCookie(res, session.userId);
     return res;

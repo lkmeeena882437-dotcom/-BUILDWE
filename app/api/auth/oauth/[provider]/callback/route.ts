@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { setSessionCookie, signSession } from "@/lib/auth/session";
-import { findOrCreateOauthUser } from "@/lib/db/store";
+import {
+  clearGuestCookie,
+  setSessionCookie,
+  signSession,
+} from "@/lib/auth/session";
+import { verifyGuestCookie } from "@/lib/auth/guest";
+import { findOrCreateOauthUser, migrateGuestData } from "@/lib/db/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -113,6 +118,17 @@ export async function GET(
       email: profile.email,
       name: profile.name,
     });
+
+    // Guest → account migration (audit V5), same as email signup/login.
+    const guestId = verifyGuestCookie(req.cookies.get("bw_guest")?.value);
+    if (guestId) {
+      try {
+        migrateGuestData(guestId, user.id);
+      } catch (err) {
+        console.error("[bw] guest migration (oauth)", err);
+      }
+    }
+
     const token = await signSession({
       sub: user.id,
       kind: "user",
@@ -123,6 +139,7 @@ export async function GET(
     const res = NextResponse.redirect(new URL("/?welcome=1", req.url));
     setSessionCookie(res, token);
     res.cookies.set("bw_oauth_state", "", { path: "/", maxAge: 0 });
+    if (guestId) clearGuestCookie(res);
     return res;
   } catch (e) {
     console.error("[bw] oauth session", e);

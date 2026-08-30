@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Sparkles,
   Download,
@@ -9,6 +9,8 @@ import {
   Image as ImageIcon,
   Loader2,
   Wand2,
+  AlertTriangle,
+  RotateCcw,
 } from "lucide-react";
 import clsx from "clsx";
 
@@ -30,10 +32,24 @@ const ASPECTS = [
   { id: "3:4", label: "3:4" },
 ];
 
-const MODELS = [
+export type ImageModelOption = {
+  id: string;
+  label: string;
+  badge: string;
+  disabled: boolean;
+  /** PRO-only seat — shown, but gated. */
+  pro?: boolean;
+};
+
+/**
+ * Shown only until /api/ai/models answers. The real list comes from the
+ * backend catalogue (section 1 of the brief: models configurable from the
+ * backend, never hardcoded in a component), filtered to what this deployment
+ * can actually call — so the picker can't offer a model that will fail.
+ */
+const FALLBACK_MODELS: ImageModelOption[] = [
   { id: "flux", label: "Vision", badge: "Live", disabled: false },
-  { id: "turbo", label: "Vision Fast", badge: "Live", disabled: false },
-  { id: "pro", label: "Vision Pro", badge: "Soon", disabled: true },
+  { id: "turbo", label: "Vision Fast", badge: "Fast", disabled: false },
 ];
 
 const PRESETS = [
@@ -56,6 +72,9 @@ export function ImageStudio({
   setPrompt,
   onGenerate,
   lastPrompt,
+  failure,
+  onRetry,
+  onDismissFailure,
 }: {
   images: StudioImage[];
   activeId: string | null;
@@ -69,9 +88,84 @@ export function ImageStudio({
   setPrompt: (p: string) => void;
   onGenerate: (text: string) => void;
   lastPrompt?: string;
+  /** Set when the last generation job failed — user-safe message. */
+  failure?: string | null;
+  /** Clears the failure and re-runs the last prompt. */
+  onRetry?: () => void;
+  /** Dismiss the failure without retrying. */
+  onDismissFailure?: () => void;
 }) {
   const active = images.find((i) => i.id === activeId) || images[0];
   const [fullscreen, setFullscreen] = useState(false);
+
+  // Determinate-feeling progress. Image providers give no real progress
+  // events, so we ease towards 90% and let completion snap it to 100 —
+  // an honest "still working" signal rather than a frozen spinner.
+  const [progress, setProgress] = useState(0);
+  const startedAt = useRef(0);
+  useEffect(() => {
+    if (!loading) {
+      setProgress(0);
+      return;
+    }
+    startedAt.current = Date.now();
+    setProgress(4);
+    const t = setInterval(() => {
+      const secs = (Date.now() - startedAt.current) / 1000;
+      // ~12s to approach the ceiling, then crawl
+      setProgress(Math.min(90, Math.round(100 * (1 - Math.exp(-secs / 5)))));
+    }, 250);
+    return () => clearInterval(t);
+  }, [loading]);
+
+  // Model list from the backend. Only models this deployment can actually
+  // reach are offered; a PRO-tier model stays visible but gated so users can
+  // see what upgrading buys them.
+  const [models, setModels] = useState<ImageModelOption[]>(FALLBACK_MODELS);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/ai/models", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const list: ImageModelOption[] = (data?.selectable?.image || [])
+          .filter((m: { available?: boolean }) => m.available)
+          .map(
+            (m: {
+              id: string;
+              label: string;
+              latency?: string;
+              tiers?: string[];
+            }) => {
+              const proOnly = Array.isArray(m.tiers) && !m.tiers.includes("free");
+              return {
+                id: m.id,
+                label: m.label,
+                badge: proOnly ? "PRO" : m.latency === "fast" ? "Fast" : "Live",
+                disabled: false,
+                pro: proOnly,
+              };
+            }
+          );
+        if (!cancelled && list.length) setModels(list);
+      } catch {
+        /* keep the fallback — a picker that works beats an empty one */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // If the selected model isn't in the reachable list, fall back to the first
+  // one rather than silently posting an id the server will reject.
+  useEffect(() => {
+    if (models.length && !models.some((m) => m.id === modelId)) {
+      setModelId(models[0].id);
+    }
+  }, [models, modelId, setModelId]);
+
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto">
@@ -98,12 +192,68 @@ export function ImageStudio({
           style={{ borderColor: "var(--border)", background: "var(--card)" }}
         >
           {loading ? (
-            <div className="flex flex-col items-center gap-3">
+            <div className="flex w-full max-w-sm flex-col items-center gap-3">
               <Loader2 className="h-8 w-8 animate-spin" style={{ color: "var(--accent)" }} />
               <p className="text-sm" style={{ color: "var(--muted)" }}>
-                Creating your frame…
+                {progress < 35
+                  ? "Sending your prompt…"
+                  : progress < 70
+                    ? "Painting your frame…"
+                    : "Finishing details…"}
+              </p>
+              <div
+                className="h-1.5 w-full overflow-hidden rounded-full"
+                style={{ background: "var(--border)" }}
+                role="progressbar"
+                aria-valuenow={progress}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label="Image generation progress"
+              >
+                <div
+                  className="h-full rounded-full transition-all duration-300"
+                  style={{ width: `${progress}%`, background: "var(--accent)" }}
+                />
+              </div>
+              <p className="text-[11px]" style={{ color: "var(--soft)" }}>
+                {progress}% · usually 5–15 seconds
               </p>
               <div className="shimmer h-40 w-64 rounded-2xl sm:w-80" />
+            </div>
+          ) : failure ? (
+            <div className="w-full max-w-sm text-center" role="alert">
+              <div
+                className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-2xl"
+                style={{ background: "var(--warn-soft)", color: "var(--warn)" }}
+              >
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <p className="text-sm font-semibold">Couldn&apos;t create that image</p>
+              <p className="mx-auto mt-1 max-w-xs text-[12px]" style={{ color: "var(--muted)" }}>
+                {failure}
+              </p>
+              <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+                {onRetry && (
+                  <button
+                    type="button"
+                    onClick={onRetry}
+                    className="inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold text-white"
+                    style={{ background: "var(--accent)" }}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" /> Try again
+                  </button>
+                )}
+                {onDismissFailure && (
+                  <button
+                    type="button"
+                    onClick={onDismissFailure}
+                    className="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium"
+                    style={{ borderColor: "var(--border)" }}
+                  >
+                    Dismiss
+                  </button>
+                )}
+              </div>
             </div>
           ) : active?.url ? (
             <div className="relative w-full text-center">
@@ -217,7 +367,7 @@ export function ImageStudio({
 
             {/* Model */}
             <div className="flex flex-wrap gap-1">
-              {MODELS.map((m) => (
+              {models.map((m) => (
                 <button
                   key={m.id}
                   type="button"
@@ -236,7 +386,7 @@ export function ImageStudio({
                         }
                       : { borderColor: "var(--border)", color: "var(--muted)" }
                   }
-                  title={m.disabled ? "Coming soon" : m.label}
+                  title={m.pro ? `${m.label} — PRO plan` : m.label}
                 >
                   {m.label}
                   <span className="ml-1 opacity-60">{m.badge}</span>

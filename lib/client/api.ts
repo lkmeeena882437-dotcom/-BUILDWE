@@ -228,6 +228,86 @@ export async function verifyApi(text: string) {
 
 /* ── Multi-model comparison (Update #2 · P1 mix) ────────── */
 
+/* ── Coding Agent ───────────────────────────────────────── */
+
+export type AgentEvent =
+  | { type: "meta"; projectId: string }
+  | { type: "plan"; text: string }
+  | { type: "step"; n: number; total: number; label: string }
+  | { type: "tool"; tool: string; path?: string; ok: boolean; detail: string }
+  | { type: "check"; ok: boolean; issues: string[]; path?: string }
+  | { type: "message"; text: string }
+  | { type: "done"; summary: string; filesChanged: string[]; verified: boolean }
+  | { type: "error"; text: string }
+  | {
+      type: "result";
+      ok: boolean;
+      summary: string;
+      filesChanged: string[];
+      steps: number;
+      verified: boolean;
+      primaryFile?: { path: string; content: string; lang: string };
+    };
+
+/**
+ * Run the coding agent, streaming progress events as they happen.
+ * Returns the final result event, or null if the run produced none.
+ */
+export async function runAgentApi(
+  input: {
+    goal: string;
+    projectId?: string | null;
+    canvasCode?: string;
+    canvasLang?: string;
+  },
+  onEvent: (e: AgentEvent) => void,
+  signal?: AbortSignal
+): Promise<Extract<AgentEvent, { type: "result" }> | null> {
+  const r = await fetch("/api/ai/agent", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+    ...(signal ? { signal } : {}),
+  });
+
+  if (!r.ok || !r.body) {
+    const j = await readJson(r);
+    const err = new Error(j.error || "The agent couldn't start.") as Error & {
+      code?: string;
+      hint?: string;
+    };
+    if (j.code) err.code = j.code;
+    if (j.hint) err.hint = j.hint;
+    throw err;
+  }
+
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let final: Extract<AgentEvent, { type: "result" }> | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t.startsWith("data:")) continue;
+      try {
+        const ev = JSON.parse(t.slice(5).trim()) as AgentEvent;
+        if (ev.type === "result") final = ev;
+        onEvent(ev);
+      } catch {
+        /* skip malformed frame */
+      }
+    }
+  }
+  return final;
+}
+
 export async function codeActionApi(
   code: string,
   lang: string,
@@ -358,6 +438,9 @@ export async function webSearchApi(query: string) {
   return j as {
     ok: boolean;
     results: { title: string; url: string; snippet: string; host: string }[];
+    status?: "ok" | "empty" | "unreachable" | "blocked" | "timeout";
+    /** User-safe explanation when results are empty. */
+    reason?: string;
   };
 }
 
@@ -553,4 +636,93 @@ export async function saveSkills(skills: string[]) {
   const j = await readJson(r);
   if (!r.ok) throw new Error(j.error || "Couldn’t save skills");
   return j as { skills: string[] };
+}
+
+/* ── Generation history (Update #1 §4.5) ──────────────────── */
+
+export type GenerationItem = {
+  id: string;
+  type: "image" | "audio" | "code";
+  prompt: string;
+  outputUrl?: string;
+  outputText?: string;
+  meta?: Record<string, unknown>;
+  createdAt: string;
+};
+
+/**
+ * Past image/audio/code generations for the signed-in user or guest.
+ * Image and audio results were always saved server-side but had no reader —
+ * this makes "my previous creations" reachable from the UI.
+ */
+export async function fetchGenerations(
+  type?: "image" | "audio" | "code",
+  limit = 50
+): Promise<GenerationItem[]> {
+  const qs = new URLSearchParams();
+  if (type) qs.set("type", type);
+  qs.set("limit", String(limit));
+  const r = await fetch(`/api/ai/generations?${qs.toString()}`, {
+    credentials: "include",
+  });
+  const j = await readJson(r);
+  if (!r.ok) return [];
+  return (j.generations || []) as GenerationItem[];
+}
+
+/* ── Project files — Coding Agent (Update #1 §3) ──────────── */
+
+export type ProjectFileMeta = {
+  id: string;
+  path: string;
+  lang: string;
+  size: number;
+  updatedAt: string;
+};
+
+export async function fetchProjectFiles(
+  projectId: string
+): Promise<ProjectFileMeta[]> {
+  const r = await fetch(
+    `/api/projects/files?projectId=${encodeURIComponent(projectId)}`,
+    { credentials: "include" }
+  );
+  const j = await readJson(r);
+  if (!r.ok) return [];
+  return (j.files || []) as ProjectFileMeta[];
+}
+
+export async function readProjectFile(id: string) {
+  const r = await fetch(`/api/projects/files?id=${encodeURIComponent(id)}`, {
+    credentials: "include",
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn't open that file");
+  return j.file as ProjectFileMeta & { content: string; projectId: string };
+}
+
+/** Create or update a file by path (upsert). */
+export async function saveProjectFileApi(input: {
+  projectId: string;
+  path: string;
+  content: string;
+  lang?: string;
+}) {
+  const r = await fetch("/api/projects/files", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn't save that file");
+  return j.file as ProjectFileMeta & { content: string };
+}
+
+export async function deleteProjectFileApi(id: string) {
+  const r = await fetch(`/api/projects/files?id=${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  return r.ok;
 }

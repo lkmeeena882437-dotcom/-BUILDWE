@@ -1,12 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
+import { rateLimitDurable } from "@/lib/rate-limit/durable";
 import { streamChatOrCode } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
-import { composeSearchAnswer, searchContextBlock, webSearch } from "@/lib/ai/search";
+import {
+  composeSearchAnswer,
+  searchContextBlock,
+  webSearchDetailed,
+  type SearchResult,
+} from "@/lib/ai/search";
 import { understandPrompt } from "@/lib/ai/understanding";
 import { qualityGate } from "@/lib/ai/quality";
 import { estimateComplexity } from "@/lib/ai/models-catalog";
+import { INPUT_LIMITS, toUserFacingError } from "@/lib/ai/gateway";
 import { bump } from "@/lib/metrics/metrics";
 import {
   appendMessages,
@@ -24,7 +31,7 @@ export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
     const ip = clientIp(req);
-    const rl = rateLimit(`ai:chat:${session.userId}:${ip}`, 60, 60_000);
+    const rl = await rateLimitDurable(`ai:chat:${session.userId}:${ip}`, 60, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
         { error: "Too many requests — wait a moment.", code: "RATE_LIMIT", hint: "Thoda ruk ke Try again dabao — 1 minute me limit reset ho jaati hai." },
@@ -35,6 +42,24 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null);
     if (!body?.messages || !Array.isArray(body.messages)) {
       return NextResponse.json({ error: "Message required." }, { status: 400 });
+    }
+
+    // Cost guard (audit V2): reject an absurd single message at the edge with a
+    // clear reason. Milder oversize is clamped further down in the gateway.
+    const longest = body.messages.reduce(
+      (n: number, m: { content?: unknown }) =>
+        Math.max(n, String(m?.content ?? "").length),
+      0
+    );
+    if (longest > INPUT_LIMITS.messageChars) {
+      return NextResponse.json(
+        {
+          error: "That message is too long. Shorten it or attach it as a file.",
+          code: "MESSAGE_TOO_LONG",
+          hint: "Bade text ko file me attach karo — BUILDWE usko summarise karke use karega.",
+        },
+        { status: 413 }
+      );
     }
 
     const limit = checkLimit(session.userId, session.plan, "chat");
@@ -52,9 +77,14 @@ export async function POST(req: NextRequest) {
     const wantSearch = Boolean(body.webSearch);
 
     // ── Web search grounding (free, no key needed) ──────────
-    let searchResults: Awaited<ReturnType<typeof webSearch>> = [];
+    let searchResults: SearchResult[] = [];
+    let searchReason: string | undefined;
     if (wantSearch && userText) {
-      searchResults = await webSearch(userText, { max: 5 });
+      const outcome = await webSearchDetailed(userText, { max: 5 });
+      searchResults = outcome.results;
+      // Keep the reason so an offline reply can explain the empty result set
+      // instead of silently pretending the search never happened.
+      if (!outcome.results.length) searchReason = outcome.reason;
     }
 
     let conversationId = (body.conversationId as string | undefined) || uid("conv");
@@ -193,8 +223,14 @@ export async function POST(req: NextRequest) {
       userKeys,
       ...(altModel ? { preferOffset: altModel } : {}),
       // when offline + search on, stream the composed sourced answer instead
-      ...(wantSearch && searchResults.length
-        ? { offlineOverrideText: composeSearchAnswer(userText, searchResults) }
+      ...(wantSearch
+        ? {
+            offlineOverrideText: composeSearchAnswer(
+              userText,
+              searchResults,
+              searchReason
+            ),
+          }
         : {}),
     });
 
@@ -334,9 +370,12 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     console.error("[bw] chat route", e);
     bump("chat_error");
+    // Sanitised, typed error (Update #1 §9.4) — the user gets a useful reason
+    // and a hint; raw provider text, URLs and stack traces stay in the log.
+    const safe = toUserFacingError(e);
     return NextResponse.json(
-      { error: "Something went wrong. Please try again." },
-      { status: 500 }
+      { error: safe.message, code: safe.code, ...(safe.hint ? { hint: safe.hint } : {}) },
+      { status: safe.code === "RATE_LIMIT" ? 429 : safe.code === "TIMEOUT" ? 504 : 500 }
     );
   }
 }

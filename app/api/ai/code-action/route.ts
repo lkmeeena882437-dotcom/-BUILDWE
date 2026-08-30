@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
+import { rateLimitDurable } from "@/lib/rate-limit/durable";
 import { streamChatOrCode } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { findUserById } from "@/lib/db/store";
@@ -73,7 +74,7 @@ async function collect(stream: ReadableStream<Uint8Array>): Promise<string> {
 export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
-    const rl = rateLimit(
+    const rl = await rateLimitDurable(
       `ai:code-action:${session.userId}:${clientIp(req)}`,
       20,
       60_000
@@ -145,7 +146,7 @@ export async function POST(req: NextRequest) {
         ok: false,
         available: false,
         message:
-          "Code actions ko live model chahiye — Settings → API keys me free Groq key add karo (2 minute ka kaam), phir Fix/Optimize/Refactor/Test yahin chalega.",
+          "Code actions need a live model, which isn't reachable right now. You can connect your own key in Settings → API keys, or try again in a moment.",
       });
     }
 
