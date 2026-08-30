@@ -146,9 +146,17 @@ sab chalta rahega.
 |---|---|---|
 | `OPENROUTER_API_KEY` | Dusre vendor ka backup — Groq down ho to bhi chale | Free credits |
 | `ANTHROPIC_API_KEY` | Claude — PRO writing ke liye sabse achha | Paid |
-| `OPENAI_API_KEY` | GPT-4o mini + OpenAI TTS | Paid |
+| `OPENAI_API_KEY` | GPT-4o + GPT-4o Vision + OpenAI TTS + DALL·E 3 | Paid |
 | `GOOGLE_API_KEY` | Gemini — lambe documents ke liye | Free tier |
 | `FAL_KEY` | FLUX Dev/Pro — behtar images | Paid |
+| `MISTRAL_API_KEY` | Mistral Large 2 (chat backup/fallback) | Free tier |
+| `DEEPSEEK_API_KEY` | DeepSeek Coder V2 (sasta coding) | Open-source (sasta) |
+| `TOGETHER_API_KEY` | Qwen 2.5 Coder (edge-case coding) | Open-source (sasta) |
+| `STABILITY_API_KEY` | Stable Diffusion 3 (images) | Paid |
+| `GOAPI_API_KEY` | Midjourney v6.1 (images, via GoAPI) | Paid |
+| `ELEVENLABS_API_KEY` | ElevenLabs TTS (best voice) | Paid |
+| `PLAYHT_API_KEY` | PlayHT TTS (voice cloning) | Paid |
+| `DEEPGRAM_API_KEY` | Deepgram Nova-2 (speech-to-text) | Paid/free credits |
 
 ---
 

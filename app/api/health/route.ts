@@ -20,14 +20,17 @@ export async function GET() {
   const keyless = ["pollinations"];
 
   // How many models are actually callable per capability right now. Image
-  // models resolve against the image provider set (fal/HF), not the chat one.
-  const byCapability = (["chat", "code", "image", "audio"] as const).map((cap) => {
-    const reachable =
-      cap === "image" ? [...imageLive, ...keyless] : [...live, ...keyless];
-    const all = MODEL_CATALOG.filter((m) => m.capability === cap);
-    const usable = all.filter((m) => reachable.includes(m.provider));
-    return { capability: cap, total: all.length, reachable: usable.length };
-  });
+  // models resolve against the image provider set (fal/HF); vision & STT
+  // resolve against the chat/LLM set; STT providers include keyless fallbacks.
+  const byCapability = (["chat", "code", "image", "audio", "stt", "vision"] as const).map(
+    (cap) => {
+      const reachable =
+        cap === "image" ? [...imageLive, ...keyless] : [...live, ...keyless];
+      const all = MODEL_CATALOG.filter((m) => m.capability === cap);
+      const usable = all.filter((m) => reachable.includes(m.provider));
+      return { capability: cap, total: all.length, reachable: usable.length };
+    }
+  );
 
   const llmLive = byCapability.find((c) => c.capability === "chat")!.reachable > 0;
 
@@ -38,8 +41,9 @@ export async function GET() {
     providers: {
       configured: live.map(providerLabel),
       llm: llmLive ? "multi-provider" : "offline-smart-demo",
-      image: "pollinations",
-      audio: "pollinations-tts + browser fallback",
+      image: "pollinations + fal + openai + stability + goapi (as configured)",
+      audio: "pollinations-tts + browser fallback (+ elevenlabs/openai-tts)",
+      stt: "deepgram nova-2 + groq whisper (as configured)",
       webSearch: "duckduckgo",
       devApi: "/api/v1/chat",
       byok: "aes-256-gcm",

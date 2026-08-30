@@ -47,6 +47,15 @@ export type ProviderKeys = {
   openai?: string;
   anthropic?: string;
   google?: string;
+  mistral?: string;
+  deepseek?: string;
+  together?: string;
+  stability?: string;
+  replicate?: string;
+  goapi?: string;
+  playht?: string;
+  elevenlabs?: string;
+  deepgram?: string;
 };
 
 /* ── Provider descriptors ─────────────────────────────────── */
@@ -111,6 +120,30 @@ const SPECS: Record<string, ProviderSpec> = {
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/models",
     envKey: () => process.env.GOOGLE_API_KEY || undefined,
     byokField: "google",
+  },
+  mistral: {
+    id: "mistral",
+    label: "Mistral",
+    wire: "openai",
+    baseUrl: "https://api.mistral.ai/v1/chat/completions",
+    envKey: () => AI_KEYS.mistral,
+    byokField: "mistral",
+  },
+  deepseek: {
+    id: "deepseek",
+    label: "DeepSeek",
+    wire: "openai",
+    baseUrl: "https://api.deepseek.com/chat/completions",
+    envKey: () => AI_KEYS.deepseek,
+    byokField: "deepseek",
+  },
+  together: {
+    id: "together",
+    label: "Together",
+    wire: "openai",
+    baseUrl: "https://api.together.xyz/v1/chat/completions",
+    envKey: () => AI_KEYS.together,
+    byokField: "together",
   },
 };
 

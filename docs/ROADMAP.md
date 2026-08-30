@@ -14,10 +14,11 @@ Pehle imaandari se: **abhi platform 90% complete hai.** Jo bacha hai wo
 
 | Cheez | Haalat |
 |---|---|
-| Chat (9 models, auto-routing) | ✅ Poora |
-| Code + **autonomous agent** | ✅ Poora — files padhta/likhta hai, error pakadta hai, khud fix karta hai |
-| Image (6 models, multi-vendor) | ✅ Poora |
-| Audio | ⚠️ **Chalu hai par ek hi provider** — neeche dekho |
+| Chat (14 models, auto-routing) | ✅ Poora — GPT-4o, Claude 3.5, Gemini 1.5 Pro, Llama 70B/405B, Mistral Large 2 |
+| Code + **autonomous agent** | ✅ Poora — files padhta/likhta hai, error pakadta hai, khud fix karta hai (Claude 3.5/3 Opus, GPT-4o, DeepSeek Coder V2, Qwen 2.5) |
+| Image (9 models, multi-vendor) | ✅ Poora — FLUX Pro, Midjourney v6.1, DALL·E 3, SD3 |
+| Audio | ✅ Ab multi-provider — Pollinations (free) + ElevenLabs/OpenAI TTS/PlayHT (PRO keys) |
+| Speech-to-Text (Voice: Listen) | ✅ Deepgram Nova-2 + Whisper (Groq) — `/api/ai/transcribe` |
 | Auth + Guest + migration | ✅ Poora |
 | Free/PRO limits (server-side) | ✅ Poora |
 | Payments (Razorpay) | ⚠️ Code poora, **demo mode me hai** |
@@ -48,20 +49,17 @@ already tested. Bas keys ki kami hai.
 
 ## 🟡 P1 — Platform ko "complete" banane ke liye
 
-### 3. Voice ko multi-provider karo — mera kaam, 1 din
+### 3. Voice ko multi-provider karo — ✅ Ho gaya (Phase 10)
 
-**Aaj mujhe ye mila:** catalog me 6 audio models list hain — ElevenLabs,
-Cartesia, Deepgram, OpenAI TTS. **Par sirf Pollinations implement hai.**
-Baaki 5 ka koi adapter nahi.
+Pichhli baar: catalog me 6 audio models the (ElevenLabs, Cartesia, Deepgram,
+OpenAI TTS) **par sirf Pollinations implement tha** — baaki ka koi adapter nahi.
 
-Yani wahi problem jo image me thi (v1.11.0 me fix ki) — **audio me abhi bhi
-hai**. User "ElevenLabs" chune ya kuch aur, aawaz ek hi aati hai.
+**Ab fix ho gaya.** `synthesizeSpeech` ab pehle ElevenLabs / OpenAI TTS aazmati
+hai (jab key ho), warna Pollinations (keyless) fallback rehta hai. PlayHT and
+Deepgram adapters bhi catalog me hain.
 
-**Fix:** `lib/ai/audio-providers.ts` banana, bilkul `image-providers.ts` jaisa.
-Kehna, kar dunga.
-
-**Impact:** ElevenLabs ki aawaz Pollinations se **bahut** behtar hai. PRO users
-ke liye ye asli差 banayegi.
+**Impact:** ElevenLabs / OpenAI TTS ki aawaz Pollinations se **bahut** behtar
+hai. PRO users ke liye ye asli difference banati hai.
 
 ### 4. Email bhejna — mera kaam, half din
 

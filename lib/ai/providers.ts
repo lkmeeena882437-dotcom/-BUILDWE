@@ -4,7 +4,7 @@
 
 import { AI_KEYS, AI_MODELS, APP } from "@/lib/config";
 import { SYSTEM_PROMPTS, publicModelLabel, type Plan } from "@/lib/ai/rules";
-import { pickModel, estimateComplexity, modelChain } from "@/lib/ai/models-catalog";
+import { pickModel, estimateComplexity, modelChain, routeModelFor, MODEL_CATALOG } from "@/lib/ai/models-catalog";
 import {
   streamVia,
   completeVia,
@@ -48,7 +48,22 @@ const GROQ_CODE_MODELS = [
   "gemma2-9b-it",
 ];
 
-export type ProviderKeys = { groq?: string; openrouter?: string };
+export type ProviderKeys = {
+  groq?: string;
+  openrouter?: string;
+  openai?: string;
+  anthropic?: string;
+  google?: string;
+  mistral?: string;
+  deepseek?: string;
+  together?: string;
+  stability?: string;
+  replicate?: string;
+  goapi?: string;
+  playht?: string;
+  elevenlabs?: string;
+  deepgram?: string;
+};
 
 
 
@@ -268,6 +283,24 @@ export async function streamChatOrCode(opts: {
     availableProviders: live,
   });
 
+  // Phase 10 routing policy: on strong signals (large doc / code / normal) per
+  // the product spec, bias the chain towards the flagship id when that model is
+  // actually a valid catalog entry for this capability and is reachable on this
+  // deployment. `preferred` below is ordered so the routed id leads.
+  const routedId = routeModelFor({
+    capability: opts.mode,
+    plan: opts.plan,
+    prompt: opts.promptForRouting || lastUser,
+    contextSize: lastUser.length,
+  });
+  const routedModel = routedId
+    ? MODEL_CATALOG.find((m) => m.id === routedId && m.capability === opts.mode) ?? null
+    : null;
+  const routedUsable =
+    routedModel &&
+    live.includes(routedModel.provider) &&
+    (opts.plan === "pro" ? routedModel.tiers.includes("pro") || routedModel.tiers.includes("free") : routedModel.tiers.includes("free"));
+
   /**
    * Build the model chain. Order matters:
    *   1. explicit env override (operator's deliberate choice)
@@ -284,7 +317,14 @@ export async function streamChatOrCode(opts: {
   }).map((m) => m.id);
 
   const legacy = opts.mode === "code" ? GROQ_CODE_MODELS : GROQ_CHAT_MODELS;
-  const preferred = [envModel, catalog.id, ...chain, ...legacy];
+  // Routed flagship leads when usable; otherwise the scored pick leads.
+  const preferred = [
+    ...(routedUsable && routedModel ? [routedModel.id] : []),
+    envModel,
+    catalog.id,
+    ...chain,
+    ...legacy,
+  ];
 
   let tryModels = Array.from(new Set(preferred.filter(Boolean)));
   if (opts.forceModel) tryModels = [opts.forceModel];
@@ -349,10 +389,84 @@ export async function streamChatOrCode(opts: {
 
 /* ── Vision (image understanding) ─────────────────────────── */
 
-const VISION_MODELS = [
-  "meta-llama/llama-4-scout-17b-16e-instruct",
-  "llama-3.2-11b-vision-preview",
+/**
+ * Ordered vision-understanding candidates. Each maps to the vendor that owns
+ * it so the premium GPT-4o / Claude vision routes correctly when a key exists,
+ * and falls back to Groq's free vision model, then to the honest offline reply.
+ */
+const VISION_MODELS: { id: string; provider: "openai" | "anthropic" | "groq" }[] = [
+  { id: "gpt-4o", provider: "openai" },
+  { id: "claude-3-5-sonnet-20241022", provider: "anthropic" },
+  { id: "meta-llama/llama-4-scout-17b-16e-instruct", provider: "groq" },
+  { id: "llama-3.2-11b-vision-preview", provider: "groq" },
 ];
+
+/** Convert a data URL + text question into the right vendor's body shape. */
+function buildVisionBody(
+  question: string,
+  imageDataUrl: string,
+  model: string,
+  wire: "openai" | "anthropic" | "groq"
+) {
+  if (wire === "anthropic") {
+    return JSON.stringify({
+      model,
+      max_tokens: 900,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: question },
+            {
+              type: "image",
+              source: { type: "base64", media_type: "image/png", data: imageDataUrl.split(",")[1] },
+            },
+          ],
+        },
+      ],
+    });
+  }
+  // OpenAI-compatible (OpenAI + Groq share the same image_url body)
+  return JSON.stringify({
+    model,
+    max_tokens: 900,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: question },
+          { type: "image_url", image_url: { url: imageDataUrl } },
+        ],
+      },
+    ],
+  });
+}
+
+function visionUrl(wire: "openai" | "anthropic" | "groq"): string {
+  if (wire === "anthropic") return "https://api.anthropic.com/v1/messages";
+  if (wire === "groq") return "https://api.groq.com/openai/v1/chat/completions";
+  return "https://api.openai.com/v1/chat/completions";
+}
+
+function visionHeaders(
+  wire: "openai" | "anthropic" | "groq",
+  key: string
+): Record<string, string> {
+  const base: Record<string, string> = { "Content-Type": "application/json" };
+  if (wire === "anthropic") {
+    base["x-api-key"] = key;
+    base["anthropic-version"] = "2023-06-01";
+  } else {
+    base.Authorization = `Bearer ${key}`;
+  }
+  return base;
+}
+
+function visionLabel(model: string, wire: "openai" | "anthropic" | "groq") {
+  if (wire === "openai") return "GPT-4o Vision";
+  if (wire === "anthropic") return "Claude Vision";
+  return "BUILDWE Vision AI";
+}
 
 export async function visionComplete(opts: {
   prompt: string;
@@ -361,37 +475,28 @@ export async function visionComplete(opts: {
 }): Promise<{ text: string; model: string; live: boolean }> {
   const question =
     opts.prompt.trim() || "Describe this image in detail. What's in it?";
-  const groqKey = opts.userKeys?.groq || AI_KEYS.groq;
 
-  for (const model of VISION_MODELS) {
-    if (!groqKey) break;
+  const keyFor = (p: "openai" | "anthropic" | "groq") =>
+    p === "openai"
+      ? opts.userKeys?.openai || AI_KEYS.openai
+      : p === "anthropic"
+        ? opts.userKeys?.anthropic || AI_KEYS.anthropic
+        : opts.userKeys?.groq || AI_KEYS.groq;
+
+  for (const { id, provider } of VISION_MODELS) {
+    const key = keyFor(provider);
+    if (!key) continue;
+    const wire: "openai" | "anthropic" | "groq" =
+      provider === "anthropic" ? "anthropic" : provider === "groq" ? "groq" : "openai";
     try {
       // Vision gets the longest budget (large image payload) but is still
       // bounded — audit V4: no provider call may hang forever.
       const res = await fetchWithTimeout(
-        "https://api.groq.com/openai/v1/chat/completions",
+        visionUrl(wire),
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${groqKey}`,
-          },
-          body: JSON.stringify({
-            model,
-            max_tokens: 900,
-            messages: [
-              {
-                role: "user",
-                content: [
-                  { type: "text", text: question },
-                  {
-                    type: "image_url",
-                    image_url: { url: opts.imageDataUrl },
-                  },
-                ],
-              },
-            ],
-          }),
+          headers: visionHeaders(wire, key),
+          body: buildVisionBody(question, opts.imageDataUrl, id, wire),
         },
         TIMEOUTS.vision,
         "vision"
@@ -399,10 +504,12 @@ export async function visionComplete(opts: {
       if (!res.ok) continue;
       const data = await res.json();
       const text: string | undefined =
-        data?.choices?.[0]?.message?.content || undefined;
-      if (text) return { text, model: "BUILDWE Vision AI", live: true };
+        wire === "anthropic"
+          ? (data?.content?.[0]?.text as string | undefined)
+          : (data?.choices?.[0]?.message?.content as string | undefined);
+      if (text) return { text, model: visionLabel(id, wire), live: true };
     } catch (e) {
-      console.error("[bw] vision fail", model, e);
+      console.error("[bw] vision fail", id, e);
     }
   }
 
@@ -574,9 +681,97 @@ const TTS_VOICE_MAP: Record<string, string> = {
 const DATA_AUDIO_RE = /data:audio\/[a-z0-9]+;base64,([A-Za-z0-9+/=]+)/;
 
 /**
+ * ElevenLabs TTS — POST /v1/text-to-speech/{voice}. Returns MP3 bytes as a
+ * data URL. Voice ids are BUILDWE's own mapped to ElevenLabs preset ids.
+ */
+async function elevenLabsTTS(
+  script: string,
+  voice: string,
+  speed: number
+): Promise<{ dataUrl: string; estMs: number } | null> {
+  const key = AI_KEYS.elevenlabs;
+  if (!key || key.startsWith("your_") || key.includes("REPLACE")) return null;
+  const voiceId = TTS_VOICE_MAP[voice] || "21m00Tcm4TlvDq8ikWAM";
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 45_000);
+  try {
+    const res = await fetchWithTimeout(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": key,
+          "Content-Type": "application/json",
+          Accept: "audio/mpeg",
+        },
+        body: JSON.stringify({
+          text: script,
+          model_id: "eleven_multilingual_v2",
+          voice_settings: { stability: 0.5, similarity_boost: 0.8, speed },
+        }),
+      },
+      TIMEOUTS.audio,
+      "elevenlabs"
+    );
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 1000) return null;
+    return { dataUrl: `data:audio/mpeg;base64,${buf.toString("base64")}`, estMs: Math.round(buf.length / 24) };
+  } catch (e) {
+    console.error("[bw] elevenlabs tts", (e as Error)?.message);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * OpenAI TTS — POST /v1/audio/speech. Returns MP3 data URL.
+ * Uses the catalog's tts-1 / tts-1-hd model ids.
+ */
+async function openAITTS(
+  script: string,
+  voice: string,
+  speed: number
+): Promise<{ dataUrl: string; estMs: number } | null> {
+  const key = AI_KEYS.openai;
+  if (!key || key.startsWith("your_") || key.includes("REPLACE")) return null;
+  const voiceId = TTS_VOICE_MAP[voice] || "alloy";
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 45_000);
+  try {
+    const res = await fetchWithTimeout("https://api.openai.com/v1/audio/speech", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "tts-1-hd",
+        voice: voiceId,
+        input: script,
+        speed,
+        response_format: "mp3",
+      }),
+    }, TIMEOUTS.audio, "openai-tts");
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 1000) return null;
+    return { dataUrl: `data:audio/mpeg;base64,${buf.toString("base64")}`, estMs: Math.round(buf.length / 24) };
+  } catch (e) {
+    console.error("[bw] openai tts", (e as Error)?.message);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Key-free TTS via Pollinations `openai-audio`.
  * GET when the script is short; POST /openai for longer scripts.
  * Returns a data URL the browser can play/download directly.
+ *
+ * When a premium TTS key is configured (ElevenLabs → OpenAI → PlayHT), those
+ * are tried first so the catalog's "PRO default" models are actually reachable;
+ * otherwise (and as the universal fallback) Pollinations keeps the free path
+ * working with zero configuration.
  */
 export async function synthesizeSpeech(opts: {
   text: string;
@@ -588,6 +783,16 @@ export async function synthesizeSpeech(opts: {
   const voice = TTS_VOICE_MAP[opts.voice] || "alloy";
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 45_000);
+
+  // Premium adapters first (they exist only if a key is configured).
+  try {
+    const premium: { dataUrl: string; estMs: number } | null =
+      (await elevenLabsTTS(script, voice, opts.speed)) ||
+      (await openAITTS(script, voice, opts.speed));
+    if (premium) return premium;
+  } catch {
+    /* fall through to Pollinations */
+  }
 
   try {
     // 1) POST /openai — handles long scripts cleanly

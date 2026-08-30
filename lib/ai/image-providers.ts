@@ -63,6 +63,9 @@ export function availableImageProviders(): string[] {
   const out = ["pollinations"]; // always available — no key required
   if (keyOk(AI_KEYS.fal)) out.push("fal");
   if (keyOk(AI_KEYS.hf)) out.push("huggingface");
+  if (keyOk(AI_KEYS.openai)) out.push("openai");
+  if (keyOk(AI_KEYS.stability)) out.push("stability");
+  if (keyOk(AI_KEYS.goapi)) out.push("goapi");
   return out;
 }
 
@@ -157,6 +160,174 @@ async function hfImage(prompt: string, modelId: string): Promise<string | null> 
   }
 }
 
+/** OpenAI DALL·E 3 — returns a hosted URL. body differs from the chat API. */
+async function openaiImage(
+  prompt: string,
+  aspect: string,
+  modelId: string
+): Promise<string | null> {
+  const key = AI_KEYS.openai;
+  if (!keyOk(key)) return null;
+
+  try {
+    return await withRetry(
+      async () => {
+        const res = await fetchWithTimeout(
+          "https://api.openai.com/v1/images/generations",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${key}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: modelId === "dall-e-3" ? "dall-e-3" : "dall-e-3",
+              prompt: prompt.slice(0, 1000),
+              n: 1,
+              size: aspect === "1:1" ? "1024x1024" : "1024x1792",
+              response_format: "url",
+            }),
+          },
+          TIMEOUTS.complete,
+          "openai-image"
+        );
+        if (!res.ok) throw new Error(`openai image ${res.status}`);
+        const data = await res.json();
+        const url = data?.data?.[0]?.url as string | undefined;
+        if (!url) throw new Error("openai returned no image");
+        return url;
+      },
+      { attempts: 2, label: "openai-image" }
+    );
+  } catch (e) {
+    console.error("[bw] openai image", (e as Error)?.message);
+    return null;
+  }
+}
+
+/** Stability SD3 — returns a hosted URL. Base64 is returned when `output_format` is set. */
+async function stabilityImage(
+  prompt: string,
+  aspect: string,
+  modelId: string
+): Promise<string | null> {
+  const key = AI_KEYS.stability;
+  if (!keyOk(key)) return null;
+  const isSD3 = modelId.includes("stable-diffusion-3");
+  const apiUrl = isSD3
+    ? "https://api.stability.ai/v2beta/stable-image/generate/sd3"
+    : "https://api.stability.ai/v2beta/stable-image/generate/core";
+  const width = aspect === "16:9" || aspect === "yt" ? 1280 : 1024;
+  const height = aspect === "9:16" ? 1280 : aspect === "16:9" || aspect === "yt" ? 720 : aspect === "4:3" ? 768 : 1024;
+  const aspectRatio =
+    aspect === "1:1" ? "1:1" : aspect === "16:9" ? "4:3" : aspect === "9:16" ? "3:2" : "4:3";
+
+  try {
+    return await withRetry(
+      async () => {
+        const res = await fetchWithTimeout(
+          apiUrl,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${key}`,
+              Accept: "application/json",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              prompt: prompt.slice(0, 1000),
+              model: isSD3 ? modelId : "stable-diffusion-v1-6",
+              // Stability: size is expressed as width/height; aspect ratio only on sd3
+              ...(isSD3 ? { aspect_ratio: aspectRatio, mode: "text-to-image" } : { width, height }),
+              output_format: "png",
+            }),
+          },
+          TIMEOUTS.complete,
+          "stability"
+        );
+        if (!res.ok) throw new Error(`stability ${res.status}`);
+        const data = await res.json();
+        // Some responses return a hosted URL; others a base64 image.
+        const hosted =
+          data?.url ||
+          (data?.image && typeof data.image === "string" && data.image.startsWith("http")
+            ? data.image
+            : null);
+        if (hosted) return hosted;
+        const b64 = data?.artifacts?.[0]?.base64 || data?.image;
+        if (typeof b64 === "string" && b64.length > 1000) {
+          return `data:image/png;base64,${b64}`;
+        }
+        throw new Error("stability returned no image");
+      },
+      { attempts: 2, label: "stability" }
+    );
+  } catch (e) {
+    console.error("[bw] stability image", (e as Error)?.message);
+    return null;
+  }
+}
+
+/**
+ * Midjourney via GoAPI / PiAPI — async job APIs. We submit a task and poll the
+ * status endpoint a bounded number of times. The first success that yields a
+ * URL wins; otherwise null so the chain falls through to the next provider.
+ */
+async function goapiMidjourney(
+  prompt: string,
+  aspect: string
+): Promise<string | null> {
+  const key = AI_KEYS.goapi;
+  if (!keyOk(key)) return null;
+  const aspectRating = aspect === "16:9" || aspect === "yt" ? "16:9" : aspect === "9:16" ? "9:16" : "1:1";
+
+  try {
+    // Submit the task
+    const submit = await fetchWithTimeout(
+      "https://api.goapi.ai/api/v1/midjourney/imagine",
+      {
+        method: "POST",
+        headers: {
+          "X-API-Key": key,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          prompt: `${prompt} --ar ${aspectRating} --v 6.1`,
+        }),
+      },
+      TIMEOUTS.complete,
+      "goapi"
+    );
+    if (!submit.ok) return null;
+    const submitData = (await submit.json()) as { data?: { task_id?: string; image_url?: string } };
+    if (submitData.data?.image_url) return submitData.data.image_url;
+    const taskId = submitData.data?.task_id;
+    if (!taskId) return null;
+
+    // Poll up to ~12 times with a short backoff.
+    for (let i = 0; i < 12; i++) {
+      await new Promise((r) => setTimeout(r, 4000));
+      const status = await fetchWithTimeout(
+        `https://api.goapi.ai/api/v1/midjourney/task/${taskId}`,
+        {
+          method: "GET",
+          headers: { "X-API-Key": key },
+        },
+        TIMEOUTS.complete,
+        "goapi"
+      );
+      if (!status.ok) continue;
+      const s = (await status.json()) as { data?: { status?: string; image_url?: string; fail_reason?: string } };
+      if (s.data?.image_url) return s.data.image_url;
+      if (s.data?.status === "FAILURE" || s.data?.fail_reason) return null;
+    }
+    return null;
+  } catch (e) {
+    console.error("[bw] goapi midjourney", (e as Error)?.message);
+    return null;
+  }
+}
+
 /* ── Public entry point ───────────────────────────────────── */
 
 /**
@@ -215,6 +386,24 @@ export async function generateImageMulti(opts: {
     if (model.provider === "huggingface") {
       const url = await hfImage(opts.prompt, model.id);
       if (url) return { url, provider: "huggingface", modelId: model.id, fellBack };
+      fellBack = true;
+      continue;
+    }
+    if (model.provider === "openai") {
+      const url = await openaiImage(opts.prompt, opts.aspect, model.id);
+      if (url) return { url, provider: "openai", modelId: model.id, fellBack };
+      fellBack = true;
+      continue;
+    }
+    if (model.provider === "stability") {
+      const url = await stabilityImage(opts.prompt, opts.aspect, model.id);
+      if (url) return { url, provider: "stability", modelId: model.id, fellBack };
+      fellBack = true;
+      continue;
+    }
+    if (model.provider === "goapi") {
+      const url = await goapiMidjourney(opts.prompt, opts.aspect);
+      if (url) return { url, provider: "goapi", modelId: model.id, fellBack };
       fellBack = true;
       continue;
     }

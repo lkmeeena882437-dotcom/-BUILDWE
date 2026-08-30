@@ -444,6 +444,30 @@ export async function webSearchApi(query: string) {
   };
 }
 
+/* ── Speech-to-Text (Voice: Listen) ─────────────────────── */
+
+/**
+ * Transcribe an audio Blob (from a MediaRecorder stream or a file). Returns
+ * the transcript plus which provider/model served it. `live:false` means no
+ * STT provider is configured — the message is honest, not fabricated.
+ */
+export async function transcribeAudio(
+  audio: Blob,
+  filename?: string
+): Promise<{ ok: boolean; text: string; model: string; provider: string; live: boolean }> {
+  const form = new FormData();
+  form.append("audio", audio, filename || "recording.webm");
+  if (filename) form.append("filename", filename);
+  const r = await fetch("/api/ai/transcribe", {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(j.error || "Couldn't transcribe that audio");
+  return j;
+}
+
 /* ── Vision ─────────────────────────────────────────────── */
 
 export async function visionApi(imageDataUrl: string, prompt: string) {

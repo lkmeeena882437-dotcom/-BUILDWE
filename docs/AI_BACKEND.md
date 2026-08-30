@@ -35,25 +35,53 @@ User prompt
 [7] Stream or return + usage log (+ partial save on abort)
 ```
 
-Code: `lib/ai/rules.ts`, `lib/ai/models-catalog.ts`, `lib/ai/providers.ts`, `lib/ai/search.ts`.
+Code: `lib/ai/rules.ts`, `lib/ai/models-catalog.ts`, `lib/ai/providers.ts`, `lib/ai/provider-registry.ts`, `lib/ai/stt.ts`, `lib/ai/search.ts`.
+
+## Phase 10 — Auto-Router model strategy
+
+`routeModelFor()` in `lib/ai/models-catalog.ts` makes the product's *intent → model*
+policy explicit on top of the scored pick (remembered only on PRO, since free
+stays cost-driven):
+
+- **normal question** → `GPT-4o` (flagship all-rounder)
+- **large document / PDF** → `Gemini 1.5 Pro` (2M-token context)
+- **React / Python / bug / refactor** → `Claude 3.5 Sonnet` (king of code)
+- **generate image / draw** → premium image route (FLUX Pro / Midjourney) via the image studio
+
+The full pipeline is: `USER → FEATURE → BACKEND API → AI ROUTER → RIGHT MODEL →
+AI PROVIDER → RESULT → BUILDWE`.
+
+## Capabilities in the catalog
+
+The catalog now registers models under six capabilities plus the internal
+`router`: `chat`, `code`, `image`, `audio`, `stt` (speech-to-text) and `vision`
+(image understanding). The admin health endpoint reports reachable counts per
+capability: `GET /api/health`.
 
 ## Models we recommend adding (all optional — keep many)
 
 ### Chat
 - **Free auto:** Llama 3.1 8B Instant (simple), Llama 3.3 70B / DeepSeek / Gemini Flash (normal)
-- **Pro:** Claude Sonnet, GPT-4o mini, Llama 3.3 70B
+- **Pro:** GPT-4o, Claude 3.5 Sonnet, Gemini 1.5 Pro, Llama 3.1 70B/405B, Mistral Large 2
 
 ### Code
-- **Free auto:** Qwen2.5 Coder 32B, DeepSeek Coder
-- **Pro:** Claude Sonnet (code), GPT-4.1 mini, Qwen2.5 Coder
+- **Free auto:** Qwen2.5 Coder 32B, DeepSeek Coder V2
+- **Pro:** Claude 3.5 Sonnet (code), Claude 3 Opus, GPT-4o, DeepSeek Coder V2, Qwen2.5 Coder (Together)
 
 ### Image
-- **Free auto:** FLUX Schnell, SDXL Turbo fallback
-- **Pro:** FLUX Dev / FLUX Pro
+- **Free auto:** FLUX, FLUX Turbo, SDXL fallback
+- **Pro:** FLUX Pro, Midjourney v6.1 (GoAPI), DALL·E 3, Stable Diffusion 3
+
+### Vision (image understanding — NOT generation)
+- **Pro:** GPT-4o Vision, Claude 3.5 Sonnet Vision (Groq free fallback)
 
 ### Audio (TTS)
-- **Free auto:** OpenAI TTS / Cartesia / Deepgram Aura
-- **Pro:** ElevenLabs Multilingual (Hindi + world voices)
+- **Free auto:** Pollinations openai-audio (keyless, default)
+- **Pro:** ElevenLabs Multilingual (Hindi + world voices), OpenAI TTS HD, PlayHT
+
+### Speech-to-Text (STT — Voice: Listen)
+- **Free auto:** Whisper v3 (Groq)
+- **Pro:** Deepgram Nova-2 (low-latency streaming)
 
 Full list with scores: `lib/ai/models-catalog.ts` → `MODEL_CATALOG`.
 

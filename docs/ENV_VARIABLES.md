@@ -80,12 +80,21 @@ Ek bhi na daalo, sab chalta rahega. Har key sirf **aur models** kholti hai.
 | `OPENROUTER_API_KEY` | Backup vendor — Groq down ho to bhi chale | Free credits |
 | `GOOGLE_API_KEY` | Gemini — lambe documents ke liye | **Free tier** |
 | `ANTHROPIC_API_KEY` | Claude — PRO writing me sabse achha | Paid |
-| `OPENAI_API_KEY` | GPT-4o mini + OpenAI TTS voices | Paid |
+| `OPENAI_API_KEY` | GPT-4o + GPT-4o Vision + OpenAI TTS + DALL·E 3 | Paid |
 | `FAL_KEY` | **FLUX Dev/Pro images** — daalte hi UI me apne aap dikhenge | Paid |
 | `HF_TOKEN` | SDXL images, budget fallback | Free tier |
+| `MISTRAL_API_KEY` | Mistral Large 2 (chat backup/fallback) | Free tier |
+| `DEEPSEEK_API_KEY` | DeepSeek Coder V2 (sasta coding) | Open-source (sasta) |
+| `TOGETHER_API_KEY` | Qwen 2.5 Coder (edge-case coding) | Open-source (sasta) |
+| `STABILITY_API_KEY` | Stable Diffusion 3 (images) | Paid |
+| `GOAPI_API_KEY` | Midjourney v6.1 (images, via GoAPI) | Paid |
+| `ELEVENLABS_API_KEY` | ElevenLabs TTS (best voice) | Paid |
+| `PLAYHT_API_KEY` | PlayHT TTS (voice cloning) | Paid |
+| `DEEPGRAM_API_KEY` | Deepgram Nova-2 (speech-to-text) | Paid/free credits |
 
 > `FAL_KEY` daalte hi Image Studio me naye models **khud** aa jayenge — code
-> chhune ki zarurat nahi. Ye maine v1.11.1 me banaya tha.
+> chhune ki zarurat nahi. Ye maine v1.11.1 me banaya tha. Same behavior har
+> naye provider ke saath hai — key daalo, model router me apne aap aa jayega.
 
 ### Social login (optional)
 
