@@ -207,8 +207,8 @@ Each suite was also run **against the pre-fix code** (`git worktree` at HEAD) an
 ## Wave 9 — Verification & quality bar (runs continuously, sized here)
 | ID | Task | Requirement |
 |---|---|---|
-| W9.1 | CI: `tsc --noEmit` + `eslint` + `next build` + Playwright smoke on 5 routes. **Toolchain half is done:** `eslint@8.57.1` + `eslint-config-next` are now devDependencies with a committed `.eslintrc.json`, so `npm run lint` runs in CI without an interactive prompt. Still needed: a workflow file (or his `gh` secret for Checks) | repo CI access |
-| W9.1b | `.github/workflows/ci.yml`: install → `tsc --noEmit` → `npm run lint` → `next build` → the four `npm run test:*` suites | W9.1 |
+| W9.1 | CI (toolchain half **done**): `tsc --noEmit` + `eslint` + `next build` + Playwright smoke on 5 routes. **Toolchain half is done:** `eslint@8.57.1` + `eslint-config-next` are now devDependencies with a committed `.eslintrc.json`, so `npm run lint` runs in CI without an interactive prompt. Still needed: a workflow file (or his `gh` secret for Checks) | repo CI access |
+| W9.1b | CI workflow **written and validated**, parked at `docs/ci/github-actions.ci.yml`: `checks` (tsc → lint → build) + `suites` (all six `npm run test:*`), on push to `main`/`arena/**` and PRs. It cannot be *placed* by me — GitHub refuses any push touching `.github/workflows/` without the `workflows` permission (`remote rejected: refusing to allow a GitHub App to create or update workflow`), and one `git mv` enables it | **you: `git mv` (or grant `workflows: write`)** |
 | W9.2 | ~~Fix the 7 ESLint errors~~ **done in W0** — 0 errors / 2 warnings left (`app/layout.tsx` `no-page-custom-font`, which is a Pages-Router rule that doesn't apply under `app/`; and `components/AdSlot.tsx`'s unnecessary `useMemo` dep) | none |
 | W9.3 | `tests/` with real assertions: **done for** auth+verify-token replay (W0), checkout double-redeem (W0), rate-limit bypass (W0), share-page escaping (W0), tool contracts + metering (W1), OAuth PKCE (W1). Still owed: credit math (W2), login/reset flows end-to-end | none |
 | W9.4 | `noUncheckedIndexedAccess` + shared TS config for tests | none |

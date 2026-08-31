@@ -1,0 +1,75 @@
+# BUILDWE CI — this file is ready to run; it just can't be placed by the agent.
+#
+# GitHub refuses any push that creates or updates a path under
+# `.github/workflows/` unless the app/token has the `workflows` permission, and
+# the connector Arena uses does not. So the workflow lives here, reviewed like
+# any other file. One command turns it on:
+#
+#   git mv docs/ci/github-actions.ci.yml .github/workflows/ci.yml
+#   git commit -m "ci: enable the workflow"
+#
+# (Or grant the app `workflows: write` and I'll move it myself next turn.)
+
+name: CI
+
+# What this gates: the four things that were all broken at once before Wave 0 —
+# types, lint, a real build, and the suites that prove money/XSS/rate-limit/
+# durability/tool-contract behaviour. Nothing here is decorative: every step is
+# a command that has already caught a real bug in this repo.
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: typecheck · lint · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: typecheck
+        run: npx --no-install tsc --noEmit
+      - name: lint
+        run: npx --no-install next lint
+      - name: build
+        run: npx --no-install next build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  suites:
+    name: behaviour suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # Each suite boots its own disposable `next dev` on its own port and its
+      # own data dir, so they can run in sequence without sharing rate-limit
+      # buckets — and none of them can silently inherit a developer's warm
+      # server (that false-green is exactly what the harness now prevents).
+      - name: money · XSS · history honesty
+        run: npm run test:security
+      - name: markdown renderer (stored XSS at the source)
+        run: npm run test:markdown
+      - name: OAuth PKCE · verified-email linking · BYOK key shapes
+        run: npm run test:auth
+      - name: tool runner (31 tools, contracts, metering)
+        run: npm run test:tools
+      - name: rate limiting under a forged proxy header
+        run: npm run test:throttle
+      - name: store durability across processes
+        run: npm run test:durability
