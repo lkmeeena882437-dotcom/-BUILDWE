@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createPasswordReset, findUserByEmail } from "@/lib/db/store";
+import { ALLOW_DEV_AUTH_LINKS } from "@/lib/config";
+import { emailKey, safeIp } from "@/lib/rate-limit/guard";
+import { rateLimitDurable } from "@/lib/rate-limit/durable";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,12 +22,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Enter a valid email." }, { status: 400 });
     }
 
+    // Reset requests used to be unlimited: a script could hammer this endpoint
+    // to mint tokens forever and to probe which emails have accounts. Per-email
+    // and per-IP buckets, with the same "OK" answer either way.
+    const gate = await Promise.all([
+      rateLimitDurable(`forgot:email:${emailKey(email)}`, 5, 3600_000),
+      rateLimitDurable(`forgot:ip:${safeIp(req)}`, 20, 3600_000),
+    ]);
+    if (gate.some((g) => !g.ok)) {
+      return NextResponse.json({
+        ok: true,
+        message: "If that email has an account, a reset link is on its way.",
+      });
+    }
+
     const user = findUserByEmail(email);
     if (user) {
       const token = createPasswordReset(user.id);
       const link = `/reset?token=${token}`;
       console.log(`[bw] password reset link for ${email}: ${link}`);
-      const showDevLink = process.env.SHOW_DEV_LINKS === "true";
+      // Never off a raw env flag: SHOW_DEV_LINKS=true in a production .env used
+      // to hand the reset token to whoever asked for one (audit HIGH).
+      const showDevLink = ALLOW_DEV_AUTH_LINKS;
       return NextResponse.json({
         ok: true,
         message: "If that email has an account, a reset link is on its way.",

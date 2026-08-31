@@ -1,0 +1,18 @@
+Copyright (c) 2026 BUILDWE / lkmeeena882437
+
+All rights reserved, for now.
+
+This repository holds the source for a commercial product. Nothing here is
+granted to you by implication: no reproduction, redistribution, public
+display, or use of this code or its trademarks in your own product without the
+author's written permission. Private study and running your own local copy for
+the purpose of reviewing it is fine.
+
+Two notes for whoever owns this repo:
+  1. "No license file" is already "all rights reserved" by default in most
+     countries. This file exists to say it explicitly instead of leaving it to
+     be guessed — and to be obvious to anyone who finds the repo.
+  2. If you decide to open-source the code, replace this file with MIT (or
+     Apache-2.0 if you want a patent grant) and set package.json "license"
+     accordingly. The trademark and any hosted-service terms stay separate
+     either way.

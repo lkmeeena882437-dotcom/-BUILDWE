@@ -125,10 +125,26 @@ export type Payment = {
   orderId: string;
   paymentId?: string;
   amount: number;
+  /** What the payment gateway reported as actually captured, in the smallest
+   *  currency unit. Written only from the server-side verify path. */
+  amountPaid?: number;
   currency: string;
   status: "created" | "paid" | "failed";
   demo: boolean;
   createdAt: string;
+};
+
+/**
+ * One-time-use tokens (email verification). A signed token is otherwise
+ * replayable for its whole validity window, so a leaked link in an inbox
+ * preview stays dangerous for 48 hours — the hash lands here on first use.
+ */
+export type ConsumedToken = {
+  id: string;
+  scope: string;
+  tokenHash: string;
+  userId: string;
+  expiresAt: number;
 };
 
 export type Generation = {
@@ -163,6 +179,7 @@ export type DB = {
   apiKeys: ApiKey[];
   teams: Team[];
   passwordResets: PasswordReset[];
+  consumedTokens: ConsumedToken[];
 };
 
 const emptyDb = (): DB => ({
@@ -177,6 +194,7 @@ const emptyDb = (): DB => ({
   apiKeys: [],
   teams: [],
   passwordResets: [],
+  consumedTokens: [],
 });
 
 /** Process-local fallback when disk is unavailable */
@@ -248,32 +266,189 @@ function read(): DB {
       apiKeys: parsed.apiKeys || [],
       teams: parsed.teams || [],
       passwordResets: parsed.passwordResets || [],
+      consumedTokens: parsed.consumedTokens || [],
     };
+    lastReadRaw = raw;
     return memoryDb;
   } catch {
+    lastReadRaw = null;
     return memoryDb;
   }
 }
 
+/* ── Cross-process write safety (audit C4 stopgap) ──────────
+ *
+ * The JSON store is a whole-file read-modify-write. Inside ONE process that is
+ * safe (JS is single-threaded and no mutator awaits between read() and
+ * write()), but two server processes (or a `next dev` worker plus a script)
+ * clobber each other: B reads before A writes, then B's write erases A.
+ *
+ * Two mechanisms, both contained here so no call site changes:
+ *  1. a lock file with stale takeover, so read→write is serialised across
+ *     processes;
+ *  2. a three-way merge on write — if the file changed since our read, our
+ *     record-level *diff* (base = what we read, ours = this db) is applied on
+ *     top of the other writer's content instead of overwriting it.
+ *
+ * This is a stopgap, not a database: two processes editing the SAME record
+ * still resolve last-writer-wins. The real fix is Postgres as primary store
+ * (docs/BUILD_PLAN.md W6.1).
+ */
+
+let lastReadRaw: string | null = null;
+export let dbLockingAvailable = true;
+
+function sleepSync(ms: number) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    /* no SharedArrayBuffer — busy-check instead */
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      /* spin */
+    }
+  }
+}
+
+function acquireLock(file: string): string | null {
+  const lock = `${file}.lock`;
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    try {
+      const fd = fs.openSync(lock, "wx");
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      dbLockingAvailable = true;
+      return lock;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") {
+        // Locks cannot be taken here (read-only fs, no perms). Keep working
+        // with the merge path only and report it, rather than failing writes.
+        dbLockingAvailable = false;
+        return null;
+      }
+      try {
+        if (Date.now() - fs.statSync(lock).mtimeMs > 3_000) {
+          fs.unlinkSync(lock); // crashed holder — take over
+          continue;
+        }
+      } catch {
+        /* vanished between stat and unlink: retry */
+        continue;
+      }
+      if (Date.now() > deadline) {
+        dbLockingAvailable = false;
+        return null;
+      }
+      sleepSync(20);
+    }
+  }
+}
+
+function releaseLock(lock: string) {
+  try {
+    fs.unlinkSync(lock);
+  } catch {
+    /* already gone */
+  }
+}
+
+/** Identity of a record inside a collection. `usage` is keyed per user+day. */
+function recordKey(col: string, rec: Record<string, unknown>): string {
+  if (col === "usage") return `${String(rec.userId)}|${String(rec.day)}`;
+  const id = rec.id;
+  return typeof id === "string" && id ? id : JSON.stringify(rec);
+}
+
+function parseDb(raw: string): DB {
+  const parsed = JSON.parse(raw) as Partial<DB>;
+  const base = emptyDb();
+  for (const k of Object.keys(base) as (keyof DB)[]) {
+    const v = parsed[k];
+    if (Array.isArray(v)) (base[k] as unknown[]) = v;
+  }
+  return base;
+}
+
+/** Apply our diff (base → ours) onto `theirs`, record by record. */
+function mergeOnto(theirs: DB, base: DB, ours: DB): DB {
+  const out = { ...theirs } as DB;
+  (Object.keys(ours) as (keyof DB)[]).forEach((col) => {
+    const theirRows = theirs[col] as Record<string, unknown>[];
+    const baseRows = base[col] as Record<string, unknown>[];
+    const ourRows = ours[col] as Record<string, unknown>[];
+    const baseJson: Record<string, string> = {};
+    baseRows.forEach((r) => {
+      baseJson[recordKey(col, r)] = JSON.stringify(r);
+    });
+    const patch: Record<string, Record<string, unknown> | null> = {};
+    ourRows.forEach((r) => {
+      const k = recordKey(col, r);
+      if (baseJson[k] !== JSON.stringify(r)) patch[k] = r; // added or changed
+    });
+    Object.keys(baseJson).forEach((k) => {
+      if (!ourRows.some((r) => recordKey(col, r) === k)) patch[k] = null; // deleted
+    });
+
+    const merged: Record<string, unknown>[] = [];
+    const placed: Record<string, boolean> = {};
+    theirRows.forEach((r) => {
+      const k = recordKey(col, r);
+      const p = patch[k];
+      if (p === undefined) {
+        merged.push(r);
+        placed[k] = true;
+      } else if (p !== null) {
+        merged.push(p);
+        placed[k] = true;
+      }
+      // p === null → we deleted it, so it is dropped
+    });
+    ourRows.forEach((r) => {
+      const k = recordKey(col, r);
+      if (patch[k] !== undefined && !placed[k]) merged.push(r);
+    });
+    (out[col] as unknown[]) = merged;
+  });
+  return out;
+}
+
 function write(db: DB) {
-  memoryDb = db;
   // A local write happened. If bootRemote() is still awaiting its pull, this
   // tells it to abandon the adopt rather than overwrite what we just wrote.
   localWriteSinceBoot = true;
   const file = getPath();
   if (file && writable) {
+    const lock = acquireLock(file);
     try {
+      // If another process wrote since our read, merge instead of overwrite.
+      let current = db;
+      try {
+        const onDisk = fs.readFileSync(file, "utf8");
+        if (lastReadRaw !== null && onDisk !== lastReadRaw) {
+          current = mergeOnto(parseDb(onDisk), parseDb(lastReadRaw), db);
+        }
+      } catch {
+        /* unreadable file: fall back to writing what we hold */
+      }
+      const out = JSON.stringify(current, null, 2);
       // atomic: never leave a half-written store behind
       const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(db, null, 2), "utf8");
+      fs.writeFileSync(tmp, out, "utf8");
       fs.renameSync(tmp, file);
+      memoryDb = current;
+      lastReadRaw = out;
+      db = current;
     } catch {
       writable = false;
+    } finally {
+      if (lock) releaseLock(lock);
     }
   }
+  memoryDb = db;
   scheduleRemotePush(db);
 }
-
 /* ── Optional Supabase mirror (permanent DB) ─────────────── */
 
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -327,6 +502,7 @@ function bootRemote() {
       apiKeys: remote.apiKeys || [],
       teams: remote.teams || [],
       passwordResets: remote.passwordResets || [],
+      consumedTokens: remote.consumedTokens || [],
     };
     const file = getPath();
     if (file && writable) {
@@ -999,6 +1175,64 @@ export function addPayment(input: Omit<Payment, "id" | "createdAt">) {
 
 export function findPaymentByOrder(orderId: string) {
   return read().payments.find((p) => p.orderId === orderId) || null;
+}
+
+/**
+ * Compare-and-swap the payment status. Only the caller that flips `created`
+ * to the target status owns the consequence (granting PRO), which is what
+ * makes a replayed verify harmless. Returns null when nothing was flipped.
+ */
+export function markPaymentPaidIfPending(
+  id: string,
+  paymentId: string | null,
+  status: "paid" | "failed",
+  amountPaid?: number,
+  currency?: string
+): Payment | null {
+  const db = read();
+  const i = db.payments.findIndex((p) => p.id === id);
+  if (i < 0 || db.payments[i].status !== "created") return null;
+  db.payments[i] = {
+    ...db.payments[i],
+    status,
+    ...(paymentId ? { paymentId } : {}),
+    ...(typeof amountPaid === "number" ? { amountPaid } : {}),
+    ...(currency ? { currency } : {}),
+  };
+  write(db);
+  return db.payments[i];
+}
+
+/**
+ * Claim a one-time token. True the first time a (scope, token) pair is seen,
+ * false on every replay or after expiry.
+ */
+export function consumeTokenOnce(
+  scope: string,
+  token: string,
+  userId: string,
+  ttlMs = 7 * 24 * 3600_000
+): boolean {
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  const db = read();
+  if (db.consumedTokens.some((t) => t.scope === scope && t.tokenHash === tokenHash)) {
+    return false;
+  }
+  const now = Date.now();
+  db.consumedTokens = db.consumedTokens.filter((t) => t.expiresAt > now);
+  db.consumedTokens.unshift({
+    id: uid("tok"),
+    scope,
+    tokenHash,
+    userId,
+    expiresAt: now + ttlMs,
+  });
+  // Bound the ledger of spent tokens — it is a security log, not a archive.
+  if (db.consumedTokens.length > 5_000) {
+    db.consumedTokens = db.consumedTokens.slice(0, 5_000);
+  }
+  write(db);
+  return true;
 }
 
 export function updatePayment(

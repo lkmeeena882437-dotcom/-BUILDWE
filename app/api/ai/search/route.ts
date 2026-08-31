@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
-import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
+import { limitAi } from "@/lib/rate-limit/guard";
 import { webSearchDetailed } from "@/lib/ai/search";
 
 export const runtime = "nodejs";
@@ -9,13 +9,9 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
-    const ip = clientIp(req);
-    const rl = rateLimit(`ai:search:${session.userId}:${ip}`, 30, 60_000);
+    const rl = await limitAi("search", session.userId, 30, 60_000);
     if (!rl.ok) {
-      return NextResponse.json(
-        { error: "Too many searches — wait a moment." },
-        { status: 429 }
-      );
+      return NextResponse.json({ error: rl.error, hint: rl.hint }, { status: 429 });
     }
 
     const body = await req.json().catch(() => ({}));

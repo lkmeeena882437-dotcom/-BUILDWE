@@ -75,7 +75,13 @@ export function UpgradeButton({ className }: { className?: string }) {
         body: JSON.stringify({}),
       });
       const orderJ = await orderR.json().catch(() => ({}));
-      if (!orderR.ok) throw new Error(orderJ.error || "Couldn't start checkout");
+      if (!orderR.ok) {
+        throw new Error(
+          orderJ.code === "CHECKOUT_UNAVAILABLE"
+            ? "Payments aren't enabled on this server yet, so PRO can't be bought right now."
+            : orderJ.error || "Couldn't start checkout"
+        );
+      }
 
       const { order, keyId, demo } = orderJ as {
         order: { id: string; amount: number; currency: string };
@@ -83,20 +89,13 @@ export function UpgradeButton({ className }: { className?: string }) {
         demo: boolean;
       };
 
-      // 3a. DEMO mode — instant test upgrade (no keys configured)
+      // 3a. Demo orders exist only off-production so the flow can be walked
+      // through. They are NOT redeemable — the server refuses them in every
+      // environment — so we say so instead of pretending the upgrade landed.
       if (demo) {
-        const v = await verify({
-          razorpay_order_id: order.id,
-          razorpay_payment_id: `pay_demo_${Date.now()}`,
-          razorpay_signature: "demo",
-        });
-        setDone(true);
         setNote(
-          v.demo
-            ? "Demo checkout — PRO activated on this account. Add Razorpay keys for real payments."
-            : "PRO activated ⚡"
+          "Demo order created, but no plan was granted: demo orders cannot be redeemed. Add real Razorpay keys to sell PRO."
         );
-        router.refresh();
         return;
       }
 

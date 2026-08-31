@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
-import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
+import { limitAi } from "@/lib/rate-limit/guard";
 import {
   deleteProjectFile,
   getProjectFile,
@@ -65,14 +65,10 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
-    const rl = rateLimit(
-      `proj:files:${session.userId}:${clientIp(req)}`,
-      60,
-      60_000
-    );
+    const rl = await limitAi("proj-files", session.userId, 60, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
-        { error: "Too many file writes — wait a moment.", code: "RATE_LIMIT" },
+        { error: rl.error, code: "RATE_LIMIT", hint: rl.hint },
         { status: 429 }
       );
     }

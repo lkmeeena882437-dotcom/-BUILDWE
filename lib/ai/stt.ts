@@ -133,7 +133,7 @@ export async function transcribeAudio(opts: {
   // Honest fallback — never pretend we heard something we didn't.
   return {
     text:
-      "Voice-to-text isn't connected right now. An administrator can enable it by adding a DEEPGRAM_API_KEY or GROQ_API_KEY to the server configuration. Your recording is ready and can be re-sent the moment transcription comes online.",
+      "Voice-to-text isn't connected right now, so we cannot transcribe this. Your recording is safe and can be sent again as soon as transcription is available — ask the operator of this deployment to enable a transcription provider.",
     provider: "buildwe",
     model: "BUILDWE Voice (preview)",
     live: false,

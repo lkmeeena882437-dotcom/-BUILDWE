@@ -13,11 +13,47 @@ function envInt(key: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/**
+ * Demo mode — OFF unless explicitly asked for, and impossible in production.
+ *
+ * It used to default to `true`, which meant a fresh deploy accepted ANY
+ * checkout payload as a paid order and handed out PRO for free (audit C1).
+ * A demo switch is fine for a laptop, never for a live payment endpoint, so
+ * `NODE_ENV=production` can no longer enable it at all.
+ */
+function demoMode(): boolean {
+  if (process.env.NODE_ENV === "production") return false;
+  return env("NEXT_PUBLIC_DEMO_MODE", "false") === "true";
+}
+
 export const APP = {
   name: env("NEXT_PUBLIC_APP_NAME", "BUILDWE.ONLINE"),
   url: env("NEXT_PUBLIC_APP_URL", "http://localhost:3000"),
-  demoMode: env("NEXT_PUBLIC_DEMO_MODE", "true") === "true",
+  demoMode: demoMode(),
 } as const;
+
+/**
+ * How many reverse proxies sit in front of us. `x-forwarded-for` is
+ * attacker-controlled unless the chain is ours, so with no trusted proxy we
+ * must NOT take the client IP from it (audit C3: rotating that header reset
+ * every rate-limit bucket). Vercel/Cloudflare set it for us → 1 hop.
+ */
+export const TRUST_PROXY_HOPS = (() => {
+  const explicit = Number(env("TRUST_PROXY_HOPS", ""));
+  if (Number.isFinite(explicit) && explicit >= 0) return Math.min(explicit, 4);
+  if (process.env.VERCEL === "1" || process.env.CF || process.env.FC_REQUEST_ID) return 1;
+  // Off production, reading the header is what makes a local demo usable
+  // (otherwise every visitor of `localhost:3000` shares one signup bucket).
+  // In production the default is 0: unproven headers grant no trust.
+  if (process.env.NODE_ENV !== "production") return 1;
+  return 0;
+})();
+
+/** Ops-only endpoints are closed unless a token is configured. */
+export const OPS_TOKEN = env("BW_OPS_TOKEN");
+export const ALLOW_DEV_AUTH_LINKS =
+  process.env.NODE_ENV !== "production" &&
+  env("SHOW_DEV_LINKS", "false") === "true";
 
 export const LIMITS = {
   free: {
@@ -85,6 +121,19 @@ export function hasProviderKey(
 ): boolean {
   const v = AI_KEYS[provider];
   return Boolean(v && !v.startsWith("your_") && v !== "change_me_long_random_string");
+}
+
+/**
+ * Whether saved user API keys are encrypted with a secret this deployment
+ * owns. `lib/crypto.ts` refuses to fall back in production, so the status page
+ * can say "down" instead of implying encryption is always on.
+ */
+export function byokEncryptionConfigured(): boolean {
+  return (
+    Boolean(AI_KEYS.byokSecret) ||
+    (process.env.NODE_ENV !== "production" &&
+      Boolean(env("SESSION_SECRET", "buildwe-dev-secret")))
+  );
 }
 
 export function razorpayConfigured(): boolean {

@@ -12,10 +12,10 @@ export async function POST(req: NextRequest) {
     if (!token) {
       return NextResponse.json({ error: "Reset link is invalid." }, { status: 400 });
     }
-    if (password.length < 6) {
+    if (password.length < 8) {
       return NextResponse.json(
-        { error: "New password must be at least 6 characters." },
-        { status: 400 }
+        { error: "New password must be at least 8 characters." },
+        { status: 422 }
       );
     }
     const user = consumePasswordReset(token, password);

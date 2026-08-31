@@ -25,7 +25,8 @@ export function SitePage({
           </Link>
           <div className="flex items-center gap-4 text-sm text-[#6B6560]">
             <Link href="/how-it-works" className="hidden hover:text-[#14110F] sm:inline">How it works</Link>
-            <Link href="/pricing" className="hover:text-[#14110F]">Pricing</Link>
+            <Link href="/tools" className="hover:text-[#14110F]">Tools</Link>
+            <Link href="/pricing" className="hidden hover:text-[#14110F] sm:inline">Pricing</Link>
             <Link href="/help" className="hidden hover:text-[#14110F] sm:inline">Help</Link>
             <Link href="/" className="rounded-xl bg-[#14110F] px-3 py-1.5 font-medium text-[#F7F4EE]">Open workspace</Link>
           </div>
@@ -46,6 +47,8 @@ export function SitePage({
           <span className="font-semibold text-[#14110F]">BUILDWE.ONLINE</span>
           <Link href="/about" className="hover:text-[#14110F]">About</Link>
           <Link href="/how-it-works" className="hover:text-[#14110F]">How it works</Link>
+          <Link href="/tools" className="hover:text-[#14110F]">Tools</Link>
+          <Link href="/studios" className="hover:text-[#14110F]">Studios</Link>
           <Link href="/security" className="hover:text-[#14110F]">Security</Link>
           <Link href="/pricing" className="hover:text-[#14110F]">Pricing</Link>
           <Link href="/status" className="hover:text-[#14110F]">Status</Link>

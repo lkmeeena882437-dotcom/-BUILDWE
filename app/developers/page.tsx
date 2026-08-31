@@ -177,7 +177,7 @@ export default function DevelopersPage() {
           <ul className="mt-1 list-disc space-y-1 pl-5 text-sm" style={{ color: "var(--muted)" }}>
             <li><code>prompt</code> — string, one-shot question (or)</li>
             <li><code>messages</code> — array of {"{role: user|assistant|system, content}"}, last 20 kept</li>
-            <li><code>mode</code> — "chat" (default) | "code"</li>
+            <li><code>mode</code> — &quot;chat&quot; (default) | &quot;code&quot;</li>
           </ul>
           <h3 className="mt-4 text-xs font-semibold uppercase tracking-wider">Response</h3>
           <pre className="mt-1 overflow-x-auto rounded-2xl p-4 text-[12px]" style={{ background: "var(--code-bg)", color: "var(--code-fg)" }}>

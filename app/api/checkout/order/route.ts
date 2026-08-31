@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import { APP, RAZORPAY } from "@/lib/config";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
-import { createProOrder, getCheckoutPublicConfig } from "@/lib/payments/razorpay";
+import {
+  CheckoutUnavailableError,
+  createProOrder,
+  demoCheckoutOrder,
+  getCheckoutPublicConfig,
+  livePayments,
+} from "@/lib/payments/razorpay";
 import { addPayment } from "@/lib/db/store";
 
 export const runtime = "nodejs";
@@ -18,6 +25,30 @@ export async function POST(req: NextRequest) {
         { error: "Log in first — PRO upgrades need an account." },
         { status: 401 }
       );
+    }
+
+    // Off-production only, and the result can never be redeemed for a plan:
+    // /api/checkout/verify refuses demo orders in every environment.
+    if (!livePayments()) {
+      if (!APP.demoMode) {
+        return NextResponse.json(
+          {
+            error:
+              "Checkout is not configured on this server, so PRO cannot be purchased yet.",
+            code: "CHECKOUT_UNAVAILABLE",
+          },
+          { status: 503 }
+        );
+      }
+      const demo = demoCheckoutOrder(session.userId);
+      return NextResponse.json({
+        order: demo,
+        keyId: "",
+        planName: RAZORPAY.planName,
+        displayAmount: `₹${(RAZORPAY.amountPaise / 100).toFixed(0)}`,
+        demo: true,
+        note: "Demo checkout — the UI can be walked through, but no plan is granted.",
+      });
     }
 
     const order = await createProOrder(session.userId);
@@ -45,10 +76,14 @@ export async function POST(req: NextRequest) {
     });
     attachGuestCookie(res, session.userId);
     return res;
-  } catch {
+  } catch (e) {
+    if (e instanceof CheckoutUnavailableError) {
+      return NextResponse.json({ error: e.message, code: "CHECKOUT_UNAVAILABLE" }, { status: 503 });
+    }
+    console.error("[bw] checkout order", e);
     return NextResponse.json(
-      { error: "Could not create order" },
-      { status: 500 }
+      { error: "Could not create order right now. You have not been charged." },
+      { status: 502 }
     );
   }
 }

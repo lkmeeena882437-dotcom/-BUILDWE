@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
-import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
-import { rateLimitDurable } from "@/lib/rate-limit/durable";
+import { limitAi } from "@/lib/rate-limit/guard";
+
 import { visionComplete } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { addGeneration, findUserById } from "@/lib/db/store";
@@ -15,8 +15,7 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB
 export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
-    const ip = clientIp(req);
-    const rl = await rateLimitDurable(`ai:vision:${session.userId}:${ip}`, 20, 60_000);
+    const rl = await limitAi("vision", session.userId, 20, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
         { error: "Too many requests — wait a moment." },

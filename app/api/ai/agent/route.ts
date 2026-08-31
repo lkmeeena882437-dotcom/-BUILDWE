@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
-import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
-import { rateLimitDurable } from "@/lib/rate-limit/durable";
+import { limitAi } from "@/lib/rate-limit/guard";
+
 import { runAgent, type AgentEvent } from "@/lib/ai/agent";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { findUserById, listProjects, createProject } from "@/lib/db/store";
@@ -31,10 +31,9 @@ function sse(event: AgentEvent): string {
 export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
-    const ip = clientIp(req);
 
     // Tighter than chat: each run is a multi-step loop, not one completion.
-    const rl = await rateLimitDurable(`ai:agent:${session.userId}:${ip}`, 6, 60_000);
+    const rl = await limitAi("agent", session.userId, 6, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
         {

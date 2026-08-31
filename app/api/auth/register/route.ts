@@ -9,28 +9,38 @@ import {
   signSession,
 } from "@/lib/auth/session";
 import { verifyGuestCookie } from "@/lib/auth/guest";
-import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
-import { rateLimitDurable } from "@/lib/rate-limit/durable";
+import { limitSignup } from "@/lib/rate-limit/guard";
 
 const schema = z.object({
   email: z.string().email(),
-  password: z.string().min(6).max(128),
+  password: z.string().min(8).max(128),
   name: z.string().min(1).max(80).optional(),
 });
 
 export async function POST(req: NextRequest) {
   try {
-    const ip = clientIp(req);
-    const rl = await rateLimitDurable(`reg:${ip}`, 10, 60_000);
-    if (!rl.ok) {
-      return NextResponse.json({ error: "Too many attempts. Wait a minute." }, { status: 429 });
+    // Body first, then BOTH limits: per-IP and per-email. Keying on the email
+    // too means rotating X-Forwarded-For no longer buys fresh quota (audit C3).
+    const parsed = schema.safeParse(await req.json().catch(() => null));
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "Enter a valid email and password (min 8 characters)." },
+        { status: 422 }
+      );
+    }
+    const gate = await limitSignup(req, parsed.data.email);
+    if (!gate.ok) {
+      return NextResponse.json(
+        { error: gate.error, hint: gate.hint },
+        { status: 429 }
+      );
     }
 
     // Capture the (verified) guest identity BEFORE the account exists, so the
     // work done in guest mode can follow the user into their new account.
     const guestId = verifyGuestCookie(req.cookies.get("bw_guest")?.value);
 
-    const body = schema.parse(await req.json());
+    const body = parsed.data;
     const user = createUser({
       email: body.email,
       password: body.password,

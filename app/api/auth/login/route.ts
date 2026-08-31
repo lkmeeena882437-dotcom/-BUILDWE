@@ -14,8 +14,7 @@ import {
   signSession,
 } from "@/lib/auth/session";
 import { verifyGuestCookie } from "@/lib/auth/guest";
-import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
-import { rateLimitDurable } from "@/lib/rate-limit/durable";
+import { limitLogin } from "@/lib/rate-limit/guard";
 
 const schema = z.object({
   email: z.string().email(),
@@ -24,13 +23,17 @@ const schema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
-    const ip = clientIp(req);
-    const rl = await rateLimitDurable(`login:${ip}`, 20, 60_000);
-    if (!rl.ok) {
-      return NextResponse.json({ error: "Too many attempts. Wait a minute." }, { status: 429 });
-    }
-
     const body = schema.parse(await req.json());
+
+    // Per-account limit is checked with the credential in hand, so it survives
+    // any amount of IP rotation; the IP bucket stays as the broad flood brake.
+    const rl = await limitLogin(req, body.email);
+    if (!rl.ok) {
+      return NextResponse.json(
+        { error: rl.error, hint: rl.hint },
+        { status: 429 }
+      );
+    }
     const user = findUserByEmail(body.email);
     if (!user || !verifyPassword(body.password, user.passwordHash)) {
       return NextResponse.json(

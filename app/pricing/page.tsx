@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Check, X } from "lucide-react";
 import { UpgradeButton } from "@/components/billing/UpgradeButton";
+import { useProPrice } from "@/components/billing/useProPrice";
 
 const FREE = [
   "Full platform access for everyone",
@@ -23,6 +24,8 @@ const PRO = [
 
 export default function PricingPage() {
   const router = useRouter();
+  // Same server-owned price the checkout actually charges (audit A6).
+  const proPrice = useProPrice();
 
   return (
     <div className="min-h-[100dvh] bg-[#F7F4EE] text-[#14110F]">
@@ -107,7 +110,7 @@ export default function PricingPage() {
               PRO
             </div>
             <div className="mt-1 flex items-baseline gap-1">
-              <span className="text-4xl font-semibold">₹500</span>
+              <span className="text-4xl font-semibold">{proPrice.label}</span>
               <span className="text-sm text-[#6B6560]">/ month</span>
             </div>
             <p className="mt-2 text-sm text-[#6B6560]">

@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
-import { clientIp } from "@/lib/rate-limit/memory";
-import { rateLimitDurable } from "@/lib/rate-limit/durable";
+import { limitAi } from "@/lib/rate-limit/guard";
+
 import { transcribeAudio } from "@/lib/ai/stt";
+import { checkLimit, recordUsage } from "@/lib/ai/limits";
+
+/** 10 minutes of compressed audio is ~25 MB; beyond that it is an abuse attempt. */
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,8 +23,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
-    const ip = clientIp(req);
-    const rl = await rateLimitDurable(`ai:stt:${session.userId}:${ip}`, 20, 60_000);
+    const rl = await limitAi("stt", session.userId, 20, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
         { error: "Too many requests — wait a moment." },
@@ -32,6 +35,27 @@ export async function POST(req: NextRequest) {
     const file = form?.get("audio");
     const filename = String(form?.get("filename") || "") || undefined;
 
+    // No cap at all used to mean a caller could stream an arbitrary-sized
+    // recording into a paid transcription API through a free account (A3).
+    if (file instanceof Blob && file.size > MAX_UPLOAD_BYTES) {
+      return NextResponse.json(
+        {
+          error: `That recording is too large — ${MAX_UPLOAD_BYTES / 1_000_000} MB is the ceiling. Trim it or send a shorter clip.`,
+          code: "PAYLOAD_TOO_LARGE",
+          maxBytes: MAX_UPLOAD_BYTES,
+        },
+        { status: 413 }
+      );
+    }
+
+    const audioLimit = checkLimit(session.userId, session.plan, "audio");
+    if (!audioLimit.ok) {
+      return NextResponse.json(
+        { error: audioLimit.message || "Daily limit reached.", code: "LIMIT" },
+        { status: 429 }
+      );
+    }
+
     if (!(file instanceof Blob) || file.size === 0) {
       return NextResponse.json(
         { error: "Attach an audio recording first." },
@@ -40,6 +64,7 @@ export async function POST(req: NextRequest) {
     }
 
     const result = await transcribeAudio({ audio: file, filename });
+    if (result.live) recordUsage(session.userId, "audio");
 
     const res = NextResponse.json({
       ok: true,

@@ -1,6 +1,7 @@
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 import { NextRequest, NextResponse } from "next/server";
+import { limitAi } from "@/lib/rate-limit/guard";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import {
   appendMessages,
@@ -15,6 +16,13 @@ import {
 export async function GET(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
+    // History is read on every workspace mount; without a bucket, a loop of
+    // fetches could pull the whole store as fast as the server can serialize
+    // it (audit HIGH: unlimited read).
+    const rl = await limitAi("history", session.userId, 120, 60_000);
+    if (!rl.ok) {
+      return NextResponse.json({ error: rl.error, hint: rl.hint }, { status: 429 });
+    }
     const conversations = listVisibleConversations(session.userId).map((c) => ({
       id: c.id,
       title: c.title,
@@ -32,7 +40,12 @@ export async function GET(req: NextRequest) {
     return res;
   } catch (e) {
     console.error("[bw] history GET", e);
-    return NextResponse.json({ conversations: [], generations: [] });
+    // An empty list is a lie when the read failed: the client then deleted
+    // local state that still existed on the server. Report the failure.
+    return NextResponse.json(
+      { error: "Could not load your history right now.", code: "HISTORY_UNAVAILABLE" },
+      { status: 503 }
+    );
   }
 }
 
@@ -102,6 +115,11 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (e) {
     console.error("[bw] history DELETE", e);
-    return NextResponse.json({ ok: true });
+    // Reporting success for a failed delete is how a "cleared" history comes
+    // back later. Say no.
+    return NextResponse.json(
+      { ok: false, error: "Could not delete that right now." },
+      { status: 500 }
+    );
   }
 }

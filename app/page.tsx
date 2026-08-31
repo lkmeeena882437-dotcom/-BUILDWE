@@ -51,6 +51,7 @@ import {
   Play,
   FlaskConical,
   Wrench,
+  LayoutGrid,
   Recycle,
   SquarePen,
   ThumbsUp,
@@ -126,6 +127,8 @@ import {
 import { ImageStudio, type StudioImage } from "@/components/workspace/ImageStudio";
 import { AudioStudio } from "@/components/workspace/AudioStudio";
 import { AdSlot } from "@/components/AdSlot";
+import { renderSafeMarkdown } from "@/lib/safe-md";
+import { useProPrice } from "@/components/billing/useProPrice";
 
 type Mode = "auto" | "chat" | "code" | "image" | "audio";
 type ThemePref = "system" | "light" | "dark";
@@ -284,25 +287,10 @@ function rid() {
 }
 
 function md(text: string) {
-  let h = text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-  h = h.replace(/```(\w+)?\n([\s\S]*?)```/g, (_m, lang, code) => {
-    return `<pre data-lang="${lang || ""}"><code>${code.replace(/\n$/, "")}</code></pre>`;
-  });
-  h = h.replace(/`([^`]+)`/g, "<code>$1</code>");
-  h = h.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  h = h.replace(/^(?:- |\* )(.+)$/gm, "<li>$1</li>");
-  h = h.replace(/(<li>[\s\S]*?<\/li>)(?:\n<li>[\s\S]*?<\/li>)*/g, (m) => `<ul>${m}</ul>`);
-  return h
-    .split(/\n{2,}/)
-    .map((b) =>
-      b.startsWith("<pre") || b.startsWith("<ul")
-        ? b
-        : `<p>${b.replace(/\n/g, "<br/>")}</p>`
-    )
-    .join("");
+  // Shared hardened renderer (audit C2): the inline version escaped `& < >`
+  // but not quotes, so a fence label or a link target could close an
+  // attribute and run script in every reader's browser.
+  return renderSafeMarkdown(text);
 }
 
 function extractCode(text: string) {
@@ -2087,6 +2075,32 @@ function Dashboard() {
                 <Icon className="h-4 w-4 shrink-0" />
                 {sidebarOpen && m.label}
               </button>
+            );
+          })}
+        </nav>
+
+        {/* Purpose-built generators live at /tools — the sidebar links to the
+            real routes, it doesn't reimplement a second copy of the catalogue
+            that could drift from the registry. */}
+        <nav className="space-y-0.5 px-2.5 pb-2">
+          {[
+            { href: "/tools", label: "Tools", icon: Wrench },
+            { href: "/studios", label: "Studios", icon: LayoutGrid },
+          ].map((l) => {
+            const Icon = l.icon;
+            return (
+              <a
+                key={l.href}
+                href={l.href}
+                className={clsx(
+                  "flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm font-medium",
+                  sidebarOpen ? "px-3" : "justify-center"
+                )}
+                style={{ color: "var(--muted)" }}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                {sidebarOpen && l.label}
+              </a>
             );
           })}
         </nav>
@@ -3877,6 +3891,10 @@ function AuthSheet(props: {
 }
 
 function PlansSheet({ plan, onClose, onPro }: { plan: string; onClose: () => void; onPro: () => void }) {
+  // Price comes from the server's checkout config — the same number the order
+  // endpoint charges. It used to be hand-written here as "$5" while /pricing
+  // said "₹500" and Razorpay was configured for 50000 paise (audit A6).
+  const proPrice = useProPrice();
   return (
     <Sheet onClose={onClose} title="Plans" wide>
       <p className="mb-4 text-sm" style={{ color: "var(--muted)" }}>
@@ -3895,7 +3913,7 @@ function PlansSheet({ plan, onClose, onPro }: { plan: string; onClose: () => voi
         </div>
         <div className="rounded-2xl border-2 p-4" style={{ borderColor: "var(--accent)", background: "var(--card)" }}>
           <div className="text-xs font-semibold" style={{ color: "var(--accent)" }}>PRO</div>
-          <div className="mt-1 text-2xl font-semibold">$5<span className="text-sm font-normal" style={{ color: "var(--muted)" }}>/mo</span></div>
+          <div className="mt-1 text-2xl font-semibold">{proPrice.label}<span className="text-sm font-normal" style={{ color: "var(--muted)" }}>/mo</span></div>
           <ul className="mt-3 space-y-1.5 text-xs">
             <li>✓ Higher creative limits</li>
             <li>✓ Priority generation</li>

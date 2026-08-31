@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
-import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
-import { rateLimitDurable } from "@/lib/rate-limit/durable";
+import { limitAi } from "@/lib/rate-limit/guard";
+
 import { streamChatOrCode } from "@/lib/ai/providers";
 import { estimateComplexity } from "@/lib/ai/models-catalog";
 import { bump } from "@/lib/metrics/metrics";
+import { checkLimit, recordUsage } from "@/lib/ai/limits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,11 +17,28 @@ export const dynamic = "force-dynamic";
  * lanes report "offline" — we never fabricate model voices.
  */
 
-const SEATS = [
+/**
+ * Which models get asked. `gemma2-9b-it` used to be hard-coded here and is a
+ * retired Groq model, so one lane failed on every run (audit A4). Seats are now
+ * chosen from the live provider set when we can, and the list is overridable
+ * per deployment with COMPARE_SEATS="id,id,id".
+ */
+const DEFAULT_SEATS = [
   { id: "llama-3.3-70b-versatile", label: "Model A · reasoning" },
   { id: "llama-3.1-8b-instant", label: "Model B · speed" },
-  { id: "gemma2-9b-it", label: "Model C · writing" },
+  { id: "llama-3.2-3b-instruct", label: "Model C · writing" },
 ];
+
+function seats(): { id: string; label: string }[] {
+  const raw = (process.env.COMPARE_SEATS || "").trim();
+  if (!raw) return DEFAULT_SEATS.slice(0, Number(process.env.COMPARE_SEAT_COUNT || 3));
+  return raw
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .slice(0, 4)
+    .map((id, i) => ({ id, label: `Model ${String.fromCharCode(65 + i)} · ${id}` }));
+}
 
 async function collect(stream: ReadableStream<Uint8Array>): Promise<string> {
   const reader = stream.getReader();
@@ -48,7 +66,7 @@ async function collect(stream: ReadableStream<Uint8Array>): Promise<string> {
 export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
-    const rl = await rateLimitDurable(`compare:${session.userId}:${clientIp(req)}`, 10, 60_000);
+    const rl = await limitAi("compare", session.userId, 10, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
         {
@@ -56,6 +74,18 @@ export async function POST(req: NextRequest) {
           code: "RATE_LIMIT",
           hint: "Wait about a minute, then run the comparison again.",
         },
+        { status: 429 }
+      );
+    }
+
+    // Each run is SEATS+1 model calls. Without a quota check this was the
+    // cheapest free burner on the platform: 10 runs/min × 4 calls, forever
+    // (audit A4). Free users are limited by their chat allowance, and a
+    // comparison is charged as one chat unit per live lane it actually used.
+    const limit = checkLimit(session.userId, session.plan, "chat");
+    if (!limit.ok) {
+      return NextResponse.json(
+        { error: limit.message || "Daily limit reached.", code: "LIMIT", hint: "Compare runs several models at once, so it counts against your chat allowance." },
         { status: 429 }
       );
     }
@@ -70,7 +100,7 @@ export async function POST(req: NextRequest) {
     const messages = [{ role: "user", content: prompt }];
 
     const lanes = await Promise.all(
-      SEATS.map(async (seat) => {
+      seats().map(async (seat) => {
         const { stream, model, live } = await streamChatOrCode({
           mode: "chat",
           messages,
@@ -90,6 +120,9 @@ export async function POST(req: NextRequest) {
 
     const liveLanes = lanes.filter((l) => l.live && l.reply.trim());
     bump("compare_run");
+    if (liveLanes.length && session.kind === "user") {
+      recordUsage(session.userId, "chat", liveLanes.length);
+    }
     if (!liveLanes.length) bump("compare_offline");
     if (!liveLanes.length) {
       const message =

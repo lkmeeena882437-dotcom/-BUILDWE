@@ -1,9 +1,21 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { PwaRegister } from "@/components/PwaRegister";
+import { getCheckoutPublicConfig } from "@/lib/payments/razorpay";
+import { TOOLS } from "@/lib/tools/registry";
 import { CookieConsent } from "@/components/CookieConsent";
 
 const SITE = process.env.NEXT_PUBLIC_APP_URL || "https://buildwe.online";
+
+/**
+ * One source for the price. The marketing shell used to say "$5/mo" while
+ * /pricing said "₹500" and the checkout endpoint charged 50000 paise — three
+ * hand-typed copies of one number that had already drifted (audit A6). The
+ * layout now reads the same server config the order endpoint uses.
+ */
+const PRICE = getCheckoutPublicConfig();
+const PRO_PRICE_LABEL = `${PRICE.displayAmount}/mo`;
+const PRO_PRICE_VALUE = (PRICE.amountPaise / 100).toFixed(2);
 
 const jsonLd = {
   "@context": "https://schema.org",
@@ -25,19 +37,23 @@ const jsonLd = {
       "@type": "WebSite",
       name: "BUILDWE.ONLINE",
       url: SITE,
-      description: "One free AI workspace — Chat, Code, Vision, Voice.",
+      description: `One free AI workspace — chat, code, vision, voice and ${TOOLS.length} purpose-built tools.`,
     },
     {
       "@type": "SoftwareApplication",
       name: "BUILDWE",
       applicationCategory: "BusinessApplication",
       operatingSystem: "Web, Android, iOS (PWA)",
-      description:
-        "AI that understands the work. Chat, code, images, and voice in one free workspace with web search and file understanding.",
+      description: `AI that understands the work. Chat, code, images and voice plus ${TOOLS.length} purpose-built generators in one free workspace, with web search and file understanding.`,
       url: SITE,
       offers: [
-        { "@type": "Offer", name: "Free", price: "0", priceCurrency: "INR" },
-        { "@type": "Offer", name: "PRO", price: "500", priceCurrency: "INR" },
+        { "@type": "Offer", name: "Free", price: "0", priceCurrency: PRICE.currency },
+        {
+          "@type": "Offer",
+          name: PRICE.planName || "PRO",
+          price: PRO_PRICE_VALUE,
+          priceCurrency: PRICE.currency,
+        },
       ],
     },
   ],
@@ -48,11 +64,21 @@ export const metadata: Metadata = {
     default: "BUILDWE.ONLINE — Build anything. Create everything.",
     template: "%s · BUILDWE",
   },
-  description:
-    "Chat, code, create images, and generate audio — one free AI workspace with web search and vision. Start free. PRO $5/mo.",
+  description: `Chat, code, images, voice and ${TOOLS.length} purpose-built AI tools in one free workspace — web search, vision and file understanding included. Start free, PRO ${PRO_PRICE_LABEL}.`,
   applicationName: "BUILDWE.ONLINE",
   manifest: "/manifest.webmanifest",
-  keywords: ["AI", "chat", "code", "image", "audio", "web search", "vision", "BUILDWE"],
+  keywords: [
+    "AI",
+    "chat",
+    "code",
+    "image",
+    "audio",
+    "web search",
+    "vision",
+    "AI tools",
+    "blog post generator",
+    "BUILDWE",
+  ],
   openGraph: {
     title: "BUILDWE.ONLINE",
     description: "Build anything. Create everything.",

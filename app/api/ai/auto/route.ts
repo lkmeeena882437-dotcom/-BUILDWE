@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { routeIntent } from "@/lib/ai/router";
 import { INPUT_LIMITS } from "@/lib/ai/gateway";
-import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
+import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
+import { limitAi } from "@/lib/rate-limit/guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,11 +15,13 @@ export const dynamic = "force-dynamic";
  * `reasons` are additive extras the UI can use to explain its choice.
  */
 export async function POST(req: NextRequest) {
-  // Cheap endpoint, but still abusable as a free CPU loop — bound it.
-  const rl = rateLimit(`ai:auto:${clientIp(req)}`, 120, 60_000);
+  // Cheap endpoint, but still abusable as a free CPU loop — bound it by the
+  // signed session/guest identity, which an IP header cannot rotate.
+  const session = await getSessionFromRequest(req);
+  const rl = await limitAi("auto", session.userId, 120, 60_000);
   if (!rl.ok) {
     return NextResponse.json(
-      { error: "Too many requests — wait a moment.", code: "RATE_LIMIT" },
+      { error: rl.error, code: "RATE_LIMIT", hint: rl.hint },
       { status: 429 }
     );
   }
@@ -27,10 +30,12 @@ export async function POST(req: NextRequest) {
   const prompt = String(body?.prompt || "").slice(0, INPUT_LIMITS.promptChars);
   const decision = routeIntent(prompt);
 
-  return NextResponse.json({
+  const res = NextResponse.json({
     mode: decision.mode,
     prompt: prompt.slice(0, 200),
     confidence: decision.confidence,
     reasons: decision.reasons,
   });
+  attachGuestCookie(res, session.userId);
+  return res;
 }

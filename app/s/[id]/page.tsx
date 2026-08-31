@@ -3,6 +3,7 @@
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { Bot, Eye, ArrowLeft, Loader2 } from "lucide-react";
+import { renderSafeMarkdown } from "@/lib/safe-md";
 
 type SharedMsg = {
   role: "user" | "assistant";
@@ -20,28 +21,7 @@ type ShareData = {
 };
 
 function md(text: string): string {
-  const esc = (s: string) =>
-    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const codes: string[] = [];
-  let t = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-    codes.push(
-      `<pre class="bw-pre"><div class="bw-pre-lang">${lang || "code"}</div><code>${esc(
-        code
-      )}</code></pre>`
-    );
-    return `\u0000${codes.length - 1}\u0000`;
-  });
-  t = esc(t)
-    .replace(/^###\s+(.+)$/gm, "<h3>$1</h3>")
-    .replace(/^##\s+(.+)$/gm, "<h2>$1</h2>")
-    .replace(/^#\s+(.+)$/gm, "<h1>$1</h1>")
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|\W)\*([^*\n]+)\*(?=\W|$)/g, "$1<em>$2</em>")
-    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
-    .replace(/\n/g, "<br/>");
-  t = t.replace(/\u0000(\d+)\u0000/g, (_, i: string) => codes[Number(i)]);
-  return t;
+  return renderSafeMarkdown(text, { looseBreaks: true });
 }
 
 export default function SharePage({
