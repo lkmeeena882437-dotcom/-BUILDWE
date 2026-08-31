@@ -75,13 +75,28 @@ export async function POST(req: NextRequest) {
       refundArtifact(session.userId, "transcribe", gate.hold.cost, sttId);
       throw e;
     }
-    // Nothing recognised, or the STT provider never answered: the user did not
-    // get an artifact, so they do not pay for one.
-    if (!result.live || !String(result.text || "").trim()) {
+    // Nothing recognised, or no STT provider answered: the user did not get an
+    // artifact, so they do not pay for one — and they do not get a success either.
+    // This used to return `ok: true` with the explanation inside `text`, which meant
+    // any caller that trusts `ok` (a composer inserting a transcript, a tool page
+    // rendering its answer) would happily deliver an apology as if it were the
+    // result. A refusal with the same words is the honest shape.
+    const said = String(result.text || "").trim();
+    if (!result.live || !said) {
       refundArtifact(session.userId, "transcribe", gate.hold.cost, sttId);
-    } else {
-      recordUsage(session.userId, "audio");
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            said ||
+            "Nothing was recognised in that recording — try again a little closer to the microphone.",
+          code: result.live ? "NO_SPEECH_DETECTED" : "TRANSCRIPTION_UNAVAILABLE",
+          live: false,
+        },
+        { status: result.live ? 422 : 503 }
+      );
     }
+    recordUsage(session.userId, "audio");
 
     const res = NextResponse.json({
       ok: true,

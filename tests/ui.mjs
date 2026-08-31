@@ -275,6 +275,22 @@ try {
     assert.ok(declared >= 1000, "sanity: a message ceiling, not a typo");
   });
 
+  await run("a keyless transcription is a refusal, not an ok:true apology", async () => {
+    // The composer's voice note inserts whatever comes back into the prompt, so the
+    // envelope matters as much as the wording: no provider reached => no success.
+    const before = await (await fetch(`${srv.base}/api/credits`, { credentials: "include" })).json();
+    const form = new FormData();
+    form.append("audio", new Blob([new Uint8Array(2048)], { type: "audio/webm" }), "probe.webm");
+    const r = await fetch(`${srv.base}/api/ai/transcribe`, { method: "POST", body: form, credentials: "include" });
+    const j = await r.json().catch(() => ({}));
+    assert.ok(!r.ok, `the route must not answer 200 without a transcript (got ${r.status})`);
+    assert.ok(j.ok !== true, "the response must not claim success");
+    assert.equal(j.code, "TRANSCRIPTION_UNAVAILABLE", "the refusal must name itself");
+    assert.match(String(j.error), /isn't connected|enable a transcription/, "and keep the operator-actionable wording");
+    const after = await (await fetch(`${srv.base}/api/credits`, { credentials: "include" })).json();
+    assert.equal(after.balance, before.balance, "a refusal may not cost a credit");
+  });
+
   await run("Step 2: the composer pill renders for real (inert mount in the lab)", async () => {
     assert.ok(labHtml.includes("bw-pill"), "the pill class must be on the rendered field");
     assert.ok(labHtml.includes("bw-dock"), "the dock is what floats above the scroll");
@@ -452,6 +468,43 @@ await run("a house ad's button must do something real", async () => {
   const body = code.slice(code.indexOf("export function AdSlot"));
   assert.ok(!body.includes("Date.now()"), "the ad pick must be deterministic per render");
   assert.ok(body.includes("setInterval"), "rotation happens on a client timer instead");
+});
+
+await run("Step 4: a voice note reaches the transcription route through its one owner", async () => {
+  const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
+  assert.ok(bar.includes("transcribeAudio(blob"), "the composer must call lib/client/api's transcribeAudio");
+  assert.ok(!bar.includes('"/api/ai/transcribe"'), "and must not hand-roll a second fetch to the same route");
+  assert.ok(bar.includes("noteCredits") === false, "credit bookkeeping stays inside the client helper");
+  // the mic must not outlive the component, and Cancel must not upload
+  const cleanup = bar.slice(bar.indexOf("useEffect(() => {\n    setCanRecord"));
+  assert.ok(cleanup.includes("getTracks().forEach((t) => t.stop())"), "unmount stops the stream tracks");
+  const cancel = bar.slice(bar.indexOf("function cancelVoiceNote"), bar.indexOf("async function startVoiceNote"));
+  assert.ok(cancel.indexOf("rec.onstop = null") < cancel.indexOf("rec.stop()"), "cancel detaches onstop before stopping, so nothing uploads");
+  assert.ok(/MAX_VOICE_SECONDS = 300/.test(bar), "the clip is capped so a forgotten recorder cannot run forever");
+  // every menu row must do something: onClick, or an href to a route that exists
+  // Splitting on the tag beats a fixed-length window: a row with a state-driven
+  // ternary in its hint is longer than any bound you want to hard-code.
+  const rows = bar
+    .split("<MenuRow")
+    .slice(1)
+    .map((chunk) => chunk.slice(0, chunk.indexOf("/>") + 2));
+  assert.equal(rows.length, 4, "image, text file, voice note, clear");
+  for (const row of rows) {
+    assert.ok(/onClick=|href=/.test(row), `a menu row with no action: ${row.slice(0, 60)}`);
+  }
+  for (const href of bar.match(/href="\/[^"]*"/g) || []) {
+    const rel = href.slice(6, -1).split("?")[0];
+    const file = path.join(ROOT, "app", rel === "/" ? "page.tsx" : `${rel}/page.tsx`);
+    assert.ok(existsSync(file), `a menu link points at ${rel}, which has no page`);
+  }
+  const css = readFileSync(path.join(ROOT, "app", "globals.css"), "utf8");
+  for (const sel of [".bw-pill__voice", ".bw-pill__rec", ".bw-pill__voicebtn"]) {
+    assert.ok(css.includes(sel + " {"), `missing rule for ${sel}`);
+  }
+  assert.ok(
+    css.indexOf("@keyframes bw-rec") < css.lastIndexOf("@media (prefers-reduced-motion"),
+    "the recording pulse must sit inside the reduced-motion guard's reach"
+  );
 });
 
 rmSync(outDir, { recursive: true, force: true });

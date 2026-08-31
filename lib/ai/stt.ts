@@ -130,7 +130,9 @@ export async function transcribeAudio(opts: {
     return { text: wk, provider: "groq", model: "Whisper v3", live: true };
   }
 
-  // Honest fallback — never pretend we heard something we didn't.
+  // Honest fallback — never pretend we heard something we didn't. `live: false` is
+  // the signal the route uses to refuse the call (503, and the credit is refunded),
+  // so this text must stay an explanation and must never be handed out as a result.
   return {
     text:
       "Voice-to-text isn't connected right now, so we cannot transcribe this. Your recording is safe and can be sent again as soon as transcription is available — ask the operator of this deployment to enable a transcription provider.",

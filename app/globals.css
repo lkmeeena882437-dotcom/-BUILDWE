@@ -681,6 +681,55 @@ button:active:not(:disabled) {
   color: var(--err);
 }
 
+/* Step 4: the recording has to stay visible after the menu closes, because closing is
+   what starting does. Red dot + clock + the two controls, and the dot pulses only
+   while motion is allowed (the reduced-motion guard at the bottom of this file wins). */
+.bw-pill__voice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 14px 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.bw-pill__rec {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--err);
+  flex: none;
+  animation: bw-rec 1.6s ease-out infinite;
+}
+
+@keyframes bw-rec {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--err) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.bw-pill__voicebtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.bw-pill__voicebtn:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
 /* ── Focus radius + touch targets for the shared controls ──
    Each primitive already owns a corner radius; --bw-focus-r tells the global ring to keep
    it. On touch (coarse pointers) menu rows grow, because a 34px row is a mis-tap and the

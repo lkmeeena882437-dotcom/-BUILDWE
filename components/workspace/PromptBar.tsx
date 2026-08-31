@@ -20,9 +20,10 @@
  *    which meant a half-typed Devanagari/Hinglish word went out as a message. That is a
  *    real bug for this product's users, not a polish item.
  */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
+  AudioLines,
   Globe,
   ImagePlus,
   Layers,
@@ -39,7 +40,7 @@ import {
 import clsx from "clsx";
 import { Btn } from "@/lib/ui/Btn";
 import { MenuDivider, MenuRow, Popover, menuTriggerProps } from "@/lib/ui";
-import { analyzeFileApi, type MeResponse } from "@/lib/client/api";
+import { analyzeFileApi, transcribeAudio, type MeResponse } from "@/lib/client/api";
 import { MODE_META, type Mode } from "@/lib/client/modes";
 import {
   speechRecognitionCtor,
@@ -52,6 +53,9 @@ export type Attachment = { dataUrl: string; name: string } | null;
 
 /** Kept in sync with the server's limits: the UI must refuse before a 413, not after. */
 const MAX_TEXT_FILE = 200 * 1024;
+/** Five minutes, then the composer stops on its own. A recorder nobody stopped is
+ *  a microphone left open and a Blob nobody asked for. */
+const MAX_VOICE_SECONDS = 300;
 const MAX_IMAGE_FILE = 5 * 1024 * 1024;
 
 export interface PromptBarProps {
@@ -148,6 +152,21 @@ export function PromptBar(props: PromptBarProps) {
 
   const [attachOpen, setAttachOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  // The dictation mic (the button on the right) is the browser's own recogniser and
+  // never leaves the machine. This is the other thing a chat composer is expected to
+  // do: record, send it to the server's transcription, and put the words in the box.
+  // One rule the browser enforces: getUserMedia is only allowed on https or localhost.
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [seconds, setSeconds] = useState(0);
+  const [transcribing, setTranscribing] = useState(false);
+  // Availability is measured in an effect, not during render: the server would answer
+  // `false` for every visitor and the client would answer `true`, which is a hydration
+  // mismatch on a button's disabled attribute.
+  const [canRecord, setCanRecord] = useState(true);
   const attachTrigger = useRef<HTMLDivElement | null>(null);
   const [styleMenu, setStyleMenu] = useState(false);
   const chatLike = mode === "chat" || mode === "auto";
@@ -209,6 +228,115 @@ export function PromptBar(props: PromptBarProps) {
     };
     reader.readAsDataURL(f);
   };
+
+  function fmtTime(total: number): string {
+    const m = Math.floor(total / 60);
+    const sec = total % 60;
+    return `${m}:${String(sec).padStart(2, "0")}`;
+  }
+
+  function releaseMic() {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
+  }
+
+  async function finishVoiceNote() {
+    const blob = new Blob(chunksRef.current, {
+      type: recorderRef.current?.mimeType || "audio/webm",
+    });
+    chunksRef.current = [];
+    if (!blob.size) {
+      setError("Nothing was recorded — the microphone may have been muted.");
+      return;
+    }
+    setTranscribing(true);
+    try {
+      // transcribeAudio() is the single owner of that request, including the 402
+      // credit path, so a voice note cannot quietly become an unpriced call.
+      const res = await transcribeAudio(blob, "composer-voice-note.webm");
+      const text = String(res.text || "").trim();
+      if (!text) {
+        setError("The recording came back empty — no speech was detected.");
+        return;
+      }
+      setInput((v) => (v ? v.replace(/\s*$/, " ") : "") + text + " ");
+      requestAnimationFrame(onGrow);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't transcribe that recording.");
+    } finally {
+      setTranscribing(false);
+    }
+  }
+
+  function stopVoiceNote() {
+    const rec = recorderRef.current;
+    if (rec && rec.state === "recording") rec.stop(); // its onstop releases the mic
+    else releaseMic();
+    setRecording(false);
+  }
+
+  function cancelVoiceNote() {
+    const rec = recorderRef.current;
+    if (rec && rec.state === "recording") {
+      rec.onstop = null; // the clip is thrown away, so nothing may be uploaded
+      rec.stop();
+    }
+    chunksRef.current = [];
+    releaseMic();
+    setRecording(false);
+  }
+
+  async function startVoiceNote() {
+    setAttachOpen(false);
+    setError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const rec = new MediaRecorder(stream);
+      chunksRef.current = [];
+      rec.ondataavailable = (ev) => {
+        if (ev.data.size) chunksRef.current.push(ev.data);
+      };
+      rec.onstop = () => {
+        releaseMic();
+        setRecording(false);
+        void finishVoiceNote();
+      };
+      rec.start();
+      recorderRef.current = rec;
+      setRecording(true);
+      setSeconds(0);
+      tickRef.current = setInterval(() => {
+        setSeconds((n) => {
+          if (n + 1 >= MAX_VOICE_SECONDS) stopVoiceNote();
+          return n + 1;
+        });
+      }, 1000);
+    } catch {
+      releaseMic();
+      setError(
+        "The microphone was blocked — allow it for this site, or type the message instead."
+      );
+    }
+  }
+
+  useEffect(() => {
+    setCanRecord(
+      typeof window !== "undefined" &&
+        "MediaRecorder" in window &&
+        Boolean(navigator.mediaDevices?.getUserMedia)
+    );
+    // Navigating away with the mic open keeps the recording indicator lit in the tab
+    // and keeps the stream alive; refs are the only way to reach it from an unmount.
+    return () => {
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      if (tickRef.current) clearInterval(tickRef.current);
+    };
+  }, []);
 
   /** What the picker fires; the value is cleared first so the same file re-fires change. */
   const onPickTextFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -380,6 +508,29 @@ export function PromptBar(props: PromptBarProps) {
             }}
             className="bw-pill__input max-h-[96px] min-h-[48px] w-full resize-none bg-transparent px-4 pt-3.5 text-[15px] outline-none placeholder:opacity-45 md:max-h-[128px]"
           />
+          {(recording || transcribing) && (
+            <div className="bw-pill__voice" role="status">
+              {transcribing ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                  Transcribing…
+                </>
+              ) : (
+                <>
+                  <span className="bw-pill__rec" aria-hidden />
+                  <span className="tabular-nums">
+                    {fmtTime(seconds)} / {fmtTime(MAX_VOICE_SECONDS)} — recording
+                  </span>
+                  <button type="button" className="bw-pill__voicebtn" onClick={stopVoiceNote}>
+                    <Square className="h-3 w-3" aria-hidden /> Stop
+                  </button>
+                  <button type="button" className="bw-pill__voicebtn" onClick={cancelVoiceNote}>
+                    Cancel
+                  </button>
+                </>
+              )}
+            </div>
+          )}
           {nearLimit && (
             <p className={clsx("bw-pill__count", over ? "is-over" : "is-near")} role="status">
               {input.length.toLocaleString()} / {maxMessageChars?.toLocaleString()} characters
@@ -393,7 +544,7 @@ export function PromptBar(props: PromptBarProps) {
                 variant="icon"
                 size="sm"
                 aria-label="Attach"
-                title="Attach — image, text file"
+                title="Attach — image, text file, voice note"
                 onClick={() => setAttachOpen((v) => !v)}
                 {...menuTriggerProps(attachOpen, "bw-attach-menu")}
                 style={
@@ -437,6 +588,25 @@ export function PromptBar(props: PromptBarProps) {
                   }}
                 />
                 <MenuDivider />
+                <MenuRow
+                  dataAction="voice-note"
+                  icon={AudioLines}
+                  title={recording ? "Stop and transcribe" : "Record a voice note"}
+                  hint={
+                    recording
+                      ? `${fmtTime(seconds)} recorded — 1 credit`
+                      : "Speech to text on the server, 1 credit"
+                  }
+                  disabled={!recording && (!canRecord || transcribing)}
+                  note={
+                    !canRecord
+                      ? "This browser has no MediaRecorder"
+                      : transcribing
+                        ? "The last clip is still transcribing"
+                        : undefined
+                  }
+                  onClick={() => (recording ? stopVoiceNote() : void startVoiceNote())}
+                />
                 <MenuRow
                   dataAction="clear-attachment"
                   icon={XCircle}
