@@ -33,6 +33,7 @@ import {
   spendCredits,
 } from "@/lib/db/store";
 import type { Plan } from "@/lib/db/store";
+import { INPUT_LIMITS } from "@/lib/ai/gateway";
 
 export type WorkKind =
   | "tool"
@@ -243,6 +244,9 @@ export function creditSummary(userId: string, plan: Plan) {
   const wallet = getWallet(userId);
   return {
     balance: wallet.balance,
+    // The UI has to warn about a ceiling before it hits a 413, and the ceiling is the
+    // gateway's - not a number copied into a component, which is how a limit drifts.
+    limits: { messageChars: INPUT_LIMITS.messageChars },
     welcome: CREDITS.welcome,
     welcomeAt: wallet.welcomeAt || null,
     plan,

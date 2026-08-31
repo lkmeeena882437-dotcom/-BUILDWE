@@ -641,6 +641,46 @@ button:active:not(:disabled) {
   caret-color: var(--accent);
 }
 
+/* Step 3: the drop target and the character counter live inside the pill. The drop
+   overlay must beat the textarea for hit-testing, and the counter only exists when it
+   has something to say - so it is never a permanent line of chrome. */
+.bw-pill__drop {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--accent-soft) 86%, var(--card));
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.bw-pill.is-drop {
+  border-color: var(--accent);
+  border-style: dashed;
+  box-shadow: var(--shadow-2);
+}
+
+.bw-pill__count {
+  margin: 0 14px -2px;
+  text-align: right;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bw-pill__count.is-near {
+  color: var(--soft);
+}
+
+.bw-pill__count.is-over {
+  color: var(--err);
+}
+
 /* ── Focus radius + touch targets for the shared controls ──
    Each primitive already owns a corner radius; --bw-focus-r tells the global ring to keep
    it. On touch (coarse pointers) menu rows grow, because a 34px row is a mis-tap and the

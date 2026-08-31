@@ -80,6 +80,12 @@ export interface PromptBarProps {
   byokActive: boolean;
   /** The prompt the last successful run used, for "Try again" after a failure. */
   lastPromptText: string;
+  /**
+   * The gateway's per-message ceiling, from GET /api/credits. Optional on purpose: the
+   * hint appears once the number is known, and a second copy of 24000 in a component is
+   * how a limit ends up disagreeing with the server that enforces it.
+   */
+  maxMessageChars?: number;
   taRef: React.RefObject<HTMLTextAreaElement>;
   fileRef: React.RefObject<HTMLInputElement>;
   imgAttachRef: React.RefObject<HTMLInputElement>;
@@ -127,6 +133,7 @@ export function PromptBar(props: PromptBarProps) {
     me,
     byokActive,
     lastPromptText,
+  maxMessageChars,
     taRef,
     fileRef,
     imgAttachRef,
@@ -140,25 +147,30 @@ export function PromptBar(props: PromptBarProps) {
   } = props;
 
   const [attachOpen, setAttachOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const attachTrigger = useRef<HTMLDivElement | null>(null);
   const [styleMenu, setStyleMenu] = useState(false);
   const chatLike = mode === "chat" || mode === "auto";
 
-  const onPickTextFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    e.target.value = "";
-    if (!f) return;
+  /**
+   * The one place a text/CSV file becomes prompt content. The file input, a drop on the
+   * pill and a paste all run through here, so a rule added once (size, the summarise
+   * call, the fallback) applies to every way a file can arrive.
+   */
+  const attachTextFile = async (f: File) => {
     if (f.size > MAX_TEXT_FILE) {
       setError(`File too large — keep text files under ${MAX_TEXT_FILE / 1024} KB. Tip: attach just the part you need help with.`);
       return;
     }
-    // Clearing `value` first matters twice: a re-picked identical file must still fire
-    // change, and nothing here may look like it worked while the read is failing.
     let t = "";
     try {
       t = await f.text();
     } catch {
       setError(`Couldn't read "${f.name}" — it may have moved or been closed. Pick it again from its folder.`);
+      return;
+    }
+    if (!t.trim()) {
+      setError(`"${f.name}" is empty.`);
       return;
     }
     try {
@@ -172,10 +184,7 @@ export function PromptBar(props: PromptBarProps) {
     requestAnimationFrame(onGrow);
   };
 
-  const onPickImage = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    e.target.value = "";
-    if (!f) return;
+  const attachImageFile = (f: File) => {
     if (f.size > MAX_IMAGE_FILE) {
       setError("Image too large — keep it under 5 MB.");
       return;
@@ -192,18 +201,35 @@ export function PromptBar(props: PromptBarProps) {
         return;
       }
       setAttachment({ dataUrl: reader.result, name: f.name });
-      // A picture is a question about pixels, not a song or an image generation.
-      retargetModeForImage();
+      // The old code used the functional updater so a mode that changed while the file
+      // was being read is still respected; `setMode` keeps that, and deliberately does
+      // not go through onMode (= page's switchMode), which aborts a running stream.
+      // Attaching a picture must not cancel the answer being streamed.
+      setMode((m) => (m === "image" || m === "audio" ? "chat" : m));
     };
     reader.readAsDataURL(f);
-    e.target.value = "";
   };
 
-  // The old code used the functional updater so a mode that changed while the file was
-  // being read is still respected; `setMode` keeps that, and deliberately does not go
-  // through onMode (= page's switchMode), which aborts a running stream. Attaching a
-  // picture must not cancel the answer being streamed.
-  const retargetModeForImage = () => setMode((m) => (m === "image" || m === "audio" ? "chat" : m));
+  /** What the picker fires; the value is cleared first so the same file re-fires change. */
+  const onPickTextFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (f) await attachTextFile(f);
+  };
+
+  const onPickImage = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (f) attachImageFile(f);
+  };
+
+  /** Paste and drag-drop share the routing: an image becomes an attachment, a text-ish
+   *  file becomes prompt content, anything else is refused with a reason. */
+  const acceptDroppedFile = (f: File) => {
+    if (f.type.startsWith("image/")) return attachImageFile(f);
+    if (f.type.startsWith("text/") || /\.(md|json|js|ts|tsx|py|css|html|csv|txt)$/i.test(f.name)) return void attachTextFile(f);
+    setError(`Can't attach "${f.name}" — an image, or text/CSV/JSON/code up to ${MAX_TEXT_FILE / 1024} KB.`);
+  };
 
   const startMic = () => {
     const SR = speechRecognitionCtor();
@@ -229,6 +255,11 @@ export function PromptBar(props: PromptBarProps) {
   };
 
   const busy = streaming || imgLoading || audioBusy || visionBusy;
+  // 75% in, the number appears; past the ceiling it turns into the reason the send
+  // would be refused. Nothing is blocked here - the server is the authority, and chat
+  // costs no credits, so a premature refusal would be the app inventing a rule.
+  const over = maxMessageChars ? Math.max(0, input.length - maxMessageChars) : 0;
+  const nearLimit = Boolean(maxMessageChars && input.length > maxMessageChars * 0.75);
 
   return (
     <div className="bw-dock sticky bottom-0 z-20 shrink-0 px-3 py-2.5 sm:px-5">
@@ -273,7 +304,37 @@ export function PromptBar(props: PromptBarProps) {
           </div>
         )}
 
-        <div className="bw-pill">
+        <div
+          className={clsx("bw-pill relative", dragOver && "is-drop")}
+          onDragOver={(e) => {
+            if (!Array.from(e.dataTransfer?.types || []).includes("Files")) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+            if (!dragOver) setDragOver(true);
+          }}
+          onDragLeave={(e) => {
+            // leaving a child bubbles up and would flicker the hint off mid-drag
+            if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+            setDragOver(false);
+          }}
+          onDrop={(e) => {
+            const files = Array.from(e.dataTransfer?.files || []);
+            const f = files[0];
+            if (!f) return;
+            e.preventDefault();
+            setDragOver(false);
+            // One file at a time is the rule the endpoints have; saying which one won is
+            // cheaper than letting someone wonder where the other two went.
+            if (files.length > 1) setError(`Using "${f.name}" — one file at a time.`);
+            acceptDroppedFile(f);
+          }}
+        >
+          {dragOver && (
+            <div className="bw-pill__drop">
+              <Paperclip className="h-4 w-4" />
+              Drop an image, or text / CSV / JSON / code
+            </div>
+          )}
           {attachment && (
             <div className="mx-3 mt-3 flex items-center gap-3 rounded-2xl border p-2" style={{ borderColor: "var(--border)", background: "var(--secondary)" }}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -294,6 +355,14 @@ export function PromptBar(props: PromptBarProps) {
             value={input}
             rows={1}
             aria-label="Message BUILDWE"
+            onPaste={(e) => {
+              // Only intercept a clipboard that actually carries an image; plain text
+              // must paste exactly as the browser would have done it.
+              const f = Array.from(e.clipboardData?.files || []).find((x) => x.type.startsWith("image/"));
+              if (!f) return;
+              e.preventDefault();
+              attachImageFile(f);
+            }}
             placeholder={placeholderFor(mode)}
             onChange={(e) => {
               setInput(e.target.value);
@@ -302,13 +371,21 @@ export function PromptBar(props: PromptBarProps) {
             onKeyDown={(e) => {
               // `isComposing` is the IME saying "this Enter ended a word, it is not a
               // send". Without it, Hindi/Japanese input sends half a sentence.
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              if (e.nativeEvent.isComposing) return;
+              const cmd = e.metaKey || e.ctrlKey;
+              if (e.key === "Enter" && (!e.shiftKey || cmd)) {
                 e.preventDefault();
                 void onSend();
               }
             }}
             className="bw-pill__input max-h-[96px] min-h-[48px] w-full resize-none bg-transparent px-4 pt-3.5 text-[15px] outline-none placeholder:opacity-45 md:max-h-[128px]"
           />
+          {nearLimit && (
+            <p className={clsx("bw-pill__count", over ? "is-over" : "is-near")} role="status">
+              {input.length.toLocaleString()} / {maxMessageChars?.toLocaleString()} characters
+              {over ? ` — ${over.toLocaleString()} over the limit; trim it or attach it as a file` : ""}
+            </p>
+          )}
           <div className="flex items-center gap-0.5 px-2 pb-2">
             {/* leading: the one entry point for anything that gets attached */}
             <div ref={attachTrigger} className="relative mr-0.5 flex shrink-0 items-center">
@@ -347,6 +424,7 @@ export function PromptBar(props: PromptBarProps) {
                     setAttachOpen(false);
                     imgAttachRef.current?.click();
                   }}
+                  right={attachment ? attachment.name : undefined}
                 />
                 <MenuRow
                   dataAction="attach-file"
@@ -513,6 +591,7 @@ export function PromptBar(props: PromptBarProps) {
               <Btn
                 className="bw-pill__send !h-10 !w-10 !p-0"
                 aria-label="Send"
+                title={over ? `Over the message limit by ${over.toLocaleString()} characters` : "Send (Enter)"}
                 disabled={!input.trim() && !attachment}
                 onClick={() => void onSend()}
               >

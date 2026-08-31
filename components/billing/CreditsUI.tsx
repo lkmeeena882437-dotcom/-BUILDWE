@@ -58,7 +58,14 @@ type WalletState = {
   ledger: LedgerRow[];
 };
 
-type Statics = { costs: CostTable; packs: PackPrice[]; welcome: number; proMonthly: number };
+type Statics = {
+  costs: CostTable;
+  packs: PackPrice[];
+  welcome: number;
+  proMonthly: number;
+  /** the gateway's per-message ceiling, in characters; undefined until the wallet has loaded */
+  limits?: { messageChars: number };
+};
 
 const state: WalletState = {
   balance: 0,
@@ -73,6 +80,7 @@ const state: WalletState = {
 };
 
 let statics: Statics = {
+  limits: undefined,
   costs: { chat: 0, image: 2, audio: 1, transcribe: 1, vision: 1, agent: 3, compareLane: 1, tool: 1 },
   packs: [],
   welcome: 10,
@@ -103,6 +111,9 @@ export async function loadWallet(): Promise<void> {
         state.signedIn = Boolean(j.signedIn);
         state.loaded = true;
         state.error = "";
+        if (j.limits && typeof j.limits.messageChars === "number") {
+          statics.limits = { messageChars: Number(j.limits.messageChars) };
+        }
         if (j.costs && typeof j.costs.image === "number") {
           statics = {
             ...statics,
@@ -143,7 +154,7 @@ export function useWallet() {
       subs.delete(f);
     };
   }, []);
-  return { ...state, costs: statics.costs, packs: statics.packs };
+  return { ...state, costs: statics.costs, packs: statics.packs, limits: statics.limits };
 }
 
 /* ── open / close the sheet ─────────────────────────────────── */

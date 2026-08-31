@@ -451,6 +451,9 @@ function Dashboard() {
   const imgAttachRef = useRef<HTMLInputElement>(null);
 
   const meta = MODE_META.find((m) => m.id === mode)!;
+  // one shared wallet read (module-level cache in CreditsUI) - the pill needs the
+  // server's own message ceiling for its counter, nothing more.
+  const wallet = useWallet();
   const plan = me?.plan || "free";
   const loggedIn = me?.kind === "user";
 
@@ -2690,6 +2693,7 @@ function Dashboard() {
                 fileRef={fileRef}
                 imgAttachRef={imgAttachRef}
                 onSend={send}
+                maxMessageChars={wallet.limits?.messageChars}
                 onGrow={grow}
                 onMode={switchMode}
                 setMode={setMode}

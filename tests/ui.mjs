@@ -174,7 +174,15 @@ await run("Step 2: the extracted composer keeps every literal the inline one had
 
 await run("Step 2: the IME fix and the pill/focus classes are actually there", () => {
   const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
-  assert.ok(bar.includes("!e.nativeEvent.isComposing"), "Enter must wait for the IME to finish a word");
+  // The fix is an ORDER, not a literal: anything that can send must sit behind the
+  // composing check, or confirming an IME candidate fires the run. Asserting the old
+  // exact expression would have broken the moment Cmd+Enter was added beside it.
+  const kdStart = bar.indexOf("onKeyDown={(e) => {");
+  const kdBlock = bar.slice(kdStart, kdStart + 900);
+  assert.ok(kdBlock.includes("if (e.nativeEvent.isComposing) return;"), "the composing guard must exist in the key handler");
+  assert.ok(kdBlock.indexOf("isComposing") < kdBlock.indexOf("void onSend()"), "and it must come before anything that can send");
+  assert.ok(kdBlock.includes("const cmd = e.metaKey || e.ctrlKey;"), "the cmd/ctrl modifier is read once");
+  assert.ok(kdBlock.includes('if (e.key === "Enter" && (!e.shiftKey || cmd))'), "Enter and Cmd/Ctrl+Enter send; Shift+Enter still inserts a newline");
   assert.ok(bar.includes('!e.shiftKey'), "Shift+Enter stays a newline");
   assert.ok(/if \(e\.key === "Enter"[^\n]*\) \{\s*\n?\s*e\.preventDefault\(\)/.test(bar) || bar.includes("e.preventDefault();"), "the send branch must still prevent the newline");
   assert.ok(bar.includes('className="bw-dock sticky bottom-0 z-20 shrink-0'), "the dock is the sticky footer");
@@ -241,6 +249,16 @@ try {
     assert.equal((labHtml.match(/aria-selected="true"/g) || []).length, 1, "exactly one selected");
     assert.ok(labHtml.includes('data-bw-seg-item="pro"'), "the SSR value must be the one the page passed in");
     assert.ok(labHtml.includes('data-bw-seg=""'), "the indicator element must exist (measured after paint)");
+  });
+
+  await run("GET /api/credits publishes the ceiling the gateway enforces", async () => {
+    const j = await (await fetch(`${srv.base}/api/credits`)).json();
+    const gateway = readFileSync(path.join(ROOT, "lib", "ai", "gateway.ts"), "utf8");
+    const m = gateway.match(/messageChars:\s*(\d[\d_]*)/);
+    assert.ok(m, "the gateway's messageChars literal should still be greppable");
+    const declared = Number(m[1].replace(/_/g, ""));
+    assert.equal(j.limits.messageChars, declared, "the API must hand out the number the server refuses at");
+    assert.ok(declared >= 1000, "sanity: a message ceiling, not a typo");
   });
 
   await run("Step 2: the composer pill renders for real (inert mount in the lab)", async () => {
@@ -358,7 +376,10 @@ await run("reading a file may fail, and must say so", async () => {
   assert.ok(bar.includes("reader.onerror"), "a FileReader failure is silent by default");
   assert.ok(bar.includes("Couldn't read \"${f.name}\" as an image"), "image read failure has its own message");
   assert.ok(bar.includes("} catch {\n      setError(`Couldn't read"), "text read failure is caught, not thrown into the console");
-  assert.ok(bar.includes("e.target.value = \"\";\n    if (!f) return;"), "the input is cleared before the guards, so re-picking the same file still fires change");
+  for (const fn of ["attachTextFile", "attachImageFile", "acceptDroppedFile"]) {
+    assert.ok(bar.includes(`const ${fn} =`), `the ${fn} pipeline is missing`);
+  }
+  assert.strictEqual((bar.match(/e\.target\.value = "";/g) || []).length, 2, "both pickers clear their input so re-picking the same file fires again, and nothing else does");
   assert.ok(bar.includes('aria-pressed={on}'), "the mode chips must say which mode is active");
   assert.ok(bar.includes('className="flex shrink-0 items-center gap-0.5"'), "trailing actions must not be squeezed by a long chip row");
 });
@@ -371,6 +392,33 @@ await run("the lab files share one style module instead of pasting it twice", as
     assert.ok(src.includes('from "./kit"'), `${f} must import them`);
     assert.ok(!src.includes("const cardStyle"), `${f} must not keep a second copy`);
   }
+});
+
+await run("Step 3: the counter reads the server's ceiling, not a copy of it", async () => {
+  const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
+  // A number pasted into a component is how a UI limit drifts from the enforcing one.
+  // Comments may name the number to explain why it must not be copied; code may not.
+  const code = bar.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+  assert.ok(!/\b24[_,]?000\b/.test(code), "PromptBar must not contain a copy of the message limit");
+  assert.ok(bar.includes("maxMessageChars?: number"), "the ceiling arrives as a prop");
+  assert.ok(bar.includes("input.length > maxMessageChars * 0.75"), "and it only shows up when it matters");
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  assert.ok(page.includes("maxMessageChars={wallet.limits?.messageChars}"), "the page wires it from the wallet store");
+  const css = readFileSync(path.join(ROOT, "app", "globals.css"), "utf8");
+  for (const sel of [".bw-pill__drop", ".bw-pill.is-drop", ".bw-pill__count.is-over"]) {
+    assert.ok(css.includes(sel + " {"), `missing rule for ${sel}`);
+  }
+});
+
+await run("Step 3: paste, drop and the picker share one attach pipeline", async () => {
+  const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
+  // three entry points, one owner each for the image path and the text path
+  assert.strictEqual((bar.match(/attachImageFile\(f\)/g) || []).length, 3, "picker + drop router + paste all call the one image path");
+  assert.strictEqual((bar.match(/attachTextFile\(f\)/g) || []).length, 2, "picker + drop router call the one text path");
+  assert.ok(bar.includes('x.type.startsWith("image/")'), "paste only intercepts a clipboard that really carries an image");
+  assert.ok(bar.includes('includes("Files")'), "dragging selected text must not light up the drop state");
+  assert.ok(bar.includes("e.currentTarget.contains(e.relatedTarget as Node | null)"), "leaving a child must not flicker the hint off mid-drag");
+  assert.ok(bar.includes('role="status"'), "the counter is a status, not a live region firing on every keystroke");
 });
 
 rmSync(outDir, { recursive: true, force: true });

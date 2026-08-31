@@ -5,8 +5,10 @@
 | Step | State | Evidence |
 |---|---|---|
 | 1 `lib/ui` primitives + tokens + `/dev/ui-lab` | **DONE** | `test:ui` **14/14** (placement math compiled from the real module + live SSR markup + the CSS the page loads); `tsc` 0; `next lint` 0 new warnings; `next build` exit 0; `/`, `/pricing`, `/tools/blog-post` server HTML **byte-identical** to the pre-change baseline; all 6 other suites green (8/7/12/13/5 + credits 16/16, durability 5/5) |
-| 2 pill (extract + sticky + IME-safe Enter) + `lib/ui/Btn` extraction | **DONE** | `test:ui` **18/18** incl. a real inert render of `PromptBar`, a literal-by-literal parity list and a prop-declaration vs prop-passed diff; `/`, `/pricing`, `/tools/blog-post` HTML still byte-identical; build 0; `/` First Load 143→150 kB (measured `main` = 137 kB) | 2b improvement pass on Steps 1–2 (his standing ask) | **DONE** | `test:ui` **24/24** — 6 new checks, each one guarding a specific fix below |
-| 3–11 queued — Step 3 on his `next` |
+| 2 pill (extract + sticky + IME-safe Enter) + `lib/ui/Btn` extraction | **DONE** | `test:ui` **18/18** incl. a real inert render of `PromptBar`, a literal-by-literal parity list and a prop-declaration vs prop-passed diff; `/`, `/pricing`, `/tools/blog-post` HTML still byte-identical; build 0; `/` First Load 143→150 kB (measured `main` = 137 kB) |
+| 2b improvement pass on Steps 1–2 (his standing ask) | **DONE** | `test:ui` **24/24** — 6 new checks, each one guarding a specific fix below |
+| 3 composer polish: paste / drop / counter / ⌘↵ + one attach pipeline | **DONE** | `test:ui` **27/27** (3 new checks: the ceiling travels from `INPUT_LIMITS` through `GET /api/credits` and is asserted equal to the gateway literal; no copy of `24000` in code; call-site counts for the three attach entry points) · security 8/8 · markdown 7/7 · auth 12/12 · tools 13/13 · throttle 5/5 · credits 16/16 · durability 5/5 · `tsc` 0 · lint 0 errors · `next build` 0 · `/` 36.2 kB / 151 kB First Load (was 150), shared 87.3 kB |
+| 4–11 queued — Step 4 on his `next` |
 
 Two things Step 1 discovered and fixed in itself: `useDismiss` now honours the popover's *own*
 trigger (`aria-controls` match) so an absolutely positioned menu cannot flicker shut-and-reopen
@@ -70,6 +72,7 @@ Order is dependency-first: primitives before surfaces, surfaces before money, mo
 **Files:** `PromptBar.tsx`, `globals.css`.
 **Content:** paste-an-image (clipboard `paste` handler → reuses `setAttachment`), a character-count hint that only appears at >75% of `INPUT_LIMITS.messageChars` (the server rejects above it; the UI currently says nothing until the 413), and `⌘/Ctrl+Enter` as an alternate send. Drag-drop onto the pill → same two file handlers (no new limits).
 **Verification:** `tests/ui.mjs` (drop/paste handlers present, hint markup), preview check by you.
+**Shipped:** the two file handlers became one pipeline each (`attachImageFile`, `attachTextFile`) that the picker, the `+` menu, a clipboard paste and a drop all route through — so a rule added once (size cap, the summarise call, the failure message) now applies to every way a file can arrive. The counter takes its ceiling from the server (`GET /api/credits` → `limits.messageChars`, asserted equal to `INPUT_LIMITS.messageChars` by the test) instead of a second copy of the number, appears at 75% and turns into the reason a send would be refused past it. `⌘/Ctrl+Enter` sends; `Shift+Enter` still inserts a newline; the composing guard is asserted by *order* (it must precede anything that can send) rather than by matching one exact expression.
 
 ### Step 4 — Attachment menu (your item 4)
 **Files:** new `components/workspace/AttachmentMenu.tsx`, `PromptBar.tsx`, `app/page.tsx` (move the two hidden inputs + `newFilePath`/record handlers into refs exposed to the menu — same code, new owner).
