@@ -1,6 +1,6 @@
 /**
  * Shared bits for the lab's own cards. They used to be pasted into each lab file, which is
- * the exact duplication the reuse contract in docs/UI_UPGRADE_PLAN.md exists to stop - a dev
+ * the exact duplication the reuse contract in docs/internal/UI_UPGRADE_PLAN.md exists to stop - a dev
  * surface should not model the habit of copying a style string and letting two versions drift.
  */
 export const card = "rounded-[var(--radius)] border p-4 ";

@@ -331,7 +331,7 @@ function read(): DB {
  *
  * This is a stopgap, not a database: two processes editing the SAME record
  * still resolve last-writer-wins. The real fix is Postgres as primary store
- * (docs/BUILD_PLAN.md W6.1).
+ * (docs/internal/BUILD_PLAN.md W6.1).
  */
 
 let lastReadRaw: string | null = null;
