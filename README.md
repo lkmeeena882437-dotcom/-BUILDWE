@@ -57,7 +57,7 @@ Open http://localhost:3000
 Set in `.env.local`:
 
 ```
-NEXT_PUBLIC_DEMO_MODE=false
+# (no demo/mock switch exists: checkout answers 503 until Razorpay keys are set) NEXT_PUBLIC_REMOVED=false
 GROQ_API_KEY=gsk_...
 ```
 

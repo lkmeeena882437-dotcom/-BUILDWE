@@ -1,6 +1,8 @@
 /**
  * BUILDWE config — all secrets via env. Replace values in .env.local only.
- * TEST MODE: when keys missing, adapters return safe demo responses.
+ * When a provider key is missing, image and voice fall back to keyless public
+ * endpoints (real HTTP calls to real services), and everything else says it is
+ * unconfigured. There is no mode that answers with invented results.
  */
 
 function env(key: string, fallback = ""): string {
@@ -13,23 +15,9 @@ function envInt(key: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-/**
- * Demo mode — OFF unless explicitly asked for, and impossible in production.
- *
- * It used to default to `true`, which meant a fresh deploy accepted ANY
- * checkout payload as a paid order and handed out PRO for free (audit C1).
- * A demo switch is fine for a laptop, never for a live payment endpoint, so
- * `NODE_ENV=production` can no longer enable it at all.
- */
-function demoMode(): boolean {
-  if (process.env.NODE_ENV === "production") return false;
-  return env("NEXT_PUBLIC_DEMO_MODE", "false") === "true";
-}
-
 export const APP = {
   name: env("NEXT_PUBLIC_APP_NAME", "BUILDWE.ONLINE"),
   url: env("NEXT_PUBLIC_APP_URL", "http://localhost:3000"),
-  demoMode: demoMode(),
 } as const;
 
 /**
@@ -179,11 +167,11 @@ export function hasProviderKey(
  * can say "down" instead of implying encryption is always on.
  */
 export function byokEncryptionConfigured(): boolean {
-  return (
-    Boolean(AI_KEYS.byokSecret) ||
-    (process.env.NODE_ENV !== "production" &&
-      Boolean(env("SESSION_SECRET", "buildwe-dev-secret")))
-  );
+  // Exactly the two names lib/crypto.ts will actually use, with no fallback string
+  // inside the test: `Boolean(env(K, "some literal"))` is always true, so the old
+  // version reported "encrypted with a secret we own" while encrypting with a key
+  // that is printed in the public repo.
+  return Boolean(AI_KEYS.byokSecret) || Boolean(env("SESSION_SECRET"));
 }
 
 export function razorpayConfigured(): boolean {

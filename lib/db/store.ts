@@ -135,7 +135,8 @@ export type Payment = {
   amountPaid?: number;
   currency: string;
   status: "created" | "paid" | "failed";
-  demo: boolean;
+  /** Only ever set by builds before 2026-08-31, which could record a demo order. */
+  demo?: boolean;
   createdAt: string;
 };
 
@@ -1565,7 +1566,9 @@ export function addApiKey(input: Omit<ApiKey, "id" | "createdAt">) {
 
 export function deleteApiKey(id: string, userId: string) {
   const db = read();
+  const before = db.apiKeys.length;
   db.apiKeys = db.apiKeys.filter((k) => !(k.id === id && k.userId === userId));
+  if (db.apiKeys.length === before) return false;
   write(db);
   return true;
 }

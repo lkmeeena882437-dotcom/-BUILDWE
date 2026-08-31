@@ -46,7 +46,7 @@ export function UpgradeButton({ className }: { className?: string }) {
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok || !j.ok) throw new Error(j.error || "Verification failed");
-    return j as { demo?: boolean };
+    return j as { ok: boolean };
   };
 
   const start = async () => {
@@ -83,23 +83,15 @@ export function UpgradeButton({ className }: { className?: string }) {
         );
       }
 
-      const { order, keyId, demo } = orderJ as {
+      const { order, keyId } = orderJ as {
         order: { id: string; amount: number; currency: string };
         keyId: string;
-        demo: boolean;
       };
 
-      // 3a. Demo orders exist only off-production so the flow can be walked
-      // through. They are NOT redeemable — the server refuses them in every
-      // environment — so we say so instead of pretending the upgrade landed.
-      if (demo) {
-        setNote(
-          "Demo order created, but no plan was granted: demo orders cannot be redeemed. Add real Razorpay keys to sell PRO."
-        );
-        return;
-      }
-
-      // 3b. LIVE Razorpay checkout
+      // The only checkout this app has: a real order from a real gateway. The
+      // branch that used to walk the UI with a locally minted order id is gone
+      // along with the path that minted it, so "not configured" is a 503 here
+      // rather than a message that says it worked-but-didnt.
       const ok = await loadRazorpayScript();
       if (!ok || !window.Razorpay) throw new Error("Couldn't load Razorpay");
 

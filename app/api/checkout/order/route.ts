@@ -5,7 +5,6 @@ import {
   CheckoutUnavailableError,
   createPackOrder,
   createProOrder,
-  demoCheckoutOrder,
   getCheckoutPublicConfig,
   livePayments,
 } from "@/lib/payments/razorpay";
@@ -68,31 +67,20 @@ export async function POST(req: NextRequest) {
     const productLabel = pack ? pack.label : RAZORPAY.planName;
     const productPaise = pack ? pack.paise : RAZORPAY.amountPaise;
 
-    // Off-production only, and the result can never be redeemed for a plan or
-    // for credits: /api/checkout/verify refuses demo orders in every
-    // environment, in production and out.
+    // The only answer when there is no gateway configured, in every environment.
+    // It used to be possible to trade a "demo" order for a UI walk-through; that
+    // is a fake success path on a money endpoint and it has been deleted from
+    // lib/payments/razorpay.ts, so the honest 503 is now the only branch.
     if (!livePayments()) {
-      if (!APP.demoMode) {
-        return NextResponse.json(
-          {
-            error: pack
-              ? "Checkout is not configured on this server, so credit packs cannot be sold yet."
-              : "Checkout is not configured on this server, so PRO cannot be purchased yet.",
-            code: "CHECKOUT_UNAVAILABLE",
-          },
-          { status: 503 }
-        );
-      }
-      const demo = demoCheckoutOrder(session.userId, productPaise);
-      return NextResponse.json({
-        order: demo,
-        keyId: "",
-        planName: productLabel,
-        displayAmount: `₹${(productPaise / 100).toFixed(0)}`,
-        demo: true,
-        ...(pack ? { kind: "pack", packId: pack.id, credits: pack.credits } : {}),
-        note: "Demo checkout — the UI can be walked through, but nothing is granted.",
-      });
+      return NextResponse.json(
+        {
+          error: pack
+            ? "Checkout is not configured on this server, so credit packs cannot be sold yet."
+            : "Checkout is not configured on this server, so PRO cannot be purchased yet.",
+          code: "CHECKOUT_UNAVAILABLE",
+        },
+        { status: 503 }
+      );
     }
 
     const order = pack
@@ -107,7 +95,6 @@ export async function POST(req: NextRequest) {
         amount: order.amount,
         currency: order.currency,
         status: "created",
-        demo: order.demo,
         kind: pack ? "pack" : "pro",
         ...(pack ? { packId: pack.id, credits: pack.credits } : {}),
       });
@@ -122,7 +109,6 @@ export async function POST(req: NextRequest) {
       displayAmount: pack
         ? formatPackPrice(pack.paise)
         : pub.displayAmount,
-      demo: order.demo,
       ...(pack ? { kind: "pack", packId: pack.id, credits: pack.credits } : {}),
     });
     attachGuestCookie(res, session.userId);

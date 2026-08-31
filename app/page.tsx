@@ -2131,7 +2131,12 @@ function Dashboard() {
         <div className="space-y-1 border-t p-2.5" style={{ borderColor: "var(--border)" }}>
           {sidebarOpen && plan === "free" && (
             <div className="mb-2">
-              <AdSlot plan={plan} slot="sidebar" onGoPro={() => setModal("plans")} />
+              <AdSlot
+                plan={plan}
+                slot="sidebar"
+                onGoPro={() => setModal("plans")}
+                onAddKey={() => setModal("byok")}
+              />
             </div>
           )}
           <button type="button" onClick={() => setModal("settings")} className={clsx("flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm", sidebarOpen ? "px-3" : "justify-center")} style={{ color: "var(--muted)" }}>
@@ -2338,7 +2343,7 @@ function Dashboard() {
                         ))}
                       </div>
                       <div className="mt-4 w-full max-w-md">
-                        <AdSlot plan={plan} slot="chat-empty" onGoPro={() => setModal("plans")} />
+                        <AdSlot plan={plan} slot="chat-empty" onGoPro={() => setModal("plans")} onAddKey={() => setModal("byok")} />
                       </div>
                     </div>
                   )}

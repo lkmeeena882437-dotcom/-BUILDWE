@@ -522,8 +522,8 @@ function PackRow({
  * Real Razorpay checkout for a pack. Mirrors components/billing/UpgradeButton
  * exactly: the server creates the order, the browser never decides a price,
  * and the signature is verified server-side before a single credit is minted.
- * A demo order (no live keys) is refused by the server, and we say so here
- * instead of showing a fake success.
+ * An unconfigured server answers 503 CHECKOUT_UNAVAILABLE, and that message is
+ * what the user sees: no order, no notice, no fake success.
  */
 async function startPackCheckout(
   packId: string,
@@ -552,18 +552,11 @@ async function startPackCheckout(
             : String(orderJ.error || "Couldn't start checkout."),
       };
     }
-    const { order, keyId, demo } = orderJ as {
+    const { order, keyId } = orderJ as {
       order: { id: string; amount: number; currency: string };
       keyId: string;
-      demo: boolean;
       credits: number;
     };
-    if (demo) {
-      return {
-        note:
-          "Demo order created, but no credits were added: demo orders cannot be redeemed. Add real Razorpay keys to sell packs.",
-      };
-    }
     if (!keyId) return { note: "Payments aren't configured on this server." };
 
     const loaded = await new Promise<boolean>((resolve) => {

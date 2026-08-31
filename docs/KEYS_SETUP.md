@@ -16,9 +16,6 @@ FAL_KEY=                                  # optional paid image upgrade
 # Session signing (change in production)
 SESSION_SECRET=long-random-string-here
 
-# Keep false so live providers are used when keys exist
-NEXT_PUBLIC_DEMO_MODE=false
-
 # Optional PRO billing later
 NEXT_PUBLIC_RAZORPAY_KEY_ID=
 RAZORPAY_KEY_SECRET=

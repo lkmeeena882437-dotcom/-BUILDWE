@@ -10,8 +10,8 @@
  *         (a valid signature alone says "someone signed", not "we were paid")
  * 4. Route grants plan=pro only for the order's own user and only once.
  *
- * HISTORY (audit C1, fixed 2026-08-31): the demo branch used to accept ANY
- * filled payload as a paid order and demo mode defaulted ON, so `curl
+ * HISTORY (audit C1, fixed 2026-08-31): a demo branch used to accept ANY
+ * filled payload as a paid order and the switch defaulted ON, so `curl
  * -d '{"razorpay_order_id":"x","razorpay_payment_id":"y"}'` bought PRO for
  * free on every deploy. Demo now (i) cannot exist in production, (ii) never
  * reaches this module through the public route, and (iii) does not grant a
@@ -26,7 +26,6 @@ export type CheckoutOrder = {
   amount: number;
   currency: string;
   receipt: string;
-  demo: boolean;
 };
 
 export type VerifyPayload = {
@@ -37,7 +36,6 @@ export type VerifyPayload = {
 
 export type VerifyResult = {
   ok: boolean;
-  demo: boolean;
   error?: string;
   /** Server-side truth about the money, used for the ledger row. */
   amountPaid?: number;
@@ -57,8 +55,6 @@ export function getCheckoutPublicConfig() {
         ? `₹${(RAZORPAY.amountPaise / 100).toFixed(0)}`
         : `$${(RAZORPAY.amountPaise / 100).toFixed(2)}`,
     configured: razorpayConfigured(),
-    /** Only meaningful off-production; drives the UI's "not wired yet" notice. */
-    demoMode: APP.demoMode,
   };
 }
 
@@ -113,7 +109,6 @@ async function createOrderFor(
     amount: Number(data.amount) || opts.amountPaise,
     currency: String(data.currency) || RAZORPAY.currency,
     receipt,
-    demo: false,
   };
 }
 
@@ -181,7 +176,6 @@ export async function verifyProPayment(
   if (!livePayments()) {
     return {
       ok: false,
-      demo: false,
       error: "Payments are not configured on this server, so PRO cannot be activated.",
     };
   }
@@ -190,11 +184,13 @@ export async function verifyProPayment(
   const paymentId = String(payload.razorpay_payment_id || "");
   const signature = String(payload.razorpay_signature || "");
   if (!orderId || !paymentId || !signature) {
-    return { ok: false, demo: false, error: "Missing payment fields" };
+    return { ok: false, error: "Missing payment fields" };
   }
-  // Demo orders are minted locally and must never be redeemable.
+  // Refused by shape, not because anything still mints these: the local demo order
+  // was deleted, so this line exists only so that an id from an older build reads as
+  // "Unknown order" instead of being sent to the gateway.
   if (orderId.startsWith("order_demo_")) {
-    return { ok: false, demo: false, error: "Unknown order" };
+    return { ok: false, error: "Unknown order" };
   }
 
   const expected = crypto
@@ -202,14 +198,13 @@ export async function verifyProPayment(
     .update(`${orderId}|${paymentId}`)
     .digest("hex");
   if (!/^[0-9a-f]{64}$/.test(signature) || !safeEqualHex(expected, signature)) {
-    return { ok: false, demo: false, error: "Invalid signature" };
+    return { ok: false, error: "Invalid signature" };
   }
 
   const order = await fetchOrder(orderId);
   if (!order) {
     return {
       ok: false,
-      demo: false,
       error: "Could not confirm the payment with Razorpay. Try again in a moment.",
     };
   }
@@ -218,16 +213,15 @@ export async function verifyProPayment(
   const status = String(order.status || "");
   const notes = (order.notes || {}) as Record<string, unknown>;
   if (status !== "paid" || paid < due) {
-    return { ok: false, demo: false, error: "That order is not paid yet." };
+    return { ok: false, error: "That order is not paid yet." };
   }
   // The order must belong to the account redeeming it.
   if (String(notes.userId || "") !== expectedUserId) {
-    return { ok: false, demo: false, error: "This order belongs to another account." };
+    return { ok: false, error: "This order belongs to another account." };
   }
 
   return {
     ok: true,
-    demo: false,
     amountPaid: paid,
     currency: String(order.currency || RAZORPAY.currency),
     paymentId,
@@ -235,19 +229,11 @@ export async function verifyProPayment(
 }
 
 /**
- * Dev-only canned order so the checkout UI can be walked without keys.
- * Never grants a plan *and* never grants credits: /api/checkout/verify refuses
- * `order_demo_*` in every environment, so this can only ever exercise the UI.
+ * `demoCheckoutOrder` used to live here. Deleted on 2026-08-31 rather than left
+ * "off by default": a code path that manufactures a plausible-looking order id is
+ * one misconfigured env var away from a customer being told their payment worked.
+ * Unconfigured checkout now answers 503 CHECKOUT_UNAVAILABLE, which is what it is.
+ * The `order_demo_` refusal in verifyPayment stays so any order id minted by an
+ * older build still comes back as "Unknown order" instead of being chased at the
+ * gateway.
  */
-export function demoCheckoutOrder(
-  userId: string,
-  amountPaise: number = RAZORPAY.amountPaise
-): CheckoutOrder {
-  return {
-    id: `order_demo_${crypto.randomBytes(6).toString("hex")}`,
-    amount: amountPaise,
-    currency: RAZORPAY.currency,
-    receipt: `bw_demo_${userId.slice(0, 8)}_${Date.now()}`,
-    demo: true,
-  };
-}

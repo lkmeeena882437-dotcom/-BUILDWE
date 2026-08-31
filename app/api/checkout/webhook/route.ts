@@ -159,7 +159,6 @@ export async function POST(req: NextRequest) {
           amount: Number(entity?.amount) || 0,
           currency: String(entity?.currency || "INR"),
           status: "paid",
-          demo: false,
         });
       }
       return NextResponse.json({ ok: true, upgraded: true });

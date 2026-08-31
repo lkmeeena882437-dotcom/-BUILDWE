@@ -110,6 +110,15 @@ await check("server is up and honest about health shape", async () => {
   // C-leak: the old payload told visitors whether demo mode was on and which
   // vendor credentials exist. Both are reconnaissance, not status.
   assert.equal(r.json.demoMode, undefined, "demoMode must not be public");
+  // The flag is gone from the source, not just from this response: no env var may put
+  // the checkout endpoint back into a mode that says "paid" without money moving.
+  const { readFileSync } = await import("node:fs");
+  const root = new URL("..", import.meta.url);
+  const read = (rel) => readFileSync(new URL(rel, root), "utf8");
+  assert.ok(!/DEMO_MODE/.test(read("lib/config.ts")), "NEXT_PUBLIC_DEMO_MODE must not come back");
+  assert.ok(!/export function demoCheckoutOrder/.test(read("lib/payments/razorpay.ts")), "no canned-order factory in the payments lib (a comment may still name it)");
+  assert.ok(!/demo:\s*true/.test(read("app/api/checkout/order/route.ts")), "the order route cannot answer with a demo order");
+  assert.ok(!/DEMO_MODE/.test(read(".env.example")), "the example env must not offer a demo switch");
   assert.equal(
     r.json.providers?.configured,
     undefined,

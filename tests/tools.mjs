@@ -116,7 +116,7 @@ const trusted = await startServer({
 const offline = await startServer({
   port: PORT_OFFLINE,
   label: "tools-nomodel",
-  env: { GROQ_API_KEY: "", OPENAI_API_KEY: "", OPENROUTER_API_KEY: "", NEXT_PUBLIC_DEMO_MODE: "false" },
+  env: { GROQ_API_KEY: "", OPENAI_API_KEY: "", OPENROUTER_API_KEY: "" },
 });
 // resolved from the servers themselves: the harness steps to a free port when a
 // previous interrupted run left one occupied.

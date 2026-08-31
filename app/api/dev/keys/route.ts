@@ -51,9 +51,23 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
+  // GET and POST both check the session kind; DELETE did not. `deleteApiKey` filters on
+  // userId so nothing leaked, but an anonymous request got `200 {ok:true}` for a key it
+  // never touched, which is a lie about whether the revocation happened.
   const session = await getSessionFromRequest(req);
+  if (session.kind !== "user") {
+    return NextResponse.json(
+      { error: "Log in to manage API keys." },
+      { status: 401 }
+    );
+  }
   const id = new URL(req.url).searchParams.get("id");
   if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
-  deleteApiKey(id, session.userId);
+  if (!deleteApiKey(id, session.userId)) {
+    return NextResponse.json(
+      { error: "No key with that id on this account." },
+      { status: 404 }
+    );
+  }
   return NextResponse.json({ ok: true });
 }

@@ -36,6 +36,20 @@ import { report, run, startServer, stopServer } from "./harness.mjs";
 const ROOT = path.resolve(import.meta.dirname, "..");
 const PORT = 3341;
 
+/**
+ * Source-level "must not contain" checks have to ignore prose. Twice now a test has
+ * failed because a comment in the file *explained* the thing that was removed — that
+ * comment is the proof the fix happened, not a regression. Strip comment lines and
+ * assert against the code.
+ */
+function codeOnly(src) {
+  return src
+    .split("\n")
+    .filter((l) => !/^\s*(\/\/|\*|\/\*|\/\*\*)/.test(l))
+    .join("\n");
+}
+
+
 /* ── 1. placement math: compile the real module, no fixtures ───────────── */
 
 const outDir = mkdtempSync(path.join(tmpdir(), "bw-ui-"));
@@ -398,8 +412,7 @@ await run("Step 3: the counter reads the server's ceiling, not a copy of it", as
   const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
   // A number pasted into a component is how a UI limit drifts from the enforcing one.
   // Comments may name the number to explain why it must not be copied; code may not.
-  const code = bar.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
-  assert.ok(!/\b24[_,]?000\b/.test(code), "PromptBar must not contain a copy of the message limit");
+  assert.ok(!/\b24[_,]?000\b/.test(codeOnly(bar)), "PromptBar must not contain a copy of the message limit");
   assert.ok(bar.includes("maxMessageChars?: number"), "the ceiling arrives as a prop");
   assert.ok(bar.includes("input.length > maxMessageChars * 0.75"), "and it only shows up when it matters");
   const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
@@ -419,6 +432,26 @@ await run("Step 3: paste, drop and the picker share one attach pipeline", async 
   assert.ok(bar.includes('includes("Files")'), "dragging selected text must not light up the drop state");
   assert.ok(bar.includes("e.currentTarget.contains(e.relatedTarget as Node | null)"), "leaving a child must not flicker the hint off mid-drag");
   assert.ok(bar.includes('role="status"'), "the counter is a status, not a live region firing on every keystroke");
+});
+
+await run("a house ad's button must do something real", async () => {
+  const src = readFileSync(path.join(ROOT, "components", "AdSlot.tsx"), "utf8");
+  // `href="#byok"` matched no element and `/?share=1` was read by nobody: both were
+  // dead. An ad is allowed a route or a host callback, never a fragment.
+  const code = codeOnly(src);
+  assert.ok(!/href:\s*"#[^"]+"/.test(code), "no bare-anchor href in a house ad");
+  assert.ok(!/share=1/.test(code), "no invented query param");
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  const sites = page.match(/<AdSlot[\s\S]{0,260}?\/>/g) || [];
+  assert.equal(sites.length, 2, "both AdSlot call sites are found by this test");
+  for (const site of sites) {
+    assert.ok(site.includes("onGoPro="), "the PRO ad needs its handler");
+    assert.ok(site.includes("onAddKey="), "the BYOK ad needs its handler");
+  }
+  // Date.now() inside render is a hydration mismatch waiting to happen.
+  const body = code.slice(code.indexOf("export function AdSlot"));
+  assert.ok(!body.includes("Date.now()"), "the ad pick must be deterministic per render");
+  assert.ok(body.includes("setInterval"), "rotation happens on a client timer instead");
 });
 
 rmSync(outDir, { recursive: true, force: true });

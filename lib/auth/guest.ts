@@ -19,15 +19,56 @@
  * temporary migration window — it re-opens the forgery hole.
  */
 import crypto from "crypto";
+import fs from "fs";
+import os from "os";
+import path from "path";
 
 const LEGACY_OK = process.env.BUILDWE_ALLOW_LEGACY_GUEST === "true";
 
+/**
+ * Guest ids are HMAC-signed so one visitor cannot claim another's id and read their
+ * history. The fallback used to be a literal string in this file — and this file is in a
+ * PUBLIC repository, so the literal is a skeleton key: anyone who reads the source can
+ * sign any guest id they like. Production now refuses to sign at all without a real
+ * secret, the same rule `lib/auth/session.ts` already applies to sessions. Off
+ * production the key is random per process: a dev guest survives every reload, and a
+ * server restart simply gives them a fresh id, which is the right trade for a box that
+ * has no secret configured.
+ */
+/**
+ * Off-production fallback: a random key, persisted beside the JSON store so a dev guest
+ * survives a server restart (their wallet and history are keyed by this id) without the
+ * key ever being a string printed in a public repository. If the file cannot be written —
+ * a read-only filesystem, a serverless box — the key is simply per-process and a restart
+ * hands visitors a fresh guest id, which is the correct trade when nothing is configured.
+ */
+function devSecret(): string {
+  try {
+    const dir = process.env.BUILDWE_DATA_DIR || path.join(os.tmpdir(), "buildwe-data");
+    const file = path.join(dir, "guest-signing.key");
+    if (fs.existsSync(file)) {
+      const saved = fs.readFileSync(file, "utf8").trim();
+      if (/^[0-9a-f]{64}$/.test(saved)) return saved;
+    }
+    const fresh = crypto.randomBytes(32).toString("hex");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, fresh, { mode: 0o600 });
+    return fresh;
+  } catch {
+    return crypto.randomBytes(32).toString("hex");
+  }
+}
+
 function secret(): string {
-  return (
-    process.env.SESSION_SECRET ||
-    process.env.BYOK_ENCRYPTION_SECRET ||
-    "buildwe-dev-secret-change-me-in-production-32b"
-  );
+  const configured =
+    process.env.SESSION_SECRET || process.env.BYOK_ENCRYPTION_SECRET;
+  if (configured) return configured;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "SESSION_SECRET is not set. Refusing to sign guest ids with a published development key."
+    );
+  }
+  return devSecret();
 }
 
 function sign(id: string): string {
