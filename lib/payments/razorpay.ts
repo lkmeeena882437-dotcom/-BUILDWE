@@ -19,6 +19,7 @@
  */
 
 import crypto from "crypto";
+import { safeEqual } from "@/lib/crypto";
 import { RAZORPAY, razorpayConfigured, APP } from "@/lib/config";
 
 export type CheckoutOrder = {
@@ -144,11 +145,6 @@ export class CheckoutUnavailableError extends Error {
   }
 }
 
-function safeEqualHex(a: string, b: string): boolean {
-  const ha = Buffer.from(a, "utf8");
-  const hb = Buffer.from(b, "utf8");
-  return ha.length === hb.length && crypto.timingSafeEqual(ha, hb);
-}
 
 /** Ask Razorpay, not the browser, whether this order was actually paid. */
 async function fetchOrder(orderId: string): Promise<Record<string, unknown> | null> {
@@ -197,7 +193,7 @@ export async function verifyProPayment(
     .createHmac("sha256", RAZORPAY.keySecret)
     .update(`${orderId}|${paymentId}`)
     .digest("hex");
-  if (!/^[0-9a-f]{64}$/.test(signature) || !safeEqualHex(expected, signature)) {
+  if (!/^[0-9a-f]{64}$/.test(signature) || !safeEqual(expected, signature)) {
     return { ok: false, error: "Invalid signature" };
   }
 

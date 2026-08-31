@@ -19,57 +19,42 @@
  * temporary migration window — it re-opens the forgery hole.
  */
 import crypto from "crypto";
-import fs from "fs";
-import os from "os";
-import path from "path";
+import { installSecret } from "@/lib/crypto";
 
 const LEGACY_OK = process.env.BUILDWE_ALLOW_LEGACY_GUEST === "true";
 
+let warned = false;
+
 /**
  * Guest ids are HMAC-signed so one visitor cannot claim another's id and read their
- * history. The fallback used to be a literal string in this file — and this file is in a
- * PUBLIC repository, so the literal is a skeleton key: anyone who reads the source can
- * sign any guest id they like. Production now refuses to sign at all without a real
- * secret, the same rule `lib/auth/session.ts` already applies to sessions. Off
- * production the key is random per process: a dev guest survives every reload, and a
- * server restart simply gives them a fresh id, which is the right trade for a box that
- * has no secret configured.
+ * history. The fallback here used to be a literal string — in a public repository that
+ * is a skeleton key, because anyone who reads the source can sign any guest id. Now:
+ * the deployment's own secret if it has one (the normal case), otherwise a key generated
+ * per instance. Off-production that key is persisted beside the JSON store so dev guests
+ * survive restarts; in production it is not, so a cold start hands a visitor a fresh
+ * anonymous id rather than the deploy failing.
  */
-/**
- * Off-production fallback: a random key, persisted beside the JSON store so a dev guest
- * survives a server restart (their wallet and history are keyed by this id) without the
- * key ever being a string printed in a public repository. If the file cannot be written —
- * a read-only filesystem, a serverless box — the key is simply per-process and a restart
- * hands visitors a fresh guest id, which is the correct trade when nothing is configured.
- */
-function devSecret(): string {
-  try {
-    const dir = process.env.BUILDWE_DATA_DIR || path.join(os.tmpdir(), "buildwe-data");
-    const file = path.join(dir, "guest-signing.key");
-    if (fs.existsSync(file)) {
-      const saved = fs.readFileSync(file, "utf8").trim();
-      if (/^[0-9a-f]{64}$/.test(saved)) return saved;
-    }
-    const fresh = crypto.randomBytes(32).toString("hex");
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(file, fresh, { mode: 0o600 });
-    return fresh;
-  } catch {
-    return crypto.randomBytes(32).toString("hex");
-  }
-}
-
 function secret(): string {
   const configured =
     process.env.SESSION_SECRET || process.env.BYOK_ENCRYPTION_SECRET;
   if (configured) return configured;
+  // Throwing here used to be the plan, on the grounds that a published fallback key is
+  // worse than an outage — but a guest id signs nothing that matters: it cannot open an
+  // account, and lib/auth/session.ts still refuses to mint real sessions without a
+  // secret. So an unconfigured deployment says so once, loudly, and keeps serving
+  // guests. "You forgot one env var" should not be a 500 for every logged-out visitor.
   if (process.env.NODE_ENV === "production") {
-    throw new Error(
-      "SESSION_SECRET is not set. Refusing to sign guest ids with a published development key."
-    );
+    if (!warned) {
+      warned = true;
+      console.error(
+        "[bw] SESSION_SECRET is unset — guest identities are signed with a per-instance key, so visitors lose their history on cold starts. Set SESSION_SECRET in the deploy environment."
+      );
+    }
+    return crypto.randomBytes(32).toString("hex");
   }
-  return devSecret();
+  return installSecret("guest-signing");
 }
+
 
 function sign(id: string): string {
   return crypto.createHmac("sha256", secret()).update(`guest:${id}`).digest("base64url");

@@ -507,5 +507,35 @@ await run("Step 4: a voice note reaches the transcription route through its one 
   );
 });
 
+await run("no signing key in the auth path is a published constant", async () => {
+  const { readFileSync: rd } = await import("node:fs");
+  for (const f of ["lib/auth/guest.ts", "lib/auth/session.ts", "lib/crypto.ts"]) {
+    const code = codeOnly(rd(path.join(ROOT, f), "utf8"));
+    assert.ok(
+      !/["'`]buildwe[^"'`]*(dev|secret|change)[^"'`]*["'`]/.test(code),
+      `${f} must not contain a key literal - a published fallback is the key, not a fallback`
+    );
+  }
+  // Both consumers of a missing secret go through the one implementation.
+  assert.ok(rd(path.join(ROOT, "lib", "auth", "guest.ts"), "utf8").includes("installSecret("), "guest ids use installSecret");
+  const cr = rd(path.join(ROOT, "lib", "crypto.ts"), "utf8");
+  assert.ok(cr.includes("export function installSecret") && cr.includes("installSecret(\"byok-encryption\")"), "BYOK uses the same owner");
+  // Token and payment signatures must be compared without a timing channel, and by one
+  // helper rather than a per-file copy.
+  assert.ok(cr.includes("export function safeEqual"), "crypto.ts owns the constant-time compare");
+  assert.ok(!/hmac\(payload\) !== sig/.test(cr), "verification tokens are not compared with !==");
+  const rz = codeOnly(rd(path.join(ROOT, "lib", "payments", "razorpay.ts"), "utf8"));
+  assert.ok(rz.includes("safeEqual(expected, signature)"), "the Razorpay signature uses it");
+  assert.ok(!/function safeEqualHex/.test(rz), "and does not keep a second implementation");
+  for (const name of ["session-signing", "guest-signing", "byok-encryption", "verification-tokens"]) {
+    const uses = ["lib/auth/session.ts", "lib/auth/guest.ts", "lib/crypto.ts"].some((f) =>
+      rd(path.join(ROOT, f), "utf8").includes(`installSecret("${name}")`)
+    );
+    assert.ok(uses, `${name} has no owner`);
+  }
+  const guest = rd(path.join(ROOT, "lib", "auth", "guest.ts"), "utf8");
+  assert.ok(guest.includes("SESSION_SECRET is unset"), "and it must say so out loud when it has to");
+});
+
 rmSync(outDir, { recursive: true, force: true });
 process.exit(report("UI primitives (lib/ui) + Step 1 additive-only + Step 2 composer pill") ? 1 : 0);

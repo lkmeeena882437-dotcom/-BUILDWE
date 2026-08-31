@@ -1,4 +1,5 @@
 import { SignJWT, jwtVerify } from "jose";
+import { installSecret } from "@/lib/crypto";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import { findUserById, publicUser, type User } from "@/lib/db/store";
@@ -7,7 +8,14 @@ import { newGuestId, signGuestId, verifyGuestCookie } from "@/lib/auth/guest";
 const COOKIE = "bw_session";
 const GUEST_COOKIE = "bw_guest";
 
-const DEV_FALLBACK_SECRET = "buildwe-dev-secret-change-me-in-production-32b";
+/**
+ * Off-production only, and never a literal: the previous fallback was this file's own
+ * string, published in a public repository, which meant every developer machine (and any
+ * staging build that forgot the env var) signed sessions with a key an attacker could read
+ * out of the source and use to forge a session for any account. It is now a per-install
+ * secret that survives restarts, so dev tokens keep verifying without being guessable.
+ * Production still refuses outright - see secret() below.
+ */
 
 /**
  * Signing secret for session tokens.
@@ -25,7 +33,7 @@ function secret() {
       "SESSION_SECRET is not set. Refusing to sign sessions with the public development key."
     );
   }
-  return new TextEncoder().encode(configured || DEV_FALLBACK_SECRET);
+  return new TextEncoder().encode(configured || installSecret("session-signing"));
 }
 
 export type SessionPayload = {
