@@ -352,6 +352,252 @@ button:active:not(:disabled) {
 .bw-badge-warn { background: var(--warn-soft); color: var(--warn); }
 .bw-badge-info { background: var(--info-soft); color: var(--info); }
 
+
+/* ── Dark popover surface (lib/ui) ────────────────────────────
+   The app has exactly one permanently-dark surface today — the code/agent panel on
+   --code-bg — and the one popover inside it hard-codes its background
+   (bg-[#1e1b18] at app/page.tsx:3047). Menus and flyouts need the same look without
+   inventing a second palette, so it becomes a token pair: in Light mode it reads as
+   the code panel beside it, in Dark mode it is the theme's own elevated card. Hover
+   and divider colour derive from currentColor so one .bw-menu-row works on either. */
+:root {
+  --surface-dark: #1e1b18;
+  --surface-dark-fg: #f4f0e8;
+  --surface-dark-muted: rgba(244, 240, 232, 0.6);
+  --surface-dark-border: rgba(255, 255, 255, 0.1);
+}
+
+.dark {
+  --surface-dark: #26221e;
+  --surface-dark-fg: var(--ink);
+  --surface-dark-muted: var(--muted);
+  --surface-dark-border: var(--border);
+}
+
+/* ── Popovers (lib/ui/Popover.tsx) ────────────────────────────
+   Outer node positions, inner node paints and scrolls. Entrance is opacity +
+   translate + scale from the trigger's corner: the origin follows
+   [data-placement], so a menu that flipped above still grows out of the button that
+   opened it. prefers-reduced-motion is neutralised globally at the end of this file. */
+@keyframes bw-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.bw-pop {
+  z-index: 50;
+}
+
+.bw-pop__panel {
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-2);
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 6px;
+  animation: bw-pop-in var(--dur) var(--ease) both;
+  transform-origin: top left;
+}
+
+.bw-pop[data-placement="above"] .bw-pop__panel {
+  transform-origin: bottom left;
+}
+
+.bw-pop[data-placement="left"] .bw-pop__panel {
+  transform-origin: top right;
+}
+
+.bw-pop--dark {
+  background: var(--surface-dark);
+  border-color: var(--surface-dark-border);
+  color: var(--surface-dark-fg);
+}
+
+.bw-pop--light {
+  background: var(--card);
+  border-color: var(--border);
+  color: var(--ink);
+}
+
+/* ── Menu rows (lib/ui/MenuRow.tsx) ─────────────────────────── */
+.bw-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.bw-menu-row__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  opacity: 0.75;
+}
+
+.bw-menu-row:hover:not(.is-disabled),
+.bw-menu-row:focus-visible:not(.is-disabled) {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.bw-menu-row:active:not(.is-disabled) {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  transform: scale(0.99);
+}
+
+.bw-menu-row[aria-current="true"] {
+  color: var(--accent);
+}
+
+.bw-menu-row[aria-current="true"] .bw-menu-row__icon {
+  opacity: 1;
+}
+
+.bw-menu-row--danger {
+  color: var(--err);
+}
+
+.bw-menu-row.is-disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.bw-menu-divider {
+  height: 1px;
+  margin: 5px 8px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.bw-menu-label {
+  padding: 8px 10px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.5;
+}
+
+/* ── Segmented control (lib/ui/SegmentedControl.tsx) ──────────
+   The indicator animates transform + width only, so the slide stays composited
+   instead of relayouting the row on every frame. */
+.bw-seg {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--secondary);
+}
+
+.bw-seg--full {
+  display: flex;
+  width: 100%;
+}
+
+.bw-seg--dark {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  border-color: var(--surface-dark-border);
+}
+
+.bw-seg__ind {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 0;
+  border-radius: 999px;
+  background: var(--card);
+  box-shadow: var(--shadow-1);
+  transition:
+    transform var(--dur) var(--ease),
+    width var(--dur) var(--ease),
+    opacity var(--dur-fast) var(--ease);
+  pointer-events: none;
+}
+
+.bw-seg--dark .bw-seg__ind {
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  box-shadow: none;
+}
+
+.bw-seg__btn {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  transition:
+    color var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+.bw-seg--sm .bw-seg__btn {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.bw-seg--full .bw-seg__btn {
+  flex: 1 1 0;
+}
+
+.bw-seg--dark .bw-seg__btn {
+  color: var(--surface-dark-muted);
+}
+
+.bw-seg__btn.is-active {
+  color: var(--ink);
+}
+
+.bw-seg--dark .bw-seg__btn.is-active {
+  color: var(--surface-dark-fg);
+}
+
+.bw-seg__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.bw-seg__btn:not(:disabled):active {
+  transform: scale(0.985);
+}
+
 /* ── Reduced motion: respect the user ───────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *,

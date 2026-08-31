@@ -1,6 +1,16 @@
 # UI Upgrade Plan — prompt bar, flyouts, pricing table, link previews, chat→workspace
 
-**Status: PLAN ONLY. No code changed for this list yet. Waiting for `APPROVED`.**
+**Status: `APPROVED` received 2026-08-31. Steps run one at a time, each verified before the next.**
+
+| Step | State | Evidence |
+|---|---|---|
+| 1 `lib/ui` primitives + tokens + `/dev/ui-lab` | **DONE** | `test:ui` **14/14** (placement math compiled from the real module + live SSR markup + the CSS the page loads); `tsc` 0; `next lint` 0 new warnings; `next build` exit 0; `/`, `/pricing`, `/tools/blog-post` server HTML **byte-identical** to the pre-change baseline; all 6 other suites green (8/7/12/13/5 + credits 16/16, durability 5/5) |
+| 2–11 | queued — Step 2 starts on his `next` | — |
+
+Two things Step 1 discovered and fixed in itself: `useDismiss` now honours the popover's *own*
+trigger (`aria-controls` match) so an absolutely positioned menu cannot flicker shut-and-reopen
+when its button is clicked, and `MenuRow` carries `rowRole` because `aria-checked` on a
+`menuitem` is an ARIA violation the linter flagged on the first run.
 Branch: `arena/01a0568a-buildwe` (PR #4 stays open and unmerged — every step below stacks on this branch, so the PR grows and one final merge lands everything in `main` at once).
 
 ---
