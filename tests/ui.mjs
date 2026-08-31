@@ -15,10 +15,12 @@
  *                the checklist there says which keys to press. This file deliberately
  *                does not pretend otherwise.
  *
- * It also asserts the additive-only rule for this step: nothing in the app itself
- * (/, /pricing) may reference the new classes yet, and the two hand-rolled popovers
- * are untouched until Step 11 — a step that "polishes" 400 lines it wasn't asked to
- * touch is how a working product breaks.
+ * It also asserts the additive-only rule for Step 1 (nothing in the app referenced the
+ * new classes until Step 2 deliberately wired the composer up) and, for Step 2, that the
+ * extracted composer is the same component with the same strings: every literal the
+ * inline block owned is asserted to exist in the new file, the page keeps no second copy,
+ * and the pill renders for real when mounted. A "refactor" that quietly drops the 200 KB
+ * file limit or the guest-mode note is exactly what this guards against.
  *
  * Run: npm run test:ui
  */
@@ -121,6 +123,82 @@ await run("absolute clamp: only fires when the panel would hang off the bottom",
 
 /* ── 2 + 3 + 4. the real server: lab markup, loaded CSS, additive-only ─── */
 
+/* ── 5. Step 2: the composer move must not have lost a single behaviour ──── */
+
+await run("Step 2: the extracted composer keeps every literal the inline one had", () => {
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
+  // These strings are the contract with the user and with the server: a placeholder that
+  // quietly disappears, a file limit that moves, or a label that changes and the
+  // extraction lost something real. (List derived from the pre-extraction block, so it
+  // also documents what the composer is responsible for.)
+  const keep = [
+    "What do you want to do?",
+    "Describe what you want to build — BUILDWE handles the code",
+    "Ask anything — plain language works best",
+    "Message BUILDWE",
+    "Image attached — ask anything about it",
+    "Remove image",
+    "Answer style — length & language",
+    "Web search — live sources",
+    "Compare models — ask 3 AIs the same question",
+    "Use Chrome for voice input",
+    "you can stop anytime, the partial answer is saved",
+    "BUILDWE picks the right tool",
+    "File too large — keep text files under",
+    "Image too large — keep it under 5 MB.",
+    "analyzeFileApi(f.name, t)",
+  ];
+  for (const k of keep) assert.ok(bar.includes(k), `PromptBar lost: ${k}`);
+  for (const probe of ['aria-label="Send"', "placeholderFor", "setWebSearchOn"]) {
+    assert.ok(bar.includes(probe), `PromptBar must own: ${probe}`);
+  }
+  // …and page.tsx must not keep a second copy of any of it.
+  for (const gone of [
+    "What do you want to do?",
+    'aria-label="Send"',
+    "Use Chrome for voice input",
+    "const [styleMenu, setStyleMenu]",
+    "interface SpeechRecognition ",
+    "function Btn({",
+    "const MODE_META",
+  ]) {
+    assert.ok(!page.includes(gone), `page.tsx still contains the old copy of: ${gone}`);
+  }
+  // Single-owner checks: one Btn, one mode catalogue, one speech type.
+  assert.ok(page.includes('import { Btn } from "@/lib/ui/Btn"'), "page.tsx must import the shared Btn");
+  assert.ok(bar.includes('import { Btn } from "@/lib/ui/Btn"'), "the pill must use the shared Btn, not a copy");
+  assert.ok(bar.includes('from "@/lib/client/modes"') && page.includes('from "@/lib/client/modes"'), "MODE_META has one owner");
+  assert.ok(bar.includes("speechRecognitionCtor"), "dictation types come from lib/client/speech");
+});
+
+await run("Step 2: the IME fix and the pill/focus classes are actually there", () => {
+  const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
+  assert.ok(bar.includes("!e.nativeEvent.isComposing"), "Enter must wait for the IME to finish a word");
+  assert.ok(bar.includes('!e.shiftKey'), "Shift+Enter stays a newline");
+  assert.ok(/if \(e\.key === "Enter"[^\n]*\) \{\s*\n?\s*e\.preventDefault\(\)/.test(bar) || bar.includes("e.preventDefault();"), "the send branch must still prevent the newline");
+  assert.ok(bar.includes('className="bw-dock sticky bottom-0 z-20 shrink-0'), "the dock is the sticky footer");
+  const css = readFileSync(path.join(ROOT, "app", "globals.css"), "utf8");
+  for (const sel of [".bw-pill", ".bw-pill:focus-within", ".bw-pill__input", ".bw-dock"]) {
+    assert.ok(css.includes(sel), `globals.css lost ${sel}`);
+  }
+  assert.ok(/@supports not \(backdrop-filter/.test(css), "no-backdrop-filter browsers must get an opaque footer");
+});
+
+await run("Step 2: every prop the pill needs is passed by the page that owns the state", () => {
+  const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  const decl = bar.slice(bar.indexOf("export interface PromptBarProps"), bar.indexOf("function placeholderFor"));
+  const props = [...decl.matchAll(/^  ([A-Za-z]+)[?]?:/gm)].map((m) => m[1]);
+  assert.ok(props.length >= 25, `expected the full prop list, found ${props.length}`);
+  const use = page.slice(page.indexOf("<PromptBar"), page.indexOf("/>", page.indexOf("<PromptBar")));
+  const given = [...use.matchAll(/^\s+([A-Za-z]+)=/gm)].map((m) => m[1]);
+  const missing = props.filter((p) => !given.includes(p));
+  assert.deepEqual(missing, [], `props declared but not passed: ${missing.join(", ")}`);
+  const extra = given.filter((g) => !props.includes(g));
+  assert.deepEqual(extra, [], `props passed that the component does not declare: ${extra.join(", ")}`);
+});
+
 /* The CSS is fetched over HTTP (the dev server owns it, and minification differs
    from the source file) and memoised so both CSS checks share one round trip. */
 const cssCache = new Map();
@@ -165,6 +243,20 @@ try {
     assert.ok(labHtml.includes('data-bw-seg=""'), "the indicator element must exist (measured after paint)");
   });
 
+  await run("Step 2: the composer pill renders for real (inert mount in the lab)", async () => {
+    assert.ok(labHtml.includes("bw-pill"), "the pill class must be on the rendered field");
+    assert.ok(labHtml.includes("bw-dock"), "the dock is what floats above the scroll");
+    assert.ok(labHtml.includes('aria-label="Message BUILDWE"'), "the textarea needs a name for AT");
+    assert.ok(labHtml.includes('aria-label="Attach"'), "the leading + must be labelled");
+    assert.ok(labHtml.includes("What do you want to do?"), "the auto-mode placeholder must survive");
+    assert.ok(labHtml.includes('aria-label="Send"'), "the send button must be reachable by name");
+    assert.ok(labHtml.includes('aria-haspopup="menu"'), "the + is a menu trigger");
+    assert.ok(labHtml.includes("Auto") && labHtml.includes("Vision") && labHtml.includes("Voice"), "all five mode chips from the shared catalogue");
+    assert.ok(!labHtml.includes("· undefined"), "the account line must not print undefined while me is loading");
+    // rows behind the closed + menu are not in the DOM
+    assert.ok(!labHtml.includes("Summarised, not pasted whole"), "a closed menu renders no rows");
+  });
+
   await run("the CSS the components ask for is the CSS the page loads", async () => {
     const hrefs = [...labHtml.matchAll(/href="(\/_next\/static\/css\/[^"]+\.css)[^"]*"/g)].map((m) => m[1]);
     assert.ok(hrefs.length, "no stylesheet link found in dev HTML");
@@ -185,7 +277,7 @@ try {
     assert.match(css, /prefers-reduced-motion[^)]*\)\s*\{?\s*\*[^}]*animation-duration:\s*0\.01ms/s, "the global guard must still zero animations");
   });
 
-  await run("this step changed nothing in the app itself (additive-only)", async () => {
+  await run("the customer-facing pages are untouched, and only Btn was pulled into the app", async () => {
     for (const [name, html] of [["/", homeHtml], ["/pricing", pricingHtml]]) {
       assert.ok(!html.includes("bw-pop"), `${name} must not use the popover yet`);
       assert.ok(!html.includes("data-bw-seg"), `${name} must not use the segmented control yet`);
@@ -195,13 +287,25 @@ try {
     // Step 11 moves all three onto useDismiss. Counting them here is what makes
     // "I only added primitives" a checked claim instead of a promise.
     const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
-    const overlays = (page.match(/fixed inset-0 z-40 cursor-default/g) || []).length;
+    const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
+    // Three menus hand-roll their dismissal with a full-screen invisible button: project,
+    // style, history. Step 1 moved none of them; Step 2 moved the style one along with the
+    // composer it belonged to. Counting both files keeps "nothing was refactored away" true
+    // without freezing it at a number that was only ever about Step 1.
+    const overlays =
+      (page.match(/fixed inset-0 z-40 cursor-default/g) || []).length +
+      (bar.match(/fixed inset-0 z-40 cursor-default/g) || []).length;
     assert.equal(overlays, 3, "the three existing menus must still be wired the way they were");
-    assert.ok(!page.includes('from "@/lib/ui"'), "nothing in the app may import the primitives yet");
+    // page.tsx may reach into lib/ui for exactly one thing (Btn, which it now shares
+    // with the pill). The popover/menu/segmented primitives stay out of the page until
+    // the step that actually needs them — that is what keeps a "refactor" from becoming
+    // an unrequested re-skin of 400 lines it was not asked to touch.
+    const uiImports = [...page.matchAll(/from "@\/lib\/ui([^"]*)"/g)].map((m) => m[1]);
+    assert.deepEqual([...new Set(uiImports)].sort(), ["/Btn"], "page.tsx should import only lib/ui/Btn");
   });
 } finally {
   await srv.stop();
 }
 
 rmSync(outDir, { recursive: true, force: true });
-process.exit(report("UI primitives (lib/ui) + Step 1 additive-only") ? 1 : 0);
+process.exit(report("UI primitives (lib/ui) + Step 1 additive-only + Step 2 composer pill") ? 1 : 0);

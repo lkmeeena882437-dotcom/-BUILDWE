@@ -598,6 +598,45 @@ button:active:not(:disabled) {
   transform: scale(0.985);
 }
 
+
+/* ── Composer pill (components/workspace/PromptBar.tsx) ─────
+   The field used to be a card in an opaque footer with a hairline above it. As a pill it
+   floats: the footer is translucent + blurred so answers scroll under it, and the ring
+   follows `:focus-within` on the pill rather than the textarea alone, so it stays lit
+   while focus is on the attach menu or a trailing action. Shadow goes one step up on
+   focus and back down on blur — that is the whole "focus animation". */
+.bw-dock {
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+  backdrop-filter: blur(10px) saturate(1.05);
+  -webkit-backdrop-filter: blur(10px) saturate(1.05);
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .bw-dock {
+    background: var(--bg-elevated);
+  }
+}
+
+.bw-pill {
+  border: 1px solid var(--border);
+  border-radius: 26px;
+  background: var(--card);
+  box-shadow: var(--shadow-1);
+  transition:
+    box-shadow var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.bw-pill:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow: var(--shadow-2);
+}
+
+.bw-pill__input {
+  color: inherit;
+  caret-color: var(--accent);
+}
+
 /* ── Reduced motion: respect the user ───────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *,

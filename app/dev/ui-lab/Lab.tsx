@@ -36,6 +36,16 @@ import {
   Users,
 } from "lucide-react";
 import clsx from "clsx";
+
+/**
+ * The demo lives in its own file so it can be split from the rest of the lab. A
+ * `next/dynamic()` version of that was tried to keep /dev/ui-lab from pulling the
+ * composer into a chunk shared with the landing page — measured, it changed nothing
+ * for `/` (150 kB either way, because the +7 kB is `lib/ui` itself, which the pill now
+ * imports) and it cost the lab its server render. So: the plain import, with the
+ * measurement written down instead of the clever version.
+ */
+import { PromptBarDemo } from "./PromptBarDemo";
 import {
   MenuDivider,
   MenuLabel,
@@ -85,6 +95,7 @@ export function Lab() {
       </p>
 
       <div className="grid gap-4">
+        <PromptBarDemo log={log} />
         <AttachDemo log={log} />
         <FlyoutDemo log={log} theme={theme} setTheme={setTheme} />
         <SegDemo log={log} plan={plan} setPlan={setPlan} />
@@ -105,6 +116,7 @@ export function Lab() {
     </main>
   );
 }
+
 
 /** Card 1 — a drop-up attachment menu, the exact shape the composer's `+` will use. */
 function AttachDemo({ log }: { log: Log }) {

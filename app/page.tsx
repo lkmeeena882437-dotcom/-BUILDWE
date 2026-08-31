@@ -10,10 +10,6 @@ import React, {
 } from "react";
 import Link from "next/link";
 import {
-  MessageSquare,
-  Code2,
-  Image as ImageIcon,
-  Mic2,
   Send,
   Square,
   Copy,
@@ -28,9 +24,6 @@ import {
   X,
   Menu,
   Zap,
-  Paperclip,
-  Mic,
-  MicOff,
   LogOut,
   LogIn,
   CreditCard,
@@ -58,19 +51,15 @@ import {
   ThumbsDown,
   Download,
   Layers,
-  Globe,
   Share2,
   FolderPlus,
   FolderOpen,
-  ImagePlus,
-  XCircle,
   Eye,
   KeyRound,
   Terminal,
   Printer,
   Users,
   UserPlus,
-  SlidersHorizontal,
   Chrome,
   Github,
   HelpCircle,
@@ -130,8 +119,10 @@ import { AdSlot } from "@/components/AdSlot";
 import { renderSafeMarkdown } from "@/lib/safe-md";
 import { useProPrice } from "@/components/billing/useProPrice";
 import { WalletChip, openCredits, useWallet } from "@/components/billing/CreditsUI";
+import { PromptBar } from "@/components/workspace/PromptBar";
+import { Btn } from "@/lib/ui/Btn";
+import { MODE_META, type Mode } from "@/lib/client/modes";
 
-type Mode = "auto" | "chat" | "code" | "image" | "audio";
 type ThemePref = "system" | "light" | "dark";
 
 type Msg = {
@@ -175,55 +166,6 @@ type HistItem = {
 
 type ProjectItem = { id: string; name: string; createdAt: string };
 
-const MODE_META: {
-  id: Mode;
-  label: string;
-  icon: React.ElementType;
-  headline: string;
-  sub: string;
-  power: string;
-}[] = [
-  {
-    id: "auto",
-    label: "Auto",
-    icon: Bot,
-    headline: "Ask once. BUILDWE routes it.",
-    sub: "One box for thinking, building, visuals, and voice.",
-    power: "Smart routing",
-  },
-  {
-    id: "chat",
-    label: "Chat",
-    icon: MessageSquare,
-    headline: "Think. Write. Understand.",
-    sub: "Decide faster. Write sharper. Learn without noise.",
-    power: "BUILDWE Chat",
-  },
-  {
-    id: "code",
-    label: "Code",
-    icon: Code2,
-    headline: "Build. Debug. Ship.",
-    sub: "Scaffold, fix, and ship — without leaving the workspace.",
-    power: "BUILDWE Code",
-  },
-  {
-    id: "image",
-    label: "Vision",
-    icon: ImageIcon,
-    headline: "Imagine. Create. Transform.",
-    sub: "Brand frames, product shots, and scenes on demand.",
-    power: "BUILDWE Vision",
-  },
-  {
-    id: "audio",
-    label: "Voice",
-    icon: Mic2,
-    headline: "Speak. Listen. Create.",
-    sub: "Natural speech for briefs, stories, and product copy.",
-    power: "BUILDWE Voice",
-  },
-];
 
 const SUGGEST: Record<Mode, string[]> = {
   auto: [
@@ -302,70 +244,6 @@ function extractCode(text: string) {
     blocks.push({ lang: m[1] || "txt", code: m[2].replace(/\n$/, "") });
   }
   return blocks;
-}
-
-function Btn({
-  children,
-  onClick,
-  disabled,
-  variant = "primary",
-  size = "md",
-  className,
-  type = "button",
-  style,
-  title,
-  "aria-label": al,
-}: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  disabled?: boolean;
-  variant?: "primary" | "ghost" | "ink" | "icon" | "soft";
-  size?: "sm" | "md" | "lg";
-  className?: string;
-  type?: "button" | "submit";
-  style?: React.CSSProperties;
-  title?: string;
-  "aria-label"?: string;
-}) {
-  const base =
-    variant === "primary"
-      ? { background: "var(--accent)" }
-      : variant === "ink"
-        ? { background: "var(--ink)", color: "var(--bg)" }
-        : variant === "soft"
-          ? { background: "var(--accent-soft)", color: "var(--accent)" }
-          : variant === "ghost"
-            ? {
-                borderColor: "var(--border)",
-                background: "var(--card)",
-                color: "var(--ink)",
-              }
-            : { color: "var(--muted)" };
-  return (
-    <button
-      type={type}
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={al}
-      title={title || al}
-      className={clsx(
-        "inline-flex items-center justify-center gap-1.5 font-medium transition active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40",
-        variant === "primary" && "rounded-2xl text-white shadow-sm",
-        variant === "ghost" && "rounded-2xl border",
-        variant === "ink" && "rounded-2xl",
-        variant === "soft" && "rounded-2xl",
-        variant === "icon" && "rounded-xl",
-        size === "sm" && variant !== "icon" && "h-9 px-3.5 text-sm",
-        size === "md" && variant !== "icon" && "h-10 px-4 text-sm",
-        size === "lg" && variant !== "icon" && "h-12 px-5 text-[15px]",
-        variant === "icon" && (size === "sm" ? "h-8 w-8" : "h-10 w-10"),
-        className
-      )}
-      style={style ? { ...base, ...style } : base}
-    >
-      {children}
-    </button>
-  );
 }
 
 function Sheet({
@@ -550,7 +428,6 @@ function Dashboard() {
   // response style (human-language controls)
   const [depth, setDepth] = useState<"short" | "balanced" | "detailed" | "deep">("balanced");
   const [tone, setTone] = useState<"simple" | "standard" | "expert">("standard");
-  const [styleMenu, setStyleMenu] = useState(false);
   const [streamPhase, setStreamPhase] = useState("");
   const lastPrompt = useRef("");
   const phaseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2784,220 +2661,42 @@ function Dashboard() {
                 </div>
               </div>
 
-              {/* composer */}
-              <div className="shrink-0 border-t px-3 py-2.5 sm:px-5" style={{ borderColor: "var(--border)", background: "color-mix(in srgb, var(--bg-elevated) 95%, transparent)" }}>
-                <div className="mx-auto max-w-2xl">
-                  {error && (
-                    <div className="anim-rise mb-2 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2 text-xs" style={{ background: "var(--err-soft)", color: "var(--err)" }}>
-                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                      <span className="min-w-0 flex-1">{error}</span>
-                      {/limit|PRO/i.test(error) ? (
-                        <button type="button" className="font-semibold underline" onClick={() => setModal("plans")}>Upgrade</button>
-                      ) : lastPrompt.current ? (
-                        <button type="button" className="font-semibold underline" onClick={() => { setError(""); send(lastPrompt.current); }}>Try again</button>
-                      ) : null}
-                    </div>
-                  )}
-                  {streaming && (
-                    <div className="anim-rise mb-1.5 flex items-center gap-1.5 px-1 text-[11px]" style={{ color: "var(--muted)" }}>
-                      <Loader2 className="h-3 w-3 animate-spin" style={{ color: "var(--accent)" }} />
-                      {streamPhase || "Working…"}
-                      <span className="ml-1" style={{ color: "var(--soft)" }}>· you can stop anytime, the partial answer is saved</span>
-                    </div>
-                  )}
-
-                  <div className="rounded-3xl border shadow-sm" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
-                    {attachment && (
-                      <div className="mx-3 mt-3 flex items-center gap-3 rounded-2xl border p-2" style={{ borderColor: "var(--border)", background: "var(--secondary)" }}>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={attachment.dataUrl} alt={attachment.name} className="h-12 w-12 rounded-xl object-cover" />
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-xs font-medium">{attachment.name}</div>
-                          <div className="text-[10px]" style={{ color: "var(--muted)" }}>Image attached — ask anything about it</div>
-                        </div>
-                        <Btn variant="icon" size="sm" aria-label="Remove image" onClick={() => setAttachment(null)}>
-                          <XCircle className="h-4 w-4" />
-                        </Btn>
-                      </div>
-                    )}
-                    <textarea
-                      ref={taRef}
-                      value={input}
-                      rows={1}
-                      placeholder={
-                        mode === "auto"
-                          ? "What do you want to do? e.g. “plan my launch”, “build a quiz app”, “make a logo”"
-                          : mode === "code"
-                            ? "Describe what you want to build — BUILDWE handles the code"
-                            : mode === "chat"
-                              ? "Ask anything — plain language works best"
-                              : "Message BUILDWE"
-                      }
-                      onChange={(e) => {
-                        setInput(e.target.value);
-                        grow();
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
-                          e.preventDefault();
-                          send();
-                        }
-                      }}
-                      className="max-h-[96px] min-h-[48px] w-full resize-none bg-transparent px-4 pt-3.5 text-[15px] outline-none placeholder:opacity-45 md:max-h-[128px]"
-                    />
-                    <div className="flex items-center gap-0.5 px-2 pb-2">
-                      <div className="flex min-w-0 flex-1 gap-0.5 overflow-x-auto">
-                        {MODE_META.map((m) => {
-                          const Icon = m.icon;
-                          const on = mode === m.id;
-                          return (
-                            <button key={m.id} type="button" onClick={() => switchMode(m.id)} className="flex shrink-0 items-center gap-1 rounded-xl px-2 py-1.5 text-[11px] font-medium" style={on ? { background: "var(--accent-soft)", color: "var(--accent)" } : { color: "var(--muted)" }}>
-                              <Icon className="h-3.5 w-3.5" />
-                              <span className="hidden sm:inline">{m.label}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <input ref={fileRef} type="file" className="hidden" accept="text/*,.md,.json,.js,.ts,.tsx,.py,.css,.html,.csv" onChange={async (e) => {
-                        const f = e.target.files?.[0];
-                        if (!f) return;
-                        if (f.size > 200 * 1024) {
-                          setError("File too large — keep text files under 200 KB. Tip: attach just the part you need help with.");
-                          e.target.value = "";
-                          return;
-                        }
-                        const t = await f.text();
-                        try {
-                          const a = await analyzeFileApi(f.name, t);
-                          setInput((v) => (v ? v + "\n\n" : "") + `[Attached file: ${f.name}]\n${a.summary}\n\nMy question: `);
-                        } catch {
-                          setInput((v) => (v ? v + "\n\n" : "") + `[File: ${f.name}]\n${t.slice(0, 8000)}`);
-                        }
-                        e.target.value = "";
-                        requestAnimationFrame(grow);
-                      }} />
-                      <input ref={imgAttachRef} type="file" className="hidden" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (!f) return;
-                        if (f.size > 5 * 1024 * 1024) {
-                          setError("Image too large — keep it under 5 MB.");
-                          e.target.value = "";
-                          return;
-                        }
-                        const reader = new FileReader();
-                        reader.onload = () => {
-                          setAttachment({ dataUrl: String(reader.result), name: f.name });
-                          setMode((m) => (m === "image" || m === "audio" ? "chat" : m));
-                        };
-                        reader.readAsDataURL(f);
-                        e.target.value = "";
-                      }} />
-                      {(mode === "chat" || mode === "auto") && (
-                        <div className="relative">
-                          <Btn
-                            variant="icon"
-                            size="sm"
-                            aria-label="Answer style"
-                            title="Answer style — length & language"
-                            onClick={() => setStyleMenu((v) => !v)}
-                            style={depth !== "balanced" || tone !== "standard" ? { background: "var(--accent-soft)", color: "var(--accent)" } : undefined}
-                          >
-                            <SlidersHorizontal className="h-4 w-4" />
-                          </Btn>
-                          {styleMenu && (
-                            <>
-                              <button type="button" className="fixed inset-0 z-40 cursor-default" aria-label="Close style menu" onClick={() => setStyleMenu(false)} />
-                              <div className="anim-rise absolute bottom-10 left-0 z-50 w-60 rounded-2xl border p-3 shadow-lg" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
-                                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Answer length</div>
-                                <div className="mb-3 flex flex-wrap gap-1">
-                                  {(["short", "balanced", "detailed", "deep"] as const).map((d) => (
-                                    <button key={d} type="button" onClick={() => setDepth(d)} className="rounded-full px-2 py-1 text-[11px] font-semibold capitalize" style={depth === d ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}>
-                                      {d}
-                                    </button>
-                                  ))}
-                                </div>
-                                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Language</div>
-                                <div className="flex flex-wrap gap-1">
-                                  {(["simple", "standard", "expert"] as const).map((t) => (
-                                    <button key={t} type="button" onClick={() => setTone(t)} className="rounded-full px-2 py-1 text-[11px] font-semibold capitalize" style={tone === t ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}>
-                                      {t}
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      )}
-                      {(mode === "chat" || mode === "auto") && (
-                        <Btn
-                          variant="icon"
-                          size="sm"
-                          aria-label="Web search"
-                          title="Web search — live sources"
-                          onClick={() => setWebSearchOn((v) => !v)}
-                          style={webSearchOn ? { background: "var(--accent-soft)", color: "var(--accent)" } : undefined}
-                        >
-                          <Globe className="h-4 w-4" />
-                        </Btn>
-                      )}
-                      {(mode === "chat" || mode === "auto") && (
-                        <Btn
-                          variant="icon"
-                          size="sm"
-                          aria-label="Compare models"
-                          title="Compare models — ask 3 AIs the same question"
-                          onClick={openCompare}
-                        >
-                          <Layers className="h-4 w-4" />
-                        </Btn>
-                      )}
-                      <Btn variant="icon" size="sm" aria-label="Attach image" title="Attach image — AI vision" onClick={() => imgAttachRef.current?.click()}><ImagePlus className="h-4 w-4" /></Btn>
-                      <Btn variant="icon" size="sm" aria-label="Upload file" title="Attach text/CSV file" onClick={() => fileRef.current?.click()}><Paperclip className="h-4 w-4" /></Btn>
-                      <Btn
-                        variant="icon"
-                        size="sm"
-                        aria-label="Mic"
-                        onClick={() => {
-                          const w = window as unknown as { SpeechRecognition?: new () => SpeechRecognition; webkitSpeechRecognition?: new () => SpeechRecognition };
-                          const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
-                          if (!SR) return alert("Use Chrome for voice input");
-                          if (listening) {
-                            setListening(false);
-                            return;
-                          }
-                          const rec = new SR();
-                          rec.lang = "en-IN";
-                          rec.onresult = (ev: SpeechRecognitionEvent) => {
-                            let t = "";
-                            for (let i = ev.resultIndex; i < ev.results.length; i++) t += ev.results[i][0].transcript;
-                            setInput((v) => (v ? v + " " : "") + t);
-                            requestAnimationFrame(grow);
-                          };
-                          rec.onend = () => setListening(false);
-                          rec.start();
-                          setListening(true);
-                        }}
-                      >
-                        {listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-                      </Btn>
-                      {streaming || imgLoading || audioBusy || visionBusy ? (
-                        <Btn variant="ink" className="!h-10 !w-10 !p-0" aria-label="Stop" onClick={stop}><Square className="h-3.5 w-3.5 fill-current" /></Btn>
-                      ) : (
-                        <Btn className="!h-10 !w-10 !p-0" aria-label="Send" disabled={!input.trim() && !attachment} onClick={() => send()}>
-                          {streaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                        </Btn>
-                      )}
-                    </div>
-                  </div>
-                  <p className="mt-1.5 text-center text-[10px]" style={{ color: "var(--soft)" }}>
-                    BUILDWE picks the right tool — no commands or code needed, just type naturally
-                    {me?.kind === "guest" ? " · guest mode" : ` · ${me?.user?.email}`}
-                    {plan === "free" ? " · Free plan" : " · PRO"}
-                    {byokActive ? " · Own key ⚡" : ""}
-                  </p>
-                </div>
-              </div>
+              <PromptBar
+                mode={mode}
+                input={input}
+                setInput={setInput}
+                attachment={attachment}
+                setAttachment={setAttachment}
+                error={error}
+                setError={setError}
+                streaming={streaming}
+                streamPhase={streamPhase}
+                depth={depth}
+                setDepth={setDepth}
+                tone={tone}
+                setTone={setTone}
+                webSearchOn={webSearchOn}
+                setWebSearchOn={setWebSearchOn}
+                listening={listening}
+                setListening={setListening}
+                imgLoading={imgLoading}
+                audioBusy={audioBusy}
+                visionBusy={visionBusy}
+                plan={plan}
+                me={me}
+                byokActive={byokActive}
+                lastPromptText={lastPrompt.current}
+                taRef={taRef}
+                fileRef={fileRef}
+                imgAttachRef={imgAttachRef}
+                onSend={send}
+                onGrow={grow}
+                onMode={switchMode}
+                setMode={setMode}
+                onCompare={openCompare}
+                onStop={stop}
+                onUpgrade={() => setModal("plans")}
+              />
             </div>
 
             {/* code canvas + live preview */}
@@ -3966,15 +3665,4 @@ export default function Page() {
       <Dashboard />
     </Suspense>
   );
-}
-
-interface SpeechRecognition extends EventTarget {
-  lang: string;
-  start(): void;
-  onresult: ((ev: SpeechRecognitionEvent) => void) | null;
-  onend: (() => void) | null;
-}
-interface SpeechRecognitionEvent extends Event {
-  resultIndex: number;
-  results: SpeechRecognitionResultList;
 }
