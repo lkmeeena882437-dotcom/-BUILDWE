@@ -54,7 +54,14 @@ export interface PopoverProps {
   dark?: boolean;
   role?: "menu" | "dialog" | "listbox" | "group";
   id?: string;
+  /** The *trigger's* id, when the trigger has one. Not the panel's own id. */
   labelledBy?: string;
+  /**
+   * The panel's own accessible name. Prefer this over `labelledBy` for a menu opened by
+   * an icon-only button: pointing `aria-labelledby` at the panel itself (which is what the
+   * first version of this file's callers did) names a menu after nothing.
+   */
+  label?: string;
   className?: string;
   style?: React.CSSProperties;
   children: React.ReactNode;
@@ -83,6 +90,7 @@ export function Popover({
   role = "menu",
   id,
   labelledBy,
+  label,
   className,
   style,
   children,
@@ -188,6 +196,7 @@ export function Popover({
       role={role}
       aria-orientation={role === "menu" ? "vertical" : undefined}
       aria-labelledby={labelledBy}
+      aria-label={labelledBy ? undefined : label}
       className={clsx(
         "bw-pop",
         mode === "absolute" && "absolute z-50",

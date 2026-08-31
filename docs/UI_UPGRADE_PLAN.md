@@ -5,7 +5,8 @@
 | Step | State | Evidence |
 |---|---|---|
 | 1 `lib/ui` primitives + tokens + `/dev/ui-lab` | **DONE** | `test:ui` **14/14** (placement math compiled from the real module + live SSR markup + the CSS the page loads); `tsc` 0; `next lint` 0 new warnings; `next build` exit 0; `/`, `/pricing`, `/tools/blog-post` server HTML **byte-identical** to the pre-change baseline; all 6 other suites green (8/7/12/13/5 + credits 16/16, durability 5/5) |
-| 2 pill (extract + sticky + IME-safe Enter) + `lib/ui/Btn` extraction | **DONE** | `test:ui` **18/18** incl. a real inert render of `PromptBar`, a literal-by-literal parity list and a prop-declaration vs prop-passed diff; `/`, `/pricing`, `/tools/blog-post` HTML still byte-identical; build 0; `/` First Load 143→150 kB (measured `main` = 137 kB) | 3–11 queued — Step 3 on his `next` |
+| 2 pill (extract + sticky + IME-safe Enter) + `lib/ui/Btn` extraction | **DONE** | `test:ui` **18/18** incl. a real inert render of `PromptBar`, a literal-by-literal parity list and a prop-declaration vs prop-passed diff; `/`, `/pricing`, `/tools/blog-post` HTML still byte-identical; build 0; `/` First Load 143→150 kB (measured `main` = 137 kB) | 2b improvement pass on Steps 1–2 (his standing ask) | **DONE** | `test:ui` **24/24** — 6 new checks, each one guarding a specific fix below |
+| 3–11 queued — Step 3 on his `next` |
 
 Two things Step 1 discovered and fixed in itself: `useDismiss` now honours the popover's *own*
 trigger (`aria-controls` match) so an absolutely positioned menu cannot flicker shut-and-reopen

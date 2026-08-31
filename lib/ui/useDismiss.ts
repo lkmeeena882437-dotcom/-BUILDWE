@@ -35,12 +35,6 @@ export interface UseDismissOptions {
   /** Return focus to the trigger when the popover closes. Default true. */
   returnFocus?: boolean;
   /**
-   * Close when a pointerdown lands on an element marked with this attribute, even
-   * though it is technically inside the trigger (e.g. the trigger is a wrapper that
-   * also contains a button with its own action). Default "data-bw-dismiss-now".
-   */
-  closeNowAttr?: string;
-  /**
    * True while a nested submenu owns the keyboard and the click. A cascading menu
    * (Step 6's Theme row) renders its own popover outside this one's DOM, so without
    * this the parent would eat the Escape that belongs to the child and would treat a
@@ -83,7 +77,6 @@ export function useDismiss(opts: UseDismissOptions): UseDismissResult {
     open,
     onClose,
     returnFocus = true,
-    closeNowAttr = "data-bw-dismiss-now",
     pause = false,
     alsoInside,
     allowSubmenus = false,
@@ -119,10 +112,6 @@ export function useDismiss(opts: UseDismissOptions): UseDismissResult {
       if (pause) return;
       const target = e.target as HTMLElement | null;
       if (!target) return;
-      if (target.closest(`[${closeNowAttr}]`)) {
-        onClose();
-        return;
-      }
       if (isInPanel(target) || isInTrigger(target)) return;
       if (ownTriggerSelector && target.closest(ownTriggerSelector)) return;
       onClose();
@@ -130,8 +119,10 @@ export function useDismiss(opts: UseDismissOptions): UseDismissResult {
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !pause) {
-        // Only close if nobody else already handled this Escape. A nested submenu
-        // (Step 6's theme row) stops propagation so the parent stays open.
+        // Two ways a nested submenu wins this Escape, and the listener being on the
+        // capture phase is why both are needed: the parent's `pause` is the normal one
+        // (it means "a child owns the keyboard right now"), and `defaultPrevented` covers
+        // a child that handled the key in its own panel without the parent knowing yet.
         if (e.defaultPrevented) return;
         onClose();
       }
@@ -150,7 +141,7 @@ export function useDismiss(opts: UseDismissOptions): UseDismissResult {
       focusBefore.current = null;
     };
     // panelRef/triggerRef are stable refs; deps are the behaviour, not the nodes.
-  }, [open, onClose, returnFocus, closeNowAttr, pause, alsoInside, allowSubmenus, ownTriggerSelector, triggerRef]);
+  }, [open, onClose, returnFocus, pause, alsoInside, allowSubmenus, ownTriggerSelector, triggerRef]);
 
   const isOpenByFocus = useCallback(() => {
     return !!panelRef.current && panelRef.current.contains(document.activeElement);
@@ -185,7 +176,8 @@ export function useMenuKeys(open: boolean) {
     const raf = requestAnimationFrame(() => {
       const list = items();
       if (list.length && panelRef.current && !panelRef.current.contains(document.activeElement)) {
-        list[0].focus();
+        // preventScroll: opening a menu from the bottom of a chat must not yank the page.
+        list[0].focus({ preventScroll: true });
       }
     });
     return () => cancelAnimationFrame(raf);
@@ -198,7 +190,12 @@ export function useMenuKeys(open: boolean) {
       const at = list.indexOf(document.activeElement as HTMLElement);
       const go = (n: number) => {
         e.preventDefault();
-        list[(n + list.length) % list.length]?.focus();
+        const el = list[(n + list.length) % list.length];
+        if (!el) return;
+        // Focus without scrolling the page, then bring the row into view inside the panel
+        // only - block:"nearest" never moves an ancestor that was already fine.
+        el.focus({ preventScroll: true });
+        el.scrollIntoView({ block: "nearest" });
       };
       if (e.key === "ArrowDown") go(at < 0 ? 0 : at + 1);
       else if (e.key === "ArrowUp") go(at < 0 ? list.length - 1 : at - 1);

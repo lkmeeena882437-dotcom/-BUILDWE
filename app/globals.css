@@ -268,7 +268,11 @@ body.lock-scroll {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 6px;
+  /* A fixed 6px here silently re-rounded every focused control — a 10px menu row or a
+     999px pill button visibly changed its own corners the moment it took focus. The
+     default is unchanged (6px) for everything that predates this; a component declares
+     its own radius once, in one place. */
+  border-radius: var(--bw-focus-r, 6px);
 }
 
 /* ── Micro-interactions ─────────────────────────────────── */
@@ -635,6 +639,38 @@ button:active:not(:disabled) {
 .bw-pill__input {
   color: inherit;
   caret-color: var(--accent);
+}
+
+/* ── Focus radius + touch targets for the shared controls ──
+   Each primitive already owns a corner radius; --bw-focus-r tells the global ring to keep
+   it. On touch (coarse pointers) menu rows grow, because a 34px row is a mis-tap and the
+   attach menu is the one place a thumb is guaranteed to land. */
+.bw-menu-row {
+  --bw-focus-r: 10px;
+}
+
+.bw-seg__btn {
+  --bw-focus-r: 999px;
+}
+
+.bw-pop__panel {
+  --bw-focus-r: 14px;
+}
+
+.bw-pill button {
+  --bw-focus-r: 12px;
+}
+
+.bw-pill__send {
+  --bw-focus-r: 16px;
+}
+
+@media (pointer: coarse) {
+  .bw-menu-row {
+    min-height: 40px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
 }
 
 /* ── Reduced motion: respect the user ───────────────────── */

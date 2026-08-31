@@ -54,14 +54,8 @@ import {
   SegmentedControl,
   menuTriggerProps,
 } from "@/lib/ui";
+import { card, cardStyle, smallBtn, type Log } from "./kit";
 
-const card =
-  "rounded-[var(--radius)] border p-4 " ;
-const cardStyle = { borderColor: "var(--border)", background: "var(--card)" } as const;
-const smallBtn =
-  "inline-flex h-9 w-9 items-center justify-center rounded-xl border " ;
-
-type Log = (msg: string) => void;
 
 export function Lab() {
   const [logMsg, setLogMsg] = useState("idle — open a menu");
@@ -160,7 +154,7 @@ function AttachDemo({ log }: { log: Log }) {
             placement="above"
             align="start"
             width={252}
-            labelledBy="lab-attach"
+            label="Attach"
           >
             <MenuLabel>Attach</MenuLabel>
             {rows.map((r) => (
@@ -269,7 +263,7 @@ function FlyoutDemo({
             maxHeight={280}
             allowSubmenus
             pause={sub}
-            labelledBy="lab-profile"
+            label="Account & workspace"
           >
             <MenuRow dataAction="account" icon={User} title="Account & plan" onClick={() => log("would open the plans sheet")} />
             <MenuRow dataAction="credits" icon={Coins} title="Credits" right="7" onClick={() => log("would open the credits sheet")} />
@@ -296,7 +290,7 @@ function FlyoutDemo({
                 align="start"
                 width={170}
                 submenu
-                labelledBy="lab-profile"
+                label="Theme"
               >
                 {([
                   { v: "system", label: "System", icon: Monitor },
@@ -393,7 +387,7 @@ function SegDemo({
             width={230}
             role="group"
             keyboard={false}
-            labelledBy="lab-seg-dark"
+            label="Density"
           >
             <div className="px-1 pb-1 pt-0.5">
               <p className="mb-2 text-[11px]" style={{ color: "var(--surface-dark-muted)" }}>

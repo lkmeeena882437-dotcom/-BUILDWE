@@ -4,24 +4,10 @@ import { useRef, useState } from "react";
 import clsx from "clsx";
 import { PromptBar } from "@/components/workspace/PromptBar";
 import type { Mode as ModeId } from "@/lib/client/modes";
+import { card, cardStyle, type Log } from "./kit";
 
 /** The lab's mount of the real composer. Kept in its own file so the lab can load it
  * as a separate chunk — see the comment at the dynamic() call in Lab.tsx. */
-type Log = (msg: string) => void;
-const card =
-  "rounded-[var(--radius)] border p-4 " ;
-const cardStyle = { borderColor: "var(--border)", background: "var(--card)" } as const;
-
-/**
- * Card 0 — the real composer, mounted inert.
- *
- * app/page.tsx only renders the pill once the workspace has auth state, so nothing
- * server-rendered proves it exists. Mounting it here means `next build` and
- * `tests/ui.mjs` both exercise the actual component — crash-free render, the pill
- * classes, the ARIA on its menu trigger, the disabled send — and the toggles below let
- * the interaction be clicked without a backend. Same component the app imports: a copy
- * of its markup here would prove nothing.
- */
 export function PromptBarDemo({ log }: { log: Log }) {
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<ModeId>("auto");

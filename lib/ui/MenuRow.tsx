@@ -123,7 +123,7 @@ export function MenuRow({
         className={cls}
         data-action={dataAction}
         data-bw-menu-item
-        role={rowRole === "menuitem" ? "menuitem" : "link"}
+        role="menuitem"
         aria-current={selected ? "true" : undefined}
       >
         {inner}
@@ -138,11 +138,14 @@ export function MenuRow({
       data-action={dataAction}
       data-bw-menu-item
       role={rowRole}
-      disabled={disabled}
+      // aria-disabled, not the attribute: a row that is switched off must still be
+      // focusable, or the `note` explaining WHY (plan limit, nothing attached) is the
+      // one thing a keyboard or screen-reader user can never read.
       aria-disabled={disabled || undefined}
       aria-current={selected && rowRole !== "option" ? "true" : undefined}
       aria-selected={selected && rowRole === "option" ? true : undefined}
       aria-checked={rowRole === "option" ? !!ariaChecked || !!selected : undefined}
+      title={disabled && note ? note : undefined}
       onClick={disabled ? undefined : onClick}
     >
       {inner}

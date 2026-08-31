@@ -307,5 +307,71 @@ try {
   await srv.stop();
 }
 
+/* ── 6. the improvement pass on Steps 1-2, checked not eyeballed ─────────── */
+
+await run("a focus ring must not re-round the control it highlights", async () => {
+  const css = readFileSync(path.join(ROOT, "app", "globals.css"), "utf8");
+  assert.match(
+    css,
+    /border-radius:\s*var\(--bw-focus-r, 6px\)/,
+    "the global :focus-visible rule must keep a 6px default so nothing older changes"
+  );
+  for (const sel of [".bw-menu-row", ".bw-seg__btn", ".bw-pop__panel", ".bw-pill button", ".bw-pill__send"]) {
+    // The declaration lives in its own small rule in the same file (a selector can
+    // appear several times - base rule, focus rule, a @media block - so "somewhere in
+    // the first rule" would be a fragile thing to assert on).
+    assert.ok(css.includes(`${sel} {\n  --bw-focus-r`), `${sel} must declare --bw-focus-r`);
+  }
+  assert.match(css, /@media \(pointer: coarse\)[\s\S]{0,120}min-height: 40px/, "menu rows need a thumb-sized target on touch");
+  const dismiss = readFileSync(path.join(ROOT, "lib", "ui", "useDismiss.ts"), "utf8");
+  assert.ok(dismiss.includes("focus({ preventScroll: true })"), "opening a menu must not scroll the page");
+  assert.ok(dismiss.includes('scrollIntoView({ block: "nearest" })'), "arrow keys keep the row visible inside the panel only");
+});
+
+await run("shared code carries no unused knobs, and a disabled row can explain itself", async () => {
+  const dismiss = readFileSync(path.join(ROOT, "lib", "ui", "useDismiss.ts"), "utf8");
+  assert.ok(!dismiss.includes("closeNowAttr"), "an option with no caller is a liability in the file every menu depends on");
+  const row = readFileSync(path.join(ROOT, "lib", "ui", "MenuRow.tsx"), "utf8");
+  assert.ok(row.includes("aria-disabled={disabled || undefined}"), "disabled rows stay focusable so the reason is readable");
+  assert.ok(!/\n\s+disabled=\{disabled\}/.test(row), "the native disabled attribute would hide the reason from keyboard and AT users");
+  assert.ok(row.includes("title={disabled && note ? note : undefined}"), "and the reason is on the row itself");
+  assert.ok(row.includes('role="menuitem"'), "a link row keeps menu semantics");
+});
+
+await run("a popover is named, not pointed at itself", async () => {
+  const pop = readFileSync(path.join(ROOT, "lib", "ui", "Popover.tsx"), "utf8");
+  assert.ok(pop.includes("aria-label={labelledBy ? undefined : label}"), "label names the panel when there is no trigger id to point at");
+  const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
+  assert.ok(bar.includes('label="Attach"'), "the attach menu names itself");
+  assert.ok(!bar.includes('labelledBy="bw-attach-menu"'), "it must not be labelled by its own id");
+});
+
+await run("the segmented control measures the thing that actually changes", async () => {
+  const seg = readFileSync(path.join(ROOT, "lib", "ui", "SegmentedControl.tsx"), "utf8");
+  assert.ok(seg.includes("ro.observe(active)"), "a label can resize without the container moving");
+  assert.ok(seg.includes('aria-orientation="horizontal"'), "the tablist must say which way it runs");
+  assert.ok(seg.includes("% items.length) + items.length) % items.length"), "arrow wrap stays inside the list without a modulo-by-hand trick");
+});
+
+await run("reading a file may fail, and must say so", async () => {
+  const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
+  assert.ok(bar.includes("reader.onerror"), "a FileReader failure is silent by default");
+  assert.ok(bar.includes("Couldn't read \"${f.name}\" as an image"), "image read failure has its own message");
+  assert.ok(bar.includes("} catch {\n      setError(`Couldn't read"), "text read failure is caught, not thrown into the console");
+  assert.ok(bar.includes("e.target.value = \"\";\n    if (!f) return;"), "the input is cleared before the guards, so re-picking the same file still fires change");
+  assert.ok(bar.includes('aria-pressed={on}'), "the mode chips must say which mode is active");
+  assert.ok(bar.includes('className="flex shrink-0 items-center gap-0.5"'), "trailing actions must not be squeezed by a long chip row");
+});
+
+await run("the lab files share one style module instead of pasting it twice", async () => {
+  const kit = readFileSync(path.join(ROOT, "app", "dev", "ui-lab", "kit.ts"), "utf8");
+  assert.ok(kit.includes("export const cardStyle"), "kit.ts owns the card styles");
+  for (const f of ["Lab.tsx", "PromptBarDemo.tsx"]) {
+    const src = readFileSync(path.join(ROOT, "app", "dev", "ui-lab", f), "utf8");
+    assert.ok(src.includes('from "./kit"'), `${f} must import them`);
+    assert.ok(!src.includes("const cardStyle"), `${f} must not keep a second copy`);
+  }
+});
+
 rmSync(outDir, { recursive: true, force: true });
 process.exit(report("UI primitives (lib/ui) + Step 1 additive-only + Step 2 composer pill") ? 1 : 0);

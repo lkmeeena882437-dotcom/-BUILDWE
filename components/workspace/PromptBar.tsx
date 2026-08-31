@@ -146,13 +146,21 @@ export function PromptBar(props: PromptBarProps) {
 
   const onPickTextFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
+    e.target.value = "";
     if (!f) return;
     if (f.size > MAX_TEXT_FILE) {
       setError(`File too large — keep text files under ${MAX_TEXT_FILE / 1024} KB. Tip: attach just the part you need help with.`);
-      e.target.value = "";
       return;
     }
-    const t = await f.text();
+    // Clearing `value` first matters twice: a re-picked identical file must still fire
+    // change, and nothing here may look like it worked while the read is failing.
+    let t = "";
+    try {
+      t = await f.text();
+    } catch {
+      setError(`Couldn't read "${f.name}" — it may have moved or been closed. Pick it again from its folder.`);
+      return;
+    }
     try {
       const a = await analyzeFileApi(f.name, t);
       setInput((v) => (v ? v + "\n\n" : "") + `[Attached file: ${f.name}]\n${a.summary}\n\nMy question: `);
@@ -161,21 +169,29 @@ export function PromptBar(props: PromptBarProps) {
       // arrives, and saying so in the text keeps it honest about what the model sees.
       setInput((v) => (v ? v + "\n\n" : "") + `[File: ${f.name}]\n${t.slice(0, 8000)}`);
     }
-    e.target.value = "";
     requestAnimationFrame(onGrow);
   };
 
   const onPickImage = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
+    e.target.value = "";
     if (!f) return;
     if (f.size > MAX_IMAGE_FILE) {
       setError("Image too large — keep it under 5 MB.");
-      e.target.value = "";
       return;
     }
     const reader = new FileReader();
+    reader.onerror = () => {
+      // A FileReader failure is silent by default: the picker closes, nothing appears,
+      // and the user assumes the app ignored their file.
+      setError(`Couldn't read "${f.name}" as an image. Try a PNG or JPEG under 5 MB.`);
+    };
     reader.onload = () => {
-      setAttachment({ dataUrl: String(reader.result), name: f.name });
+      if (typeof reader.result !== "string") {
+        setError(`Couldn't read "${f.name}" as an image. Try a PNG or JPEG under 5 MB.`);
+        return;
+      }
+      setAttachment({ dataUrl: reader.result, name: f.name });
       // A picture is a question about pixels, not a song or an image generation.
       retargetModeForImage();
     };
@@ -320,7 +336,7 @@ export function PromptBar(props: PromptBarProps) {
                 placement="above"
                 align="start"
                 width={252}
-                labelledBy="bw-attach-menu"
+                label="Attach"
               >
                 <MenuRow
                   dataAction="attach-image"
@@ -365,6 +381,8 @@ export function PromptBar(props: PromptBarProps) {
                   <button
                     key={m.id}
                     type="button"
+                    aria-pressed={on}
+                    title={`${m.label} — ${m.sub}`}
                     onClick={() => onMode(m.id)}
                     className="flex shrink-0 items-center gap-1 rounded-xl px-2 py-1.5 text-[11px] font-medium"
                     style={on ? { background: "var(--accent-soft)", color: "var(--accent)" } : { color: "var(--muted)" }}
@@ -392,6 +410,7 @@ export function PromptBar(props: PromptBarProps) {
               onChange={onPickImage}
             />
 
+            <div className="flex shrink-0 items-center gap-0.5">
             {chatLike && (
               <div className="relative">
                 <Btn
@@ -487,12 +506,12 @@ export function PromptBar(props: PromptBarProps) {
               {listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
             </Btn>
             {busy ? (
-              <Btn variant="ink" className="!h-10 !w-10 !p-0" aria-label="Stop" onClick={onStop}>
+              <Btn variant="ink" className="bw-pill__send !h-10 !w-10 !p-0" aria-label="Stop" onClick={onStop}>
                 <Square className="h-3.5 w-3.5 fill-current" />
               </Btn>
             ) : (
               <Btn
-                className="!h-10 !w-10 !p-0"
+                className="bw-pill__send !h-10 !w-10 !p-0"
                 aria-label="Send"
                 disabled={!input.trim() && !attachment}
                 onClick={() => void onSend()}
@@ -500,6 +519,7 @@ export function PromptBar(props: PromptBarProps) {
                 {streaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               </Btn>
             )}
+            </div>
           </div>
         </div>
 

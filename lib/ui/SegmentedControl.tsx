@@ -84,11 +84,18 @@ export function SegmentedControl<T extends string>({
   useEffect(() => {
     const onResize = () => measure();
     window.addEventListener("resize", onResize);
+    // The container alone is not enough: a label can change width without the container
+    // moving at all (a localized string, an icon appearing). Observing the active button
+    // too is what keeps the indicator glued instead of drifting a few px off-centre.
     const ro =
-      typeof ResizeObserver !== "undefined" && rootRef.current
+      typeof ResizeObserver !== "undefined"
         ? new ResizeObserver(() => measure())
         : null;
-    ro?.observe(rootRef.current as Element);
+    if (ro) {
+      if (rootRef.current) ro.observe(rootRef.current);
+      const active = btnRefs.current[at];
+      if (active) ro.observe(active);
+    }
     // Fonts land after first paint; widths change with them.
     const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
     let alive = true;
@@ -98,18 +105,20 @@ export function SegmentedControl<T extends string>({
       window.removeEventListener("resize", onResize);
       ro?.disconnect();
     };
-  }, [measure]);
+  }, [measure, at]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const keys: Record<string, number> = { ArrowRight: 1, ArrowLeft: -1 };
     if (e.key in keys) {
       e.preventDefault();
       const step = keys[e.key];
+      // Walk up to len steps, skipping disabled segments, wrapping by modulo.
       for (let n = 1; n <= items.length; n++) {
-        const next = items[(at + step * n + items.length * n) % items.length];
+        const idx = (((at + step * n) % items.length) + items.length) % items.length;
+        const next = items[idx];
         if (next && !next.disabled) {
           onChange(next.value);
-          btnRefs.current[items.indexOf(next)]?.focus();
+          btnRefs.current[idx]?.focus();
           return;
         }
       }
@@ -132,6 +141,7 @@ export function SegmentedControl<T extends string>({
       id={id}
       role="tablist"
       aria-label={ariaLabel}
+      aria-orientation="horizontal"
       data-bw-seg=""
       onKeyDown={onKeyDown}
       className={clsx(
