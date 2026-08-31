@@ -258,7 +258,7 @@ Until 1–5 arrive, Waves 0, 1, 3(partial), 7.1–7.4, 8, 9 proceed — those ne
 
 ---
 
-## Wave 10 — UI surfaces (prompt pill, flyouts, pricing table, link previews, chat→workspace) — **PLANNED, awaiting his `APPROVED`**
+## Wave 10 — UI surfaces (prompt pill, flyouts, pricing table, link previews, chat→workspace) — **IN PROGRESS — approved 2026-08-31, Step 1 DONE (`test:ui` 14/14, app HTML unchanged)**
 
 His 9-item UI/UX brief (2026-08-31). Full step-by-step plan, file:line scan of what already
 exists, reuse contract, verification protocol and risk table: **`docs/UI_UPGRADE_PLAN.md`**.
@@ -266,7 +266,7 @@ No code in that branch of work has been written yet; the scan is what it produce
 
 | Step | What | Needs |
 |---|---|---|
-| 1 | `lib/ui/` primitives: `useDismiss`, `Popover`, `MenuRow`, `SegmentedControl` + dark-surface tokens (zero visible change) | none |
+| 1 ✅ | `lib/ui/` primitives: `useDismiss`, `Popover`, `MenuRow`, `SegmentedControl` + dark-surface tokens (zero visible change) | none |
 | 2–3 | Prompt bar → sticky pill (`components/workspace/PromptBar.tsx`), IME-safe Enter, paste/drop attach | none |
 | 4 | Attachment menu (drop-up, icon+title+subtitle rows, click-away) | none |
 | 5 | Mode selector as rich dropdown w/ chevron flip | none |
