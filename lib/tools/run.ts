@@ -18,6 +18,8 @@
  */
 
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
+import { getBalance } from "@/lib/db/store";
+import { CREDITS } from "@/lib/config";
 import { qualityGate, extractClaims, type QualityResult } from "@/lib/ai/quality";
 import { streamChatOrCode } from "@/lib/ai/providers";
 import { completeVia, type ProviderKeys } from "@/lib/ai/provider-registry";
@@ -25,6 +27,7 @@ import { webSearch } from "@/lib/ai/search";
 import { toUserFacingError } from "@/lib/ai/gateway";
 import { appendMessages, createConversation, uid } from "@/lib/db/store";
 import { bump } from "@/lib/metrics/metrics";
+import { chargeExtra, holdCredits, packLabel, refundCreditsFor } from "@/lib/credits";
 import type { Plan } from "@/lib/db/store";
 import type { ToolChecks, ToolSpec, Values } from "./types";
 import { buildPrompts } from "./inputs";
@@ -35,6 +38,11 @@ export type ToolRunError = {
   code: string;
   error: string;
   hint?: string;
+  /** carried on INSUFFICIENT_CREDITS so the UI can say "top up", not "error" */
+  balance?: number;
+  needed?: number;
+  /** what a top-up costs, straight from config, so the UI never hard-codes it */
+  packs?: { id: string; label: string; credits: number; paise: number; display: string }[];
 };
 
 export type ToolRunSuccess = {
@@ -140,11 +148,45 @@ export async function runTool(opts: {
 }): Promise<ToolRunResult> {
   const { spec, values, userId, plan } = opts;
 
-  if (spec.engine === "verify") return runVerifyTool(opts);
+  // 1 · money first, then quota, then work. Credits are HELD before a call is
+  // made — a balance checked afterwards is an invoice nobody pays — and
+  // refunded whenever the work didn't happen (no model, dropped stream).
+  const holdRefId = uid("hold");
+  const hold = holdCredits({
+    userId,
+    kind: "tool",
+    toolCost: spec.creditCost,
+    reason: `tool:${spec.id}`,
+    refId: holdRefId,
+  });
+  if (!hold.ok) {
+    bump("tool_no_credits");
+    return {
+      ok: false,
+      status: 402,
+      code: "INSUFFICIENT_CREDITS",
+      error: `This run costs ${hold.cost} credit${hold.cost === 1 ? "" : "s"} and you have ${hold.balance}.`,
+      hint: `Top up (${packLabel(CREDITS.packs[0])}) or wait for tomorrow's free use on chat. Nothing is charged for a run that failed.`,
+      packs: CREDITS.packs.map((p) => ({
+        id: p.id,
+        label: p.label,
+        credits: p.credits,
+        paise: p.paise,
+        display: packLabel(p),
+      })),
+      balance: hold.balance,
+      needed: hold.needed,
+    };
+  }
 
-  // 1 · quota BEFORE any paid work (server-side; the client cannot skip it)
+  if (spec.engine === "verify") {
+    return runVerifyTool(opts, { userId, cost: hold.cost, refId: holdRefId });
+  }
+
+  // 1b · quota BEFORE any paid work (server-side; the client cannot skip it)
   const limit = checkLimit(userId, plan, spec.feature);
   if (!limit.ok) {
+    refundCreditsFor({ userId, cost: hold.cost, reason: "tool:quota-refund", refId: holdRefId });
     return {
       ok: false,
       status: 402,
@@ -193,12 +235,15 @@ export async function runTool(opts: {
       userKeys: opts.userKeys,
     });
   } catch (e) {
+    refundCreditsFor({ userId, cost: hold.cost, reason: "tool:error-refund", refId: holdRefId });
     const safe = toUserFacingError(e);
     return { ok: false, status: 502, code: safe.code, error: safe.message, hint: safe.hint };
   }
 
   if (!out.live) {
-    // See HONESTY POLICY at the top of this file.
+    // Refused before any model answered, so it is not charged. See HONESTY
+    // POLICY at the top of this file.
+    refundCreditsFor({ userId, cost: hold.cost, reason: "tool:offline-refund", refId: holdRefId });
     bump("tool_refused_offline");
     return {
       ok: false,
@@ -218,6 +263,8 @@ export async function runTool(opts: {
     plan,
     model: out.model,
     modelId: out.modelId,
+    holdRefId,
+    holdCost: hold.cost,
     stream: out.stream,
     messages,
     system,
@@ -235,6 +282,8 @@ async function streamWithChecks(args: {
   plan: Plan;
   model: string;
   modelId?: string;
+  holdRefId: string;
+  holdCost: number;
   stream: ReadableStream<Uint8Array>;
   messages: { role: string; content: string }[];
   system: string;
@@ -294,6 +343,9 @@ async function streamWithChecks(args: {
             }
           }
         }
+        if (upstreamError && !full.trim()) {
+          refundCreditsFor({ userId, cost: args.holdCost, reason: "tool:empty-refund", refId: args.holdRefId });
+        }
         if (upstreamError) {
           bump("tool_run_error");
           persist({ userId, spec, text: full, model, attempts: 1, report: { passed: [], failed: [] }, lineIssues: ["the model stream stopped early — the answer above is partial"], ask });
@@ -305,6 +357,10 @@ async function streamWithChecks(args: {
       } catch (e) {
         // stream broke mid-answer: keep what we have, tell the user plainly
         bump("tool_run_error");
+        if (!full.trim()) {
+          // nothing was produced: the hold goes back
+          refundCreditsFor({ userId, cost: args.holdCost, reason: "tool:empty-refund", refId: args.holdRefId });
+        }
         persist({ userId, spec, text: full, model, attempts: 1, report: { passed: [], failed: [] }, lineIssues: ["stream interrupted — part of the answer was lost"], ask });
         recordUsageSafe(userId, spec.feature, 1);
         send({ error: "The model stopped mid-answer. What it wrote so far is saved in your history.", partial: true });
@@ -324,34 +380,74 @@ async function streamWithChecks(args: {
         let issues = lineIssues;
         let attempts = 1;
 
+        let creditsCharged = args.holdCost;
         if (first.failed.length || lineIssues.length) {
           send({ status: "checking", failed: [...first.failed, ...lineIssues] });
-          const fix = await correctiveRetry({
-            model: args.modelId || model,
-            system: args.system,
-            user: ask,
-            bad: full,
-            failed: [...first.failed, ...lineIssues],
-            spec,
-            userKeys: args.userKeys,
-            plan,
+          // A correction pass is a second generation, so it is a second charge.
+          // When it buys nothing, the money goes back — "charged twice for one
+          // answer" is exactly the kind of billing bug this file exists to kill.
+          const extraPaid = chargeExtra({
+            userId,
+            kind: "tool",
+            amount: args.holdCost,
+            reason: `tool:${spec.id}:correction`,
+            refId: `${args.holdRefId}:extra`,
           });
-          attempts = 2;
-          if (fix) {
-            const second = evaluateChecks(spec.checks, fix);
-            const secondIssues = lineRules(spec, fix);
-            // take the retry only when it is measurably better
-            if (second.failed.length + secondIssues.length < first.failed.length + lineIssues.length) {
-              finalText = fix;
-              report = second;
-              issues = secondIssues;
-              send({ replace: fix, attempts: 2 });
-            } else {
-              report = second.failed.length <= first.failed.length ? second : first;
-              issues = [...secondIssues, "correction pass was no better — keeping the first answer"];
-            }
+          if (!extraPaid) {
+            issues = [
+              ...lineIssues,
+              "out of credits for a correction pass — keeping the first answer",
+            ];
           } else {
-            issues = [...lineIssues, "correction pass unavailable (provider refused the retry) — answer kept as-is"];
+            const fix = await correctiveRetry({
+              model: args.modelId || model,
+              system: args.system,
+              user: ask,
+              bad: full,
+              failed: [...first.failed, ...lineIssues],
+              spec,
+              userKeys: args.userKeys,
+              plan,
+            });
+            attempts = 2;
+            if (fix) {
+              const second = evaluateChecks(spec.checks, fix);
+              const secondIssues = lineRules(spec, fix);
+              // take the retry only when it is measurably better
+              if (
+                second.failed.length + secondIssues.length <
+                first.failed.length + lineIssues.length
+              ) {
+                finalText = fix;
+                report = second;
+                issues = secondIssues;
+                creditsCharged += args.holdCost;
+                send({ replace: fix, attempts: 2 });
+              } else {
+                refundCreditsFor({
+                  userId,
+                  cost: args.holdCost,
+                  reason: "tool:correction-refund",
+                  refId: `${args.holdRefId}:extra`,
+                });
+                report = second.failed.length <= first.failed.length ? second : first;
+                issues = [
+                  ...secondIssues,
+                  "correction pass was no better — keeping the first answer (the extra credit was returned)",
+                ];
+              }
+            } else {
+              refundCreditsFor({
+                userId,
+                cost: args.holdCost,
+                reason: "tool:correction-refund",
+                refId: `${args.holdRefId}:extra`,
+              });
+              issues = [
+                ...lineIssues,
+                "correction pass unavailable (provider refused the retry) — answer kept as-is (the extra credit was returned)",
+              ];
+            }
           }
         }
 
@@ -378,6 +474,10 @@ async function streamWithChecks(args: {
           quality,
           checks: report,
           issues,
+          credits: {
+            charged: creditsCharged,
+            balance: getBalance(userId),
+          },
           ...(conversationId ? { conversationId } : {}),
         });
         controller.close();
@@ -511,16 +611,26 @@ async function runVerifyTool(opts: {
   values: Values;
   userId: string;
   plan: Plan;
-}): Promise<ToolRunResult> {
+},
+  billing: { userId: string; cost: number; refId: string }
+): Promise<ToolRunResult> {
   const text = String(opts.values.answer || "");
   const claims = extractClaims(text);
   if (!claims.length) {
-    return toolTextResponse(opts.spec, opts.userId, [
+    // Nothing to check means nothing was searched — the hold goes back rather
+    // than billing for an empty verdict.
+    refundCreditsFor({
+      userId: billing.userId,
+      cost: billing.cost,
+      reason: "tool:noop-refund",
+      refId: billing.refId,
+    });
+    return await toolTextResponse(opts.spec, opts.userId, [
       `## Nothing to check`,
       ``,
       `No statistics, dates, prices or superlative claims were found in this text — there is nothing external to corroborate.`,
       ``,
-      `That is not a claim that the text is true; it only means no sentence here is machine-checkable against a source.`,
+      `That is not a claim that the text is true; it only means no sentence here is machine-checkable against a source.`
     ].join("\n"));
   }
 
@@ -547,6 +657,16 @@ async function runVerifyTool(opts: {
   );
 
   const anySearch = results.some((r) => r.searched);
+  // A verdict with zero live lookups behind it is a tool failure, not a product
+  // — the user gets their credit back instead of a page of apologies.
+  if (!anySearch) {
+    refundCreditsFor({
+      userId: billing.userId,
+      cost: billing.cost,
+      reason: "tool:noop-refund",
+      refId: billing.refId,
+    });
+  }
   const lines: string[] = [
     `## Hallucination check`,
     ``,

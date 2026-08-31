@@ -15,6 +15,8 @@
  *                   limits, checks. The browser renders a form from it.
  */
 
+import { CREDITS } from "@/lib/config";
+
 export type ToolFieldKind = "text" | "textarea" | "select" | "number" | "checkbox";
 
 export type ToolField = {
@@ -75,6 +77,12 @@ export type ToolSpec = {
   description: string;
   /** how this tool is metered — maps onto lib/ai/limits.ts Feature */
   feature: "chat" | "code";
+  /**
+   * Credits per attempt. 1 is the boss's "normal generation"; heavy tools that
+   * spend a real token budget declare 2 (and are charged again if the
+   * corrective pass runs, because that is a second model call).
+   */
+  creditCost?: number;
   fields: ToolField[];
   checks?: ToolChecks;
   /** sampling budget; long-form tools need headroom, hooks do not */
@@ -106,6 +114,8 @@ export type PublicTool = {
   tagline: string;
   description: string;
   feature: "chat" | "code";
+  /** resolved from the spec, or the global default — never re-typed in the UI */
+  creditCost: number;
   fields: ToolField[];
   checks?: ToolChecks;
   afterRun?: "save-brand-voice";
@@ -132,6 +142,7 @@ export function publicTool(spec: ToolSpec): PublicTool {
     tagline: spec.tagline,
     description: spec.description,
     feature: spec.feature,
+    creditCost: spec.creditCost ?? CREDITS.cost.tool,
     fields: spec.fields,
     ...(spec.checks ? { checks: spec.checks } : {}),
     ...(spec.afterRun ? { afterRun: spec.afterRun } : {}),

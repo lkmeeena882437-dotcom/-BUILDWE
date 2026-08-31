@@ -27,6 +27,14 @@ const securityHeaders = [
 
 const nextConfig = {
   reactStrictMode: true,
+  /**
+   * The build dir is an env knob so the test harness can run several disposable
+   * dev servers at once. Sharing one `.next` between concurrent `next dev`
+   * processes is not just slow - two of them compiling the same cache can hang
+   * a compile forever, which showed up as a suite that "couldn't reach its own
+   * server". Production and the normal dev flow keep `.next`.
+   */
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "**" },

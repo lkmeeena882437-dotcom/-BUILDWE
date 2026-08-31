@@ -116,6 +116,56 @@ export const RAZORPAY = {
   planId: env("RAZORPAY_PRO_PLAN_ID"),
 } as const;
 
+/**
+ * Credit economy — the real gate, per the boss's rule of 2026-08-31:
+ * **1 normal generation = 1 credit**, heavy tools cost more, signup grants
+ * **10 free credits** so anyone can judge the quality, and top-ups are
+ * **₹99 = 100** / **₹399 = 500**. Deliberately simple: no expiry, no
+ * per-model exchange-rate table, no daily hunt for bonus points. A credit is
+ * "one unit of paid work", and the only place it is minted is a real payment,
+ * the welcome grant, or the PRO monthly grant.
+ *
+ * Chat is NOT metered by credits (it keeps its daily fair-use cap) — metering
+ * the free hook would make the product worse for the smallest money. Generators
+ * are metered, because those are what a bill pays for.
+ */
+export const CREDITS = {
+  welcome: envInt("CREDITS_WELCOME", 10),
+  proMonthly: envInt("CREDITS_PRO_MONTHLY", 1000),
+  /** what each kind of work costs — the table is here so it is auditable */
+  cost: {
+    chat: envInt("CREDIT_COST_CHAT", 0),
+    image: envInt("CREDIT_COST_IMAGE", 2),
+    audio: envInt("CREDIT_COST_AUDIO", 1),
+    transcribe: envInt("CREDIT_COST_TRANSCRIBE", 1),
+    /** one image read by a model — a model call, priced like a tool */
+    vision: envInt("CREDIT_COST_VISION", 1),
+    agent: envInt("CREDIT_COST_AGENT", 3),
+    /** per live model lane in a side-by-side comparison */
+    compareLane: envInt("CREDIT_COST_COMPARE_LANE", 1),
+    /** default for a tool whose spec doesn't declare its own cost */
+    tool: envInt("CREDIT_COST_TOOL", 1),
+  },
+  packs: [
+    {
+      id: "starter",
+      label: "Starter pack",
+      paise: envInt("CREDIT_PACK_STARTER_PAISE", 9900),
+      credits: envInt("CREDIT_PACK_STARTER_CREDITS", 100),
+    },
+    {
+      id: "value",
+      label: "Value pack",
+      paise: envInt("CREDIT_PACK_VALUE_PAISE", 39900),
+      credits: envInt("CREDIT_PACK_VALUE_CREDITS", 500),
+    },
+  ] as const,
+} as const;
+
+export function creditPack(id: string) {
+  return CREDITS.packs.find((p) => p.id === String(id || "").trim().toLowerCase());
+}
+
 export function hasProviderKey(
   provider: keyof typeof AI_KEYS
 ): boolean {

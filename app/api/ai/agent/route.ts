@@ -4,6 +4,7 @@ import { limitAi } from "@/lib/rate-limit/guard";
 
 import { runAgent, type AgentEvent } from "@/lib/ai/agent";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
+import { creditGate, refundArtifact, getBalance } from "@/lib/credits";
 import { findUserById, listProjects, createProject } from "@/lib/db/store";
 import { decryptSecret } from "@/lib/crypto";
 import { bump } from "@/lib/metrics/metrics";
@@ -95,6 +96,13 @@ export async function POST(req: NextRequest) {
         }
       : undefined;
 
+    // An agent run is the most expensive thing on the platform (a plan plus
+    // several model calls plus file writes), so it is held before the first
+    // step and given back if the run does not finish its job.
+    const agentRefId = `agent:${session.userId}:${Date.now()}`;
+    const gate = creditGate(session.userId, "agent", agentRefId);
+    if (!gate.ok) return gate.res;
+
     bump("agent_run");
 
     const encoder = new TextEncoder();
@@ -128,6 +136,9 @@ export async function POST(req: NextRequest) {
           recordUsage(session.userId, "code");
           if (result.verified) bump("agent_verified");
           if (!result.ok) bump("agent_failed");
+          if (!result.ok) {
+            refundArtifact(session.userId, "agent", gate.hold.cost, agentRefId);
+          }
 
           controller.enqueue(
             encoder.encode(
@@ -139,14 +150,19 @@ export async function POST(req: NextRequest) {
                 steps: result.steps,
                 verified: result.verified,
                 ...(result.primaryFile ? { primaryFile: result.primaryFile } : {}),
+                credits: {
+                  charged: result.ok ? gate.hold.cost : 0,
+                  balance: getBalance(session.userId),
+                },
               })}\n\n`
             )
           );
         } catch (e) {
           console.error("[bw] agent run", e);
+          refundArtifact(session.userId, "agent", gate.hold.cost, agentRefId);
           send({
             type: "error",
-            text: "The agent hit an unexpected problem and stopped. Nothing was left half-written.",
+            text: "The agent hit an unexpected problem and stopped. Nothing was left half-written, and the credits were returned.",
           });
         } finally {
           controller.close();

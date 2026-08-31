@@ -104,6 +104,13 @@ const trusted = await startServer({
     SIGNUPS_PER_EMAIL_PER_DAY: "1000",
     SIGNUPS_GLOBAL_PER_DAY: "1000",
     TRUST_PROXY_HOPS: "1",
+    // This suite sweeps every registered tool from one account (31 runs, some
+    // charged twice by a corrective pass). Wave 2 put a price in front of the
+    // model, so a default signup wallet runs dry halfway through and the suite
+    // starts reporting 402s as "tool broken". The grant is a config knob, so
+    // the knob is what the fixture turns: the credit rules themselves are
+    // asserted by tests/credits.mjs, which uses the real default.
+    CREDITS_WELCOME: "500",
   },
 });
 const offline = await startServer({

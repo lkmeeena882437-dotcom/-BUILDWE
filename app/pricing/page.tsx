@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Check, X } from "lucide-react";
 import { UpgradeButton } from "@/components/billing/UpgradeButton";
 import { useProPrice } from "@/components/billing/useProPrice";
+import { CreditPacksBlock, useWallet } from "@/components/billing/CreditsUI";
 
 const FREE = [
   "Full platform access for everyone",
@@ -26,6 +27,8 @@ export default function PricingPage() {
   const router = useRouter();
   // Same server-owned price the checkout actually charges (audit A6).
   const proPrice = useProPrice();
+  // ...and the same server-owned credit table, so this page can't invent a price.
+  const wallet = useWallet();
 
   return (
     <div className="min-h-[100dvh] bg-[#F7F4EE] text-[#14110F]">
@@ -86,7 +89,7 @@ export default function PricingPage() {
               Default for everyone. Share BUILDWE. Create. Invite the next builder.
             </p>
             <ul className="mt-6 space-y-2.5 text-sm">
-              {FREE.map((f) => (
+              {[...FREE, wallet.loaded ? `${wallet.welcome} credits free at signup` : "Free credits at signup"].map((f) => (
                 <li key={f} className="flex gap-2">
                   <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#C45C26]" />
                   <span>{f}</span>
@@ -117,7 +120,7 @@ export default function PricingPage() {
               Higher limits, priority generation, calmer workspace.
             </p>
             <ul className="mt-6 space-y-2.5 text-sm">
-              {PRO.map((f) => (
+              {[...PRO, wallet.loaded ? `${wallet.proMonthly.toLocaleString()} credits every month` : "Monthly credits"].map((f) => (
                 <li key={f} className="flex gap-2">
                   <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#C45C26]" />
                   <span>{f}</span>
@@ -126,10 +129,84 @@ export default function PricingPage() {
             </ul>
             <UpgradeButton />
             <p className="mt-3 text-center text-[11px] text-[#9C958C]">
-              Secure Razorpay checkout · demo mode until live keys are connected
+              {proPrice.configured
+                ? "Secure Razorpay checkout · cancel any time"
+                : "Checkout stays disabled until live Razorpay keys are set on this server — we don't fake a success page."}
             </p>
           </div>
         </div>
+
+        <section className="mt-10 rounded-3xl border border-[#E6E0D6] bg-white p-6">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div className="min-w-[240px] flex-1">
+              <div className="text-xs font-semibold uppercase tracking-wider text-[#9C958C]">
+                Credits
+              </div>
+              <h2 className="mt-1 text-xl font-semibold">
+                Pay for what the server actually did.
+              </h2>
+              <p className="mt-2 text-sm text-[#6B6560]">
+                One generation of a tool is one credit. A heavy, multi-section tool is
+                two. Chat is free, because the point of chat is to get you to the rest.
+                If a run produces nothing, the credit comes back on its own — no
+                support ticket, no &quot;contact us&quot;.
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-[11px] uppercase tracking-wide text-[#9C958C]">Your balance</p>
+              <p className="text-3xl font-semibold tabular-nums">
+                {wallet.loaded ? wallet.balance : "···"}
+              </p>
+              {wallet.loaded && !wallet.signedIn ? (
+                <p className="text-[11px] text-[#6B6560]">guest wallet · cookie only</p>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="mt-6 grid gap-4 md:grid-cols-2">
+            <ul className="space-y-1.5 text-sm">
+              {[
+                ["Chat", wallet.costs.chat],
+                ["Any AI tool (blog, email, script…)", wallet.costs.tool],
+                ["Heavy tool (long, multi-section)", 2],
+                ["Image", wallet.costs.image],
+                ["Voice-over", wallet.costs.audio],
+                ["Transcription", wallet.costs.transcribe],
+                ["Read an image", wallet.costs.vision],
+                ["Each live lane in a comparison", wallet.costs.compareLane],
+                ["Agent run (multi-file code job)", wallet.costs.agent],
+              ].map(([label, n]) => (
+                <li
+                  key={String(label)}
+                  className="flex items-center justify-between gap-2 rounded-xl bg-[#F7F4EE] px-3 py-2"
+                >
+                  <span className="text-[#3A3630]">{label}</span>
+                  <span className="font-medium tabular-nums">
+                    {Number(n) === 0
+                      ? "free"
+                      : `${n} credit${Number(n) === 1 ? "" : "s"}`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wider text-[#9C958C]">
+                Top up
+              </div>
+              <div className="mt-2">
+                <CreditPacksBlock />
+              </div>
+              <p className="mt-3 text-[11px] leading-relaxed text-[#9C958C]">
+                Packs are one-time, not a subscription, and don&apos;t expire while your
+                account is open. {wallet.welcome} credits land in every new account so
+                quality can be judged before money moves
+                {wallet.plan === "pro"
+                  ? `, and PRO adds ${wallet.proMonthly.toLocaleString()} credits a month.`
+                  : "."}
+              </p>
+            </div>
+          </div>
+        </section>
 
         <div className="mt-14 overflow-hidden rounded-3xl border border-[#E6E0D6] bg-white">
           <div className="border-b border-[#E6E0D6] px-4 py-3 text-sm font-semibold">

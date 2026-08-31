@@ -70,9 +70,16 @@ function authHeader(): string {
   return `Basic ${Buffer.from(`${RAZORPAY.keyId}:${RAZORPAY.keySecret}`).toString("base64")}`;
 }
 
-/** Server: create a REAL Razorpay order. Throws instead of faking one. */
-export async function createProOrder(userId: string): Promise<CheckoutOrder> {
-  const receipt = `bw_pro_${userId.slice(0, 8)}_${Date.now()}`;
+/**
+ * One place that talks to Razorpay's order API. Amount, receipt prefix and the
+ * product note are parameters so PRO and credit packs can never drift into two
+ * different (and one day inconsistent) payment code paths.
+ */
+async function createOrderFor(
+  userId: string,
+  opts: { amountPaise: number; receiptPrefix: string; product: string }
+): Promise<CheckoutOrder> {
+  const receipt = `${opts.receiptPrefix}_${userId.slice(0, 8)}_${Date.now()}`;
 
   if (!livePayments()) {
     throw new CheckoutUnavailableError(
@@ -87,10 +94,10 @@ export async function createProOrder(userId: string): Promise<CheckoutOrder> {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      amount: RAZORPAY.amountPaise,
+      amount: opts.amountPaise,
       currency: RAZORPAY.currency,
       receipt,
-      notes: { product: "buildwe_pro", userId },
+      notes: { product: opts.product, userId },
     }),
     signal: AbortSignal.timeout(15_000),
   });
@@ -103,11 +110,36 @@ export async function createProOrder(userId: string): Promise<CheckoutOrder> {
   const data = raw;
   return {
     id: String(data.id),
-    amount: Number(data.amount) || RAZORPAY.amountPaise,
+    amount: Number(data.amount) || opts.amountPaise,
     currency: String(data.currency) || RAZORPAY.currency,
     receipt,
     demo: false,
   };
+}
+
+/** Server: create a REAL Razorpay order. Throws instead of faking one. */
+export async function createProOrder(userId: string): Promise<CheckoutOrder> {
+  return createOrderFor(userId, {
+    amountPaise: RAZORPAY.amountPaise,
+    receiptPrefix: "bw_pro",
+    product: "buildwe_pro",
+  });
+}
+
+/**
+ * A credit pack is the same order API with a different amount and note. There
+ * is deliberately no "free sample pack" path: the only way credits appear is a
+ * verified payment or the signup/welcome grant.
+ */
+export async function createPackOrder(
+  userId: string,
+  pack: { id: string; paise: number; credits: number }
+): Promise<CheckoutOrder> {
+  return createOrderFor(userId, {
+    amountPaise: pack.paise,
+    receiptPrefix: `bw_credits_${pack.id}`,
+    product: `buildwe_credits:${pack.id}:${pack.credits}`,
+  });
 }
 
 export class CheckoutUnavailableError extends Error {
@@ -202,11 +234,18 @@ export async function verifyProPayment(
   };
 }
 
-/** Dev-only canned order so the checkout UI can be walked without keys. Never grants a plan. */
-export function demoCheckoutOrder(userId: string): CheckoutOrder {
+/**
+ * Dev-only canned order so the checkout UI can be walked without keys.
+ * Never grants a plan *and* never grants credits: /api/checkout/verify refuses
+ * `order_demo_*` in every environment, so this can only ever exercise the UI.
+ */
+export function demoCheckoutOrder(
+  userId: string,
+  amountPaise: number = RAZORPAY.amountPaise
+): CheckoutOrder {
   return {
     id: `order_demo_${crypto.randomBytes(6).toString("hex")}`,
-    amount: RAZORPAY.amountPaise,
+    amount: amountPaise,
     currency: RAZORPAY.currency,
     receipt: `bw_demo_${userId.slice(0, 8)}_${Date.now()}`,
     demo: true,

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { TOOLS } from "@/lib/tools/registry";
-import { AI_KEYS, hasProviderKey, TRUST_PROXY_HOPS, byokEncryptionConfigured, APP } from "@/lib/config";
+import { AI_KEYS, hasProviderKey, TRUST_PROXY_HOPS, byokEncryptionConfigured, APP, CREDITS, RAZORPAY, razorpayConfigured } from "@/lib/config";
 import { storageMode, dbLockingAvailable } from "@/lib/db/store";
 import { availableProviders } from "@/lib/ai/provider-registry";
 import { availableImageProviders } from "@/lib/ai/image-providers";
@@ -185,6 +185,23 @@ export async function GET() {
         : "Tools refuse to run without a live model — a template dressed up as an AI answer is not shipping, ever.",
       chatReady ? `${TOOLS.length} specs registered` : "no llm credential"
     ),
+    billing: razorpayConfigured()
+      ? row(
+          "Billing",
+          RAZORPAY.webhookSecret ? "live" : "degraded",
+          RAZORPAY.webhookSecret
+            ? `PRO and ${CREDITS.packs.length} credit pack(s) check out against Razorpay. ${CREDITS.welcome} credits are minted at signup; a tool run costs ${CREDITS.cost.tool}.`
+            : `Prices and orders are live, but no webhook secret is set - a buyer who closes the tab mid-payment cannot be made whole automatically. Set RAZORPAY_WEBHOOK_SECRET.`,
+          RAZORPAY.webhookSecret
+            ? "razorpay key id + secret + webhook secret"
+            : "webhook secret missing"
+        )
+      : row(
+          "Billing",
+          "unconfigured",
+          "No Razorpay keys on this server, so nothing can be sold — checkout says so rather than faking a success. Credits still meter, and a run that produced nothing is still refunded.",
+          "NEXT_PUBLIC_RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET unset"
+        ),
     storage:
       storage === "supabase"
         ? row("Persistence", "live", "Database mirror is configured.", "supabase")

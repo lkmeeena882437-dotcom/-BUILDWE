@@ -7,6 +7,7 @@ import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { addGeneration, uid } from "@/lib/db/store";
 import { INPUT_LIMITS } from "@/lib/ai/gateway";
 import { mirrorRemoteImage, mediaStorageEnabled } from "@/lib/storage/media";
+import { creditGate, creditReceipt, refundArtifact } from "@/lib/credits";
 import { MODEL_CATALOG } from "@/lib/ai/models-catalog";
 
 export const runtime = "nodejs";
@@ -75,13 +76,34 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const result = await generateImage({
-      prompt,
-      aspect,
-      plan: session.plan,
-      basePrompt,
-      modelId,
-    });
+    // Credits are taken before the paid call and given back if the picture does
+    // not exist - see lib/credits.ts.
+    const genId = uid("gen");
+    const gate = creditGate(session.userId, "image", genId);
+    if (!gate.ok) return gate.res;
+    let result: Awaited<ReturnType<typeof generateImage>>;
+    try {
+      result = await generateImage({
+        prompt,
+        aspect,
+        plan: session.plan,
+        basePrompt,
+        modelId,
+      });
+    } catch (e) {
+      refundArtifact(session.userId, "image", gate.hold.cost, genId);
+      throw e;
+    }
+    if (!result.url) {
+      refundArtifact(session.userId, "image", gate.hold.cost, genId);
+      return NextResponse.json(
+        {
+          error: "The image provider returned nothing - your credit was given back. Try again.",
+          code: "PROVIDER_EMPTY",
+        },
+        { status: 502 }
+      );
+    }
 
     try {
       recordUsage(session.userId, "image");
@@ -89,7 +111,7 @@ export async function POST(req: NextRequest) {
       /* */
     }
 
-    let id = uid("gen");
+    let id = genId;
 
     // Mirror the artwork onto our own storage when configured. Previously the
     // history row pointed at a third-party hot-link we don't control, so an
@@ -137,6 +159,7 @@ export async function POST(req: NextRequest) {
       // True when the requested model was unreachable and another one served
       // the request — the user should know they didn't get what they picked.
       fellBack: result.fellBack || false,
+      credits: creditReceipt(session.userId, gate.hold),
     });
     attachGuestCookie(res, session.userId);
     return res;

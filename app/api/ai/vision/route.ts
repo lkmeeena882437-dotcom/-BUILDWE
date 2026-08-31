@@ -4,7 +4,8 @@ import { limitAi } from "@/lib/rate-limit/guard";
 
 import { visionComplete } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
-import { addGeneration, findUserById } from "@/lib/db/store";
+import { addGeneration, findUserById, uid } from "@/lib/db/store";
+import { creditGate, creditReceipt, refundArtifact } from "@/lib/credits";
 import { decryptSecret } from "@/lib/crypto";
 
 export const runtime = "nodejs";
@@ -59,7 +60,29 @@ export async function POST(req: NextRequest) {
       groq: byok.groq ? decryptSecret(byok.groq) : undefined,
     };
 
-    const result = await visionComplete({ prompt, imageDataUrl: image, userKeys });
+    const visionId = uid("vis");
+    // BYOK does not waive the credit: it changes whose key is billed, not
+    // whether the run costs anything. Otherwise pasting a key would be a
+    // free-credits exploit on every metered surface.
+    const gate = creditGate(session.userId, "vision", visionId);
+    if (!gate.ok) return gate.res;
+    let result: Awaited<ReturnType<typeof visionComplete>>;
+    try {
+      result = await visionComplete({ prompt, imageDataUrl: image, userKeys });
+    } catch (e) {
+      refundArtifact(session.userId, "vision", gate.hold.cost, visionId);
+      throw e;
+    }
+    if (!result.live || !String(result.text || "").trim()) {
+      refundArtifact(session.userId, "vision", gate.hold.cost, visionId);
+      return NextResponse.json(
+        {
+          error: "The vision model did not answer. Your credit was given back - try again.",
+          code: "PROVIDER_EMPTY",
+        },
+        { status: 502 }
+      );
+    }
 
     try {
       recordUsage(session.userId, "image");
@@ -79,6 +102,7 @@ export async function POST(req: NextRequest) {
       text: result.text,
       model: result.model,
       live: result.live,
+      credits: creditReceipt(session.userId, gate.hold),
     });
     attachGuestCookie(res, session.userId);
     return res;

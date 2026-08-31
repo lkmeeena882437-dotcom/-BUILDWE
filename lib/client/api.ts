@@ -16,6 +16,41 @@ export type MeResponse = {
   limits: { chat: number; code: number; image: number; audio: number };
 };
 
+/**
+ * Credit signals travel to the wallet UI as window events rather than imports,
+ * so this module stays free of React. Two events exist:
+ *   bw:credits:receipt   - a paid call succeeded and reports the new balance
+ *   bw:credits:shortfall - the server refused for lack of credits (402), and
+ *                          the wallet UI opens its top-up sheet
+ */
+function creditsEvent(name: string, detail: unknown) {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent(name, { detail }));
+  } catch {
+    /* no CustomEvent - the UI simply stays as it is */
+  }
+}
+
+/** Called on every paid response: keep the chip honest, surface the top-up. */
+export function noteCredits(r: Response, j: unknown) {
+  const o = (j || {}) as { code?: unknown; balance?: unknown; needed?: unknown; credits?: { balance?: unknown; charged?: unknown } };
+  if (r.status === 402 && String(o.code || "") === "INSUFFICIENT_CREDITS") {
+    creditsEvent("bw:credits:shortfall", {
+      balance: Number(o.balance || 0),
+      needed: Number(o.needed || 0),
+    });
+    return;
+  }
+  const rec = o.credits;
+  if (rec && typeof rec.balance === "number") {
+    creditsEvent("bw:credits:receipt", {
+      balance: rec.balance,
+      charged: Number(rec.charged || 0),
+    });
+  }
+}
+
 async function readJson(r: Response) {
   const text = await r.text();
   if (!text) return {};
@@ -169,6 +204,7 @@ export async function generateImage(
     }),
   });
   const j = await readJson(r);
+  noteCredits(r, j);
   if (!r.ok) throw new Error(j.error || "Couldn’t create that image. Try again.");
   return j as {
     id: string;
@@ -189,6 +225,7 @@ export async function generateAudio(text: string, voice: string, speed: number) 
     body: JSON.stringify({ text, voice, speed }),
   });
   const j = await readJson(r);
+  noteCredits(r, j);
   if (!r.ok) throw new Error(j.error || "Couldn’t generate voice. Try again.");
   return j as {
     id: string;
@@ -247,6 +284,7 @@ export type AgentEvent =
       steps: number;
       verified: boolean;
       primaryFile?: { path: string; content: string; lang: string };
+      credits?: { charged: number; balance: number };
     };
 
 /**
@@ -273,6 +311,7 @@ export async function runAgentApi(
 
   if (!r.ok || !r.body) {
     const j = await readJson(r);
+    noteCredits(r, j);
     const err = new Error(j.error || "The agent couldn't start.") as Error & {
       code?: string;
       hint?: string;
@@ -298,7 +337,12 @@ export async function runAgentApi(
       if (!t.startsWith("data:")) continue;
       try {
         const ev = JSON.parse(t.slice(5).trim()) as AgentEvent;
-        if (ev.type === "result") final = ev;
+        if (ev.type === "result") {
+          final = ev;
+          if (ev.credits && typeof ev.credits.balance === "number") {
+            creditsEvent("bw:credits:receipt", ev.credits);
+          }
+        }
         onEvent(ev);
       } catch {
         /* skip malformed frame */
@@ -350,6 +394,7 @@ export async function compareApi(prompt: string) {
     body: JSON.stringify({ prompt }),
   });
   const j = await readJson(r);
+  noteCredits(r, j);
   if (!r.ok) throw new Error(j.error || "Comparison failed");
   return j as {
     ok: boolean;
@@ -464,6 +509,7 @@ export async function transcribeAudio(
     body: form,
   });
   const j = await readJson(r);
+  noteCredits(r, j);
   if (!r.ok) throw new Error(j.error || "Couldn't transcribe that audio");
   return j;
 }
@@ -478,6 +524,7 @@ export async function visionApi(imageDataUrl: string, prompt: string) {
     body: JSON.stringify({ image: imageDataUrl, prompt }),
   });
   const j = await readJson(r);
+  noteCredits(r, j);
   if (!r.ok) throw new Error(j.error || "Couldn't analyze that image");
   return j as { ok: boolean; text: string; model: string; live: boolean };
 }

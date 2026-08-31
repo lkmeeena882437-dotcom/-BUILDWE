@@ -5,9 +5,12 @@ import {
   addPayment,
   findPaymentByOrder,
   findUserById,
+  getBalance,
   updatePayment,
   updateUser,
 } from "@/lib/db/store";
+import { creditPack } from "@/lib/config";
+import { topUpCredits } from "@/lib/credits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -103,10 +106,47 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, ignored: "unknown_user" });
       }
 
+      const existing = orderId ? findPaymentByOrder(orderId) : null;
+
+      // Which product was this? A credit pack must NOT flip the account to PRO.
+      const productNote = String(entity?.notes?.product || "");
+      const isPack =
+        existing?.kind === "pack" || productNote.startsWith("buildwe_credits:");
+
+      if (isPack) {
+        const packId =
+          existing?.packId || productNote.split(":")[1] || "";
+        const credits =
+          existing?.credits || creditPack(packId)?.credits || 0;
+        if (credits > 0) {
+          // Keyed on the payment id, so a webhook re-delivery (Razorpay
+          // retries) and the interactive verify route cannot both pay out.
+          const grant = topUpCredits({
+            userId,
+            credits,
+            refId: paymentId || existing?.id || `webhook_${orderId}`,
+          });
+          if (!grant.ok) console.error("[bw] webhook pack grant rejected", grant);
+        } else {
+          console.error("[bw] pack paid but credits unknown", orderId, packId);
+        }
+        if (existing && existing.status !== "paid") {
+          updatePayment(existing.id, {
+            status: "paid",
+            paymentId: paymentId || undefined,
+          });
+        }
+        return NextResponse.json({
+          ok: true,
+          kind: "pack",
+          credits,
+          balance: getBalance(userId),
+        });
+      }
+
       // Idempotent: re-delivery of the same event is harmless.
       if (user.plan !== "pro") updateUser(userId, { plan: "pro" });
 
-      const existing = orderId ? findPaymentByOrder(orderId) : null;
       if (existing) {
         if (existing.status !== "paid") {
           updatePayment(existing.id, { status: "paid", paymentId: paymentId || undefined });

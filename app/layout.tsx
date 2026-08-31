@@ -4,6 +4,7 @@ import { PwaRegister } from "@/components/PwaRegister";
 import { getCheckoutPublicConfig } from "@/lib/payments/razorpay";
 import { TOOLS } from "@/lib/tools/registry";
 import { CookieConsent } from "@/components/CookieConsent";
+import { CreditsSheet } from "@/components/billing/CreditsUI";
 
 const SITE = process.env.NEXT_PUBLIC_APP_URL || "https://buildwe.online";
 
@@ -121,6 +122,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {children}
         <PwaRegister />
         <CookieConsent />
+        {/* The credit sheet is global: any runner can raise it when a 402
+            INSUFFICIENT_CREDITS arrives mid-work. */}
+        <CreditsSheet />
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}

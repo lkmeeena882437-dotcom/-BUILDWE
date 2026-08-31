@@ -129,6 +129,7 @@ import { AudioStudio } from "@/components/workspace/AudioStudio";
 import { AdSlot } from "@/components/AdSlot";
 import { renderSafeMarkdown } from "@/lib/safe-md";
 import { useProPrice } from "@/components/billing/useProPrice";
+import { WalletChip, openCredits, useWallet } from "@/components/billing/CreditsUI";
 
 type Mode = "auto" | "chat" | "code" | "image" | "audio";
 type ThemePref = "system" | "light" | "dark";
@@ -2350,6 +2351,7 @@ function Dashboard() {
               <Share2 className="h-4 w-4" />
             </Btn>
           )}
+          <WalletChip />
           {plan === "pro" ? (
             <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold" style={{ background: "var(--ink)", color: "var(--bg)" }}><Star className="h-3 w-3" /> PRO</span>
           ) : (
@@ -3895,6 +3897,8 @@ function PlansSheet({ plan, onClose, onPro }: { plan: string; onClose: () => voi
   // endpoint charges. It used to be hand-written here as "$5" while /pricing
   // said "₹500" and Razorpay was configured for 50000 paise (audit A6).
   const proPrice = useProPrice();
+  // Credit numbers come from the wallet endpoint for the same reason.
+  const wallet = useWallet();
   return (
     <Sheet onClose={onClose} title="Plans" wide>
       <p className="mb-4 text-sm" style={{ color: "var(--muted)" }}>
@@ -3908,6 +3912,7 @@ function PlansSheet({ plan, onClose, onPro }: { plan: string; onClose: () => voi
             <li>✓ Full platform access</li>
             <li>✓ Chat, Code, Image, Audio</li>
             <li>✓ Fair daily creative limits</li>
+            <li>✓ {wallet.welcome} credits free at signup</li>
             <li>✓ Ad-supported experience</li>
           </ul>
         </div>
@@ -3918,10 +3923,33 @@ function PlansSheet({ plan, onClose, onPro }: { plan: string; onClose: () => voi
             <li>✓ Higher creative limits</li>
             <li>✓ Priority generation</li>
             <li>✓ Calmer, fewer ads</li>
+            <li>✓ {wallet.proMonthly.toLocaleString()} credits every month</li>
             <li>✓ Built for daily heavy use</li>
           </ul>
           <Btn className="mt-4 w-full" size="sm" onClick={onPro}>Upgrade to PRO</Btn>
         </div>
+      </div>
+      {/* The other way to buy: a credit pack, no subscription. People who only
+          need 50 more generations this month should not have to commit. */}
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl border p-3 text-xs" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
+        <span style={{ color: "var(--muted)" }}>
+          Just need more credits? Balance:{" "}
+          <b style={{ color: "var(--ink)" }}>{wallet.loaded ? wallet.balance : "···"}</b>{" "}
+          {wallet.packs.length > 0
+            ? ` · ${wallet.packs.map((p) => `${p.displayAmount} = ${p.credits} credits`).join(", ")}`
+            : ""}
+        </span>
+        <button
+          type="button"
+          className="font-semibold"
+          style={{ color: "var(--accent)" }}
+          onClick={() => {
+            onClose();
+            openCredits();
+          }}
+        >
+          Top up credits →
+        </button>
       </div>
       <div className="mt-4 flex flex-wrap gap-3 text-xs" style={{ color: "var(--soft)" }}>
         <Link href="/pricing" onClick={onClose} className="underline">Pricing page</Link>

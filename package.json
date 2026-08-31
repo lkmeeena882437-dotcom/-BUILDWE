@@ -13,7 +13,8 @@
     "test:throttle": "node tests/throttle.mjs",
     "test:durability": "node tests/store-concurrency.mjs",
     "test:tools": "node tests/tools.mjs",
-    "test:auth": "node tests/auth-hardening.mjs"
+    "test:auth": "node tests/auth-hardening.mjs",
+    "test:credits": "node tests/credits.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

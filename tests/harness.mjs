@@ -9,13 +9,20 @@
 
 import { spawn } from "node:child_process";
 import net from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 
-export async function waitForServer(base, timeoutMs = 120_000) {
+/**
+ * Cold `next dev` in a shared project dir can sit inside its first compile for
+ * a long while when other dev servers are running against the same .next — a
+ * 120s budget made the suite report "server never became ready" for a server
+ * that was simply still compiling. 300s removes a flake, not a signal: a dead
+ * server still fails, just later.
+ */
+export async function waitForServer(base, timeoutMs = 300_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -70,6 +77,10 @@ export async function startServer({ port, env = {}, label = `bw-${port}`, dataDi
       ...process.env,
       NEXT_TELEMETRY_DISABLED: "1",
       BUILDWE_DATA_DIR: dataDir,
+      // Its own build cache, inside the same throwaway directory, so a test run
+      // never fights the developer's dev server (or another test server) for
+      // one .next. stopServer() deletes the directory, so the build goes too.
+      NEXT_DIST_DIR: path.join(dataDir, "next-build"),
       // Keep the child off the parent's dev-server port and off hot reload races.
       NODE_ENV: process.env.NODE_ENV || "development",
       ...env,
@@ -100,6 +111,33 @@ export async function startServer({ port, env = {}, label = `bw-${port}`, dataDi
   };
 }
 
+/**
+ * `next dev` rewrites tsconfig.json on boot (it appends a glob for its own
+ * generated types). With a throwaway distDir per test server, every suite run
+ * would leave another "/tmp/…/next-build/types" glob line in a tracked
+ * file. The suite is not allowed to edit the project it is testing, so the
+ * file is put back exactly as it was found.
+ */
+const TSCONFIG = path.join(ROOT, "tsconfig.json");
+const tsconfigAtStart = (() => {
+  try {
+    return readFileSync(TSCONFIG, "utf8");
+  } catch {
+    return null;
+  }
+})();
+
+function restoreTsconfig() {
+  if (tsconfigAtStart === null) return;
+  try {
+    if (readFileSync(TSCONFIG, "utf8") !== tsconfigAtStart) {
+      writeFileSync(TSCONFIG, tsconfigAtStart);
+    }
+  } catch {
+    /* best effort - a test run must never fail over a config restore */
+  }
+}
+
 export function stopServer({ child, dataDir }) {
   try {
     child?.kill("SIGKILL");
@@ -115,12 +153,21 @@ export function stopServer({ child, dataDir }) {
     /* already dead */
   }
   if (dataDir) {
-    try {
-      rmSync(dataDir, { recursive: true, force: true });
-    } catch {
-      /* best effort */
+    // The dev server we just SIGKILLed can still be holding a handle inside the
+    // directory for a moment, which makes the first rmdir fail with ENOTEMPTY.
+    // Three short retries, then give up: these paths are gitignored scratch.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        rmSync(dataDir, { recursive: true, force: true });
+        break;
+      } catch {
+        // synchronous park - Atomics.wait is the portable one (no sleepSync in
+        // every Node build this suite runs on)
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+      }
     }
   }
+  restoreTsconfig();
 }
 
 export function newJar() {

@@ -6,6 +6,9 @@ import { streamChatOrCode } from "@/lib/ai/providers";
 import { estimateComplexity } from "@/lib/ai/models-catalog";
 import { bump } from "@/lib/metrics/metrics";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
+import { uid } from "@/lib/db/store";
+import { CREDITS } from "@/lib/config";
+import { holdCredits, refundCreditsFor, insufficientCreditsResponse } from "@/lib/credits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -99,8 +102,22 @@ export async function POST(req: NextRequest) {
     const complexity = estimateComplexity(prompt);
     const messages = [{ role: "user", content: prompt }];
 
+    // A lane that never answers must not be billed: hold for every seat up
+    // front, then give back one credit per dead lane (audit rule - the paid
+    // call is never taken after the fact).
+    const seatList = seats();
+    const cmpId = uid("cmp");
+    const hold = holdCredits({
+      userId: session.userId,
+      kind: "compare",
+      units: seatList.length,
+      reason: "compare",
+      refId: cmpId,
+    });
+    if (!hold.ok) return insufficientCreditsResponse(hold.balance, hold.needed);
+
     const lanes = await Promise.all(
-      seats().map(async (seat) => {
+      seatList.map(async (seat) => {
         const { stream, model, live } = await streamChatOrCode({
           mode: "chat",
           messages,
@@ -119,6 +136,15 @@ export async function POST(req: NextRequest) {
     );
 
     const liveLanes = lanes.filter((l) => l.live && l.reply.trim());
+    const deadLanes = lanes.length - liveLanes.length;
+    if (deadLanes > 0) {
+      refundCreditsFor({
+        userId: session.userId,
+        cost: CREDITS.cost.compareLane * deadLanes,
+        reason: "compare-lane-refund",
+        refId: cmpId,
+      });
+    }
     bump("compare_run");
     if (liveLanes.length && session.kind === "user") {
       recordUsage(session.userId, "chat", liveLanes.length);
@@ -172,6 +198,10 @@ export async function POST(req: NextRequest) {
         reply: l.reply,
       })),
       synthesis: synthRun.live ? synthesis : "",
+      credits: {
+        charged: hold.cost,
+        lanes: { total: lanes.length, live: liveLanes.length, refunded: deadLanes },
+      },
     });
     attachGuestCookie(res, session.userId);
     return res;

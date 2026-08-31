@@ -3,18 +3,38 @@ import { APP, RAZORPAY } from "@/lib/config";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import {
   CheckoutUnavailableError,
+  createPackOrder,
   createProOrder,
   demoCheckoutOrder,
   getCheckoutPublicConfig,
   livePayments,
 } from "@/lib/payments/razorpay";
 import { addPayment } from "@/lib/db/store";
+import { CREDITS, creditPack } from "@/lib/config";
+
+/** Prices are rupee-first (Razorpay/INR is the configured currency). */
+function formatPackPrice(paise: number): string {
+  return RAZORPAY.currency === "INR"
+    ? `\u20b9${(paise / 100).toFixed(0)}`
+    : `$${(paise / 100).toFixed(2)}`;
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json(getCheckoutPublicConfig());
+  return NextResponse.json({
+    ...getCheckoutPublicConfig(),
+    // The credit packs live in lib/config so the price, the credit amount and
+    // this response can never disagree with what the server will honour.
+    packs: CREDITS.packs.map((p) => ({
+      id: p.id,
+      label: p.label,
+      credits: p.credits,
+      paise: p.paise,
+      displayAmount: formatPackPrice(p.paise),
+    })),
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -22,36 +42,62 @@ export async function POST(req: NextRequest) {
     const session = await getSessionFromRequest(req);
     if (session.kind !== "user") {
       return NextResponse.json(
-        { error: "Log in first — PRO upgrades need an account." },
+        {
+          error: "Log in first — a purchase needs an account, so the wallet survives a cleared cookie.",
+          code: "LOGIN_REQUIRED",
+        },
         { status: 401 }
       );
     }
 
-    // Off-production only, and the result can never be redeemed for a plan:
-    // /api/checkout/verify refuses demo orders in every environment.
+    // Which product? `{ pack: "starter" | "value" }` buys credits; anything
+    // else is the PRO subscription, so the existing client keeps working.
+    const body = await req.json().catch(() => ({}));
+    const packId = String(body?.pack || "").trim().toLowerCase();
+    const pack = packId ? creditPack(packId) : undefined;
+    if (packId && !pack) {
+      return NextResponse.json(
+        {
+          error: `Unknown credit pack "${packId}".`,
+          code: "UNKNOWN_PACK",
+          packs: CREDITS.packs.map((p) => ({ id: p.id, label: p.label, credits: p.credits, paise: p.paise })),
+        },
+        { status: 400 }
+      );
+    }
+    const productLabel = pack ? pack.label : RAZORPAY.planName;
+    const productPaise = pack ? pack.paise : RAZORPAY.amountPaise;
+
+    // Off-production only, and the result can never be redeemed for a plan or
+    // for credits: /api/checkout/verify refuses demo orders in every
+    // environment, in production and out.
     if (!livePayments()) {
       if (!APP.demoMode) {
         return NextResponse.json(
           {
-            error:
-              "Checkout is not configured on this server, so PRO cannot be purchased yet.",
+            error: pack
+              ? "Checkout is not configured on this server, so credit packs cannot be sold yet."
+              : "Checkout is not configured on this server, so PRO cannot be purchased yet.",
             code: "CHECKOUT_UNAVAILABLE",
           },
           { status: 503 }
         );
       }
-      const demo = demoCheckoutOrder(session.userId);
+      const demo = demoCheckoutOrder(session.userId, productPaise);
       return NextResponse.json({
         order: demo,
         keyId: "",
-        planName: RAZORPAY.planName,
-        displayAmount: `₹${(RAZORPAY.amountPaise / 100).toFixed(0)}`,
+        planName: productLabel,
+        displayAmount: `₹${(productPaise / 100).toFixed(0)}`,
         demo: true,
-        note: "Demo checkout — the UI can be walked through, but no plan is granted.",
+        ...(pack ? { kind: "pack", packId: pack.id, credits: pack.credits } : {}),
+        note: "Demo checkout — the UI can be walked through, but nothing is granted.",
       });
     }
 
-    const order = await createProOrder(session.userId);
+    const order = pack
+      ? await createPackOrder(session.userId, pack)
+      : await createProOrder(session.userId);
     const pub = getCheckoutPublicConfig();
 
     try {
@@ -62,6 +108,8 @@ export async function POST(req: NextRequest) {
         currency: order.currency,
         status: "created",
         demo: order.demo,
+        kind: pack ? "pack" : "pro",
+        ...(pack ? { packId: pack.id, credits: pack.credits } : {}),
       });
     } catch {
       /* best effort */
@@ -70,9 +118,12 @@ export async function POST(req: NextRequest) {
     const res = NextResponse.json({
       order,
       keyId: pub.keyId,
-      planName: pub.planName,
-      displayAmount: pub.displayAmount,
+      planName: productLabel,
+      displayAmount: pack
+        ? formatPackPrice(pack.paise)
+        : pub.displayAmount,
       demo: order.demo,
+      ...(pack ? { kind: "pack", packId: pack.id, credits: pack.credits } : {}),
     });
     attachGuestCookie(res, session.userId);
     return res;

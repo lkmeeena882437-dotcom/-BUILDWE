@@ -12,6 +12,21 @@ import { bump } from "@/lib/metrics/metrics";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * Every response from this route persists the guest it is answering.
+ *
+ * An error returned WITHOUT the guest cookie strands that visitor: their
+ * welcome grant and the refund for a failed run stay attached to an id the
+ * browser never received, so a retry starts from a full wallet again. That is
+ * both a money bug (refunds go nowhere) and a free-credit hole (every visitor
+ * can mint fresh grants by failing on purpose).
+ */
+function respond(body: Record<string, unknown>, init: ResponseInit, userId: string) {
+  const res = NextResponse.json(body, init);
+  attachGuestCookie(res, userId);
+  return res;
+}
+
 /** GET /api/tools/[id] — the tool's own spec (fields + contract), no prompts. */
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   const spec = findTool(params.id);
@@ -38,25 +53,27 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     const rl = await limitAi(`tool:${spec.id}`, session.userId, perMin, 60_000);
     if (!rl.ok) {
       bump("tool_rate_limited");
-      return NextResponse.json(
+      return respond(
         {
           error: "Too many runs of this tool at once — wait a minute.",
           code: "RATE_LIMIT",
           hint: "Thoda ruk ke dobara try karo — 1 minute me window reset ho jaati hai.",
         },
-        { status: 429 }
+        { status: 429 },
+        session.userId
       );
     }
 
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") {
-      return NextResponse.json({ error: "Body must be JSON: { inputs }." }, { status: 400 });
+      return respond({ error: "Body must be JSON: { inputs }." }, { status: 400 }, session.userId);
     }
     const resolved = resolveInputs(spec, (body as { inputs?: unknown }).inputs);
     if (!resolved.ok) {
-      return NextResponse.json(
+      return respond(
         { error: resolved.error, code: "BAD_INPUT", fields: resolved.fields },
-        { status: 400 }
+        { status: 400 },
+        session.userId
       );
     }
 
@@ -90,9 +107,19 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     });
 
     if (!run.ok) {
-      return NextResponse.json(
-        { error: run.error, code: run.code, ...(run.hint ? { hint: run.hint } : {}) },
-        { status: run.status }
+      return respond(
+        {
+          error: run.error,
+          code: run.code,
+          ...(run.hint ? { hint: run.hint } : {}),
+          // INSUFFICIENT_CREDITS has to arrive whole: the wallet UI reads these
+          // numbers to say "this costs 2, you have 0, here is what a top-up is".
+          ...(typeof run.balance === "number" ? { balance: run.balance } : {}),
+          ...(typeof run.needed === "number" ? { needed: run.needed } : {}),
+          ...(run.packs ? { packs: run.packs } : {}),
+        },
+        { status: run.status, headers: { "cache-control": "no-store" } },
+        session.userId
       );
     }
 

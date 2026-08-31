@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { PublicTool, ToolField, Values } from "@/lib/tools/types";
 import { renderSafeMarkdown } from "@/lib/safe-md";
+import { applyCreditReceipt, creditsErrorFrom, openCredits, useWallet } from "@/components/billing/CreditsUI";
 
 /**
  * The tool form + runner.
@@ -21,7 +22,14 @@ import { renderSafeMarkdown } from "@/lib/safe-md";
 
 type Phase = "idle" | "sending" | "streaming" | "checking" | "done" | "stopped" | "error";
 
-type RunError = { error: string; code?: string; hint?: string; fields?: string[] };
+type RunError = {
+  error: string;
+  code?: string;
+  hint?: string;
+  fields?: string[];
+  balance?: number;
+  needed?: number;
+};
 
 export function ToolRunner({
   tool,
@@ -53,7 +61,9 @@ export function ToolRunner({
     checks?: { passed: string[]; failed: string[] };
     issues?: string[];
     conversationId?: string;
+    credits?: { charged: number; balance: number };
   }>({});
+  const wallet = useWallet();
   const [copied, setCopied] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
   const abort = useRef<AbortController | null>(null);
@@ -89,6 +99,10 @@ export function ToolRunner({
       const ctype = res.headers.get("content-type") || "";
       if (!res.ok && ctype.includes("json")) {
         const j = (await res.json().catch(() => null)) as RunError | null;
+        // A 402 is not a failure to explain twice: show the wallet's real
+        // number and the way out, instead of a stack-trace-flavoured error.
+        const short = creditsErrorFrom(j);
+        if (short) applyCreditReceipt(short.balance);
         setPhase("error");
         setErr(j?.error ? j : { error: `The tool failed (HTTP ${res.status}).` });
         return;
@@ -145,7 +159,14 @@ export function ToolRunner({
               setErr({ error: String(j.error) });
             } else if (j.done) {
               sawDone = true;
+              const rec = j.credits as { charged?: number; balance?: number } | undefined;
+              if (rec && typeof rec.balance === "number") {
+                applyCreditReceipt(rec.balance);
+              }
               setMeta({
+                credits: rec
+                  ? { charged: Number(rec.charged || 0), balance: Number(rec.balance || 0) }
+                  : undefined,
                 model: j.model as string | undefined,
                 attempts: j.attempts as number | undefined,
                 corrected: j.corrected as boolean | undefined,
@@ -166,7 +187,10 @@ export function ToolRunner({
         return;
       }
       setPhase("error");
-      setErr({ error: "The model returned nothing. Nothing was charged for a second pass." });
+      setErr({
+        error:
+          "The model returned nothing. The credit for this run was returned to your wallet — refresh the page to see the balance.",
+      });
     } catch (e) {
       if ((e as Error)?.name === "AbortError") {
         setPhase(lastText.current ? "stopped" : "idle");
@@ -261,6 +285,11 @@ export function ToolRunner({
             className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-xl bg-[#14110F] px-4 text-sm font-semibold text-[#F7F4EE] disabled:opacity-45"
           >
             {phase === "sending" ? "Starting…" : phase === "streaming" ? "Writing…" : phase === "checking" ? "Checking output…" : "Run"}
+            {tool.creditCost > 0 && phase === "idle" ? (
+              <span className="rounded-md bg-[#F7F4EE]/15 px-1.5 py-0.5 text-[10px] font-medium tabular-nums">
+                {tool.creditCost} credit{tool.creditCost === 1 ? "" : "s"}
+              </span>
+            ) : null}
           </button>
           {busy ? (
             <button
@@ -273,7 +302,12 @@ export function ToolRunner({
           ) : null}
         </div>
         <p className="text-[11px] leading-relaxed text-[#9C958C]">
-          Counts against your daily tool allowance on the {tool.feature === "code" ? "code" : "chat"} quota.
+          Costs {tool.creditCost} credit{tool.creditCost === 1 ? "" : "s"} per run
+          {wallet.loaded ? ` · your balance is ${wallet.balance}` : ""}
+          {tool.creditCost > 0 && wallet.loaded && wallet.balance < tool.creditCost
+            ? " — not enough for another run, top up below"
+            : ""}
+          . Counts against your daily tool allowance on the {tool.feature === "code" ? "code" : "chat"} quota.
           Nothing runs if the output fails this tool&apos;s contract twice — you&apos;ll see which check failed.
         </p>
       </form>
@@ -285,6 +319,16 @@ export function ToolRunner({
           <div className="flex flex-wrap items-center gap-2">
             {meta.model && phase !== "sending" ? (
               <span className="bw-badge bw-badge-info">{meta.model}</span>
+            ) : null}
+            {meta.credits ? (
+              <span
+                className="bw-badge"
+                title="Credits taken for this run (a refund is automatic when the runner produces nothing)"
+              >
+                {meta.credits.charged > 0
+                  ? `−${meta.credits.charged} credit${meta.credits.charged === 1 ? "" : "s"} · ${meta.credits.balance} left`
+                  : `no charge · ${meta.credits.balance} left`}
+              </span>
             ) : null}
             {meta.attempts && meta.attempts > 1 ? (
               <span className="bw-badge bw-badge-warn" title="A corrective pass ran because the first answer broke the output contract">
@@ -317,6 +361,20 @@ export function ToolRunner({
             <div className="space-y-2">
               <p className="text-sm font-medium text-[#8C2F22]">{err.error}</p>
               {err.hint ? <p className="text-[13px] text-[#6B6560]">{err.hint}</p> : null}
+              {err.code === "INSUFFICIENT_CREDITS" ? (
+                <span className="inline-flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => openCredits()}
+                    className="rounded-lg bg-[#C45C26] px-2.5 py-1 text-[12px] font-semibold text-white hover:bg-[#A84B1C]"
+                  >
+                    Top up credits
+                  </button>
+                  <span className="text-[12px] text-[#9C958C]">
+                    Signup grant is {wallet.welcome} credits; a pack never expires.
+                  </span>
+                </span>
+              ) : null}
               {err.code === "LIMIT" ? (
                 <Link href="/pricing" className="text-[13px] font-medium text-[#C45C26] hover:underline">
                   See what PRO raises →

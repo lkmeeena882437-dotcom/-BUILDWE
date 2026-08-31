@@ -88,20 +88,33 @@ Each suite was also run **against the pre-fix code** (`git worktree` at HEAD) an
 
 ---
 
-## Wave 2 — Real credit economy (their actual business model)
-| ID | Task | Requirement |
-|---|---|---|
-| W2.1 | Migrations: `credit_wallets`, `credit_ledger`, `prices(feature,model)` in `supabase/schema.sql` + store shims | none |
-| W2.2 | `lib/credits.ts`: hold → commit → refund; atomic via SQL RPC (mirrors `buildwe_rate_hit` pattern) | none |
-| W2.3 | Per-model cost table derived from **actual** provider price list, seeded in repo, editable by env | price review |
-| W2.4 | Meter every AI route to credits (replaces W0.5 counts); 402 + "need N credits, have M" | W2.2 |
-| W2.5 | Daily login grant + rollover job (idempotent, UTC-day keyed) | none |
-| W2.6 | Top-up purchase path (real Razorpay; amount from server, never client) | W0.1/W0.2 |
-| W2.7 | `GET /api/credits` + wallet UI (balance, ledger, per-tool cost badge on every tool) | W2.4 |
-| W2.8 | Public credit calculator page (`/calculator`) mirroring what a generation will cost | W2.3 |
-| W2.9 | Refund/expiry rules + 30-day money-back text + legal pages updated | **decision: refund policy owner** |
+## Wave 2 — Credit economy — **DONE 2026-08-31** (16/16 `test:credits`; live money path awaits his Razorpay test-key eye)
 
-**Blocked on you:** real Razorpay **live** keys (test keys are fine to start) + confirmation of price per generation.
+His spec, taken literally: *"1 normal generation = 1 credit, heavy server tools 2–3, 10 free at signup so I can judge quality, ₹99 = 100 credits, ₹399 = 500 credits, price normally — don't complicate the system."* So the economy is **one flat price per artifact**, deliberately not a per-model exchange table: a meter people understand beats a meter that is precisely cost-matched.
+
+| ID | Task | Shipped | Proof |
+|---|---|---|---|
+| W2.1 | Wallet + ledger | `Wallet` and `CreditRow` in `lib/db/store.ts` (`wallets`, `creditLedger` collections, per-user ledger retention 500), with the same read-modify-write lock as every other write. `reconcileWallet()` makes the **ledger** the truth and rebuilds the cached balance — money must not depend on a cache a crashed write left behind | "the balance survives a restart of the server" |
+| W2.2 | Policy layer | `lib/credits.ts`: `holdCredits` (spend **before** the paid call), `refundCreditsFor` (guarded by `refId + ":refund"`, so a retry cannot double-refund), `chargeExtra` (a corrective pass is a second charge), `topUpCredits`, `creditSummary`, `creditGate`/`creditReceipt` for the direct artifact routes | "two failed runs leave the wallet exactly where it started" |
+| W2.3 | Prices | `CREDITS.cost` in `lib/config.ts` — `tool 1`, heavy tools `creditCost: 2` declared per spec, `image 2`, `audio 1`, `transcribe 1`, `vision 1`, `agent 3`, `compareLane 1`, **`chat 0`**. Every number is `CREDIT_COST_*` env-overridable; packs are `CREDIT_PACK_*` | "packs and per-work costs come from config, and env overrides land" |
+| W2.4 | Metering + refusal | `lib/tools/run.ts` holds first and returns **402 `INSUFFICIENT_CREDITS`** (with `balance`/`needed`/`packs`) before any provider call; refunds on quota refusal, a thrown provider error, `!out.live`, and an empty stream. `/api/ai/image`, `/audio`, `/transcribe`, `/vision`, `/compare` (per dead lane) and `/agent` (whole run) hold and refund through the same helpers. `browser-tts` is **refunded**: the browser's own speech engine cost us nothing | "a zero-balance account is refused before any paid call", "the image route holds 2 credits" |
+| W2.5 | Grants | Welcome 10 minted inside `createUser`'s single write (guests get it lazily on first wallet read, cookie-scoped). PRO's monthly grant is `maybeGrantProMonthly`, keyed `pro:<YYYY-MM>:<userId>`, checked on wallet read — **no scheduler exists in this app**, so no cron was invented. Every grant is idempotent on `refId`, which is what makes a replayed verify or webhook unable to mint money twice | "signing up does not stack a second welcome grant on the guest one" |
+| W2.6 | Top-up | `POST /api/checkout/order { pack }` creates a **real** Razorpay order (`createPackOrder`), stores `Payment{kind:"pack",packId,credits}`, and `/api/checkout/verify` marks it paid by CAS before minting — the amount is the server's, never the client's. `/api/checkout/webhook` does the same for `payment.captured` (Razorpay retries), and now **branches on the product**, so buying a pack no longer flips the account to PRO. With no keys on the server, both refuse loudly; a `order_demo_*` is unredeemable in every environment | "checkout refuses to sell anything while keys are unset, and mints nothing" |
+| W2.7 | UI | `GET /api/credits` (wallet, price list, ledger — `no-store`), `components/billing/CreditsUI.tsx` (module store + header `WalletChip` + sheet with balance, "what costs what", packs, ledger), the runner's `done` frame carries `{charged, balance}` so the chip updates without a second request, a `N credits` tag on every Run button, `creditCost` on `/api/tools`, and a credits section on `/pricing` that reads the same numbers. A 402 from **any** studio opens the sheet | "a tool page states its price before the button is pressed" |
+| W2.8 | Calculator | folded into `/pricing`: the whole cost table is rendered from the server's own response, so a price change cannot strand a page | — (see W2.3: one flat table) |
+| W2.9 | Refund rules | The refund is structural, not a policy: nothing is kept for nothing. Packs don't expire while the account is open; a 30-day money-back claim is a human decision, so it lives in `/terms`, not in code that grants it | — |
+
+**Two bugs the suite found in the running app** (neither was visible by reading the code):
+1. `/api/tools/[id]` rebuilt its error body field-by-field, so the 402's `balance`/`needed`/`packs` were **dropped** → the UI could say "out of credits" but never "this costs 2, you have 0, top-ups start at ₹99".
+2. The tool route only attached the guest cookie on success. A guest whose first request was a *failed* run never received their identity, so the welcome grant and the refund it just wrote stayed attached to an id the browser never got — simultaneously "my refund vanished" and "I can mint fresh 10-credit wallets by failing on purpose". Every response from that route now persists the guest.
+
+**Also changed for the tests, not for the feature:** `next.config.js` honours `NEXT_DIST_DIR`, and the harness gives every disposable server its own build dir inside its temp data dir. Sharing one `.next` between concurrent `next dev` processes doesn't just slow things down — a second compile can hang forever, which showed up as a suite "unable to reach its own server". Production and normal dev still use `.next`.
+
+**What is honestly NOT proven here:** that a pack purchase actually credits a wallet end to end. Everything up to the money is exercised (order creation, refusal paths, mint idempotency at the store level), but Razorpay's `paid` status and HMAC can only be confirmed against a real order — which is a 2-minute test on the Vercel deploy with his test keys in a browser.
+
+**Blocked on you:** one Razorpay **test-key** checkout on the preview deploy (see W2.10 below), then a price read-through.
+
+| W2.10 | On the preview: buy the ₹99 pack with a Razorpay **test** card, then (a) reload and confirm the credits are still there, (b) replay the same verify once more by refreshing and confirm the ledger does **not** pay out twice, (c) buy a pack on a PRO account and confirm the plan is untouched (that was the webhook bug) | his browser |
 
 ---
 
@@ -234,7 +247,7 @@ Each suite was also run **against the pre-fix code** (`git worktree` at HEAD) an
    is not a real model. You said everything must be real, so this is the single highest-value key
    in the list — I cannot verify one word of Wave 1's tool output quality without it, and the
    sandbox here has no outbound network to any provider either.
-1. **Razorpay live key IDs** (`RAZORPAY_KEY_ID`/`KEY_SECRET`/`WEBHOOK_SECRET`) — test keys first is fine; without them Wave 2 can't be finished for real.
+1. **Razorpay keys** — set by him in Vercel on 2026-08-31, so nothing is blocked on me: what is left is his one test-card checkout on the preview (W2.10). If `RAZORPAY_WEBHOOK_SECRET` is not also set, say so: without it a buyer who closes the tab mid-payment is only made whole by the interactive verify path.
 2. **One media provider account:** Fal **or** Replicate key (unlocks all of Wave 4 + face swap + upscaling).
 3. **ElevenLabs + Stability keys** (Wave 5).
 4. **A search API key** (Brave/Tavily/Serper) — DDG scraping is fragile and not "real".

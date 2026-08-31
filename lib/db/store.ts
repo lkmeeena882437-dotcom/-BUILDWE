@@ -9,6 +9,7 @@ import fs from "fs";
 import path from "path";
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import { pullRemoteDb, pushRemoteDb, remoteDbEnabled } from "./remote";
+import { CREDITS } from "@/lib/config";
 
 export type Plan = "free" | "pro";
 
@@ -123,6 +124,10 @@ export type Payment = {
   id: string;
   userId: string;
   orderId: string;
+  /** what the money was for. `pro` flips the plan, `pack` mints credits. */
+  kind?: "pro" | "pack";
+  packId?: string;
+  credits?: number;
   paymentId?: string;
   amount: number;
   /** What the payment gateway reported as actually captured, in the smallest
@@ -131,6 +136,33 @@ export type Payment = {
   currency: string;
   status: "created" | "paid" | "failed";
   demo: boolean;
+  createdAt: string;
+};
+
+/** A user's credit balance. Money in, work out — see lib/credits.ts. */
+export type Wallet = {
+  userId: string;
+  balance: number;
+  /** when the signup grant was minted — once per account, never per session */
+  welcomeAt?: string | null;
+  /** "YYYY-MM" of the last PRO monthly grant, so it can't be farmed */
+  proGrantPeriod?: string | null;
+  updatedAt: string;
+};
+
+/**
+ * Immutable money trail. Every balance change writes one row, so a disputed
+ * "I had credits yesterday" is answerable, and a double-credit bug is visible
+ * instead of being an invisible number.
+ */
+export type CreditRow = {
+  id: string;
+  userId: string;
+  delta: number;
+  reason: string;
+  /** idempotency key: the same refId can only ever be granted once */
+  refId?: string | null;
+  balanceAfter: number;
   createdAt: string;
 };
 
@@ -176,6 +208,8 @@ export type DB = {
   projectFiles: ProjectFile[];
   shares: Share[];
   payments: Payment[];
+  wallets: Wallet[];
+  creditLedger: CreditRow[];
   apiKeys: ApiKey[];
   teams: Team[];
   passwordResets: PasswordReset[];
@@ -191,6 +225,8 @@ const emptyDb = (): DB => ({
   projectFiles: [],
   shares: [],
   payments: [],
+  wallets: [],
+  creditLedger: [],
   apiKeys: [],
   teams: [],
   passwordResets: [],
@@ -263,6 +299,8 @@ function read(): DB {
       projectFiles: parsed.projectFiles || [],
       shares: parsed.shares || [],
       payments: parsed.payments || [],
+      wallets: parsed.wallets || [],
+      creditLedger: parsed.creditLedger || [],
       apiKeys: parsed.apiKeys || [],
       teams: parsed.teams || [],
       passwordResets: parsed.passwordResets || [],
@@ -499,6 +537,8 @@ function bootRemote() {
       projectFiles: remote.projectFiles || [],
       shares: remote.shares || [],
       payments: remote.payments || [],
+      wallets: remote.wallets || [],
+      creditLedger: remote.creditLedger || [],
       apiKeys: remote.apiKeys || [],
       teams: remote.teams || [],
       passwordResets: remote.passwordResets || [],
@@ -591,6 +631,27 @@ export function createUser(input: {
     updatedAt: now,
   };
   db.users.push(user);
+  // The signup grant is minted in the SAME write as the account, so there is no
+  // window where a user exists with no wallet to spend from.
+  const welcome = CREDITS.welcome;
+  if (welcome > 0) {
+    db.wallets.push({
+      userId: user.id,
+      balance: welcome,
+      welcomeAt: now,
+      proGrantPeriod: null,
+      updatedAt: now,
+    });
+    db.creditLedger.unshift({
+      id: uid("crl"),
+      userId: user.id,
+      delta: welcome,
+      reason: "welcome",
+      refId: `welcome:${user.id}`,
+      balanceAfter: welcome,
+      createdAt: now,
+    });
+  }
   write(db);
   return user;
 }
@@ -721,6 +782,8 @@ export function deleteUserCascade(userId: string) {
   db.projectFiles = db.projectFiles.filter((f) => f.userId !== userId);
   db.shares = db.shares.filter((s) => s.userId !== userId);
   db.payments = db.payments.filter((p) => p.userId !== userId);
+  db.wallets = db.wallets.filter((w) => w.userId !== userId);
+  db.creditLedger = db.creditLedger.filter((c) => c.userId !== userId);
   db.apiKeys = db.apiKeys.filter((k) => k.userId !== userId);
   db.passwordResets = db.passwordResets.filter((r) => r.userId !== userId);
   write(db);
@@ -781,6 +844,7 @@ const RETENTION = {
   generationsPerUser: 300,
   sharesPerUser: 50,
   paymentsPerUser: 100,
+  creditLedgerPerUser: 500,
   /** messages inside a single conversation */
   messagesPerConversation: 400,
 } as const;
@@ -1203,6 +1267,232 @@ export function markPaymentPaidIfPending(
   return db.payments[i];
 }
 
+/* ── Credits (Wave 2) ─────────────────────────────────────
+ *
+ * The whole economy in four primitives: `grant`, `spend`, `refund`, `balance`.
+ * A grant with a `refId` is **idempotent** — that single rule is what makes a
+ * replayed Razorpay verify (or a webhook plus a client both landing) credit
+ * once instead of twice.
+ *
+ * The balance lives on the wallet row and every movement is mirrored into
+ * `creditLedger`. If those two ever disagree, the ledger wins and the wallet is
+ * rebuilt: a user's money must not depend on a cache that a crashed write left
+ * behind.
+ */
+
+export function getWallet(userId: string): Wallet {
+  const db = read();
+  const w = db.wallets.find((x) => x.userId === userId);
+  if (w) return w;
+  return {
+    userId,
+    balance: 0,
+    welcomeAt: null,
+    proGrantPeriod: null,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function getBalance(userId: string): number {
+  return getWallet(userId).balance;
+}
+
+function upsertWallet(db: DB, userId: string, patch: Partial<Wallet>): Wallet {
+  const i = db.wallets.findIndex((w) => w.userId === userId);
+  const now = new Date().toISOString();
+  if (i < 0) {
+    const row: Wallet = {
+      userId,
+      balance: 0,
+      welcomeAt: null,
+      proGrantPeriod: null,
+      updatedAt: now,
+      ...patch,
+    };
+    db.wallets.push(row);
+    return row;
+  }
+  db.wallets[i] = { ...db.wallets[i], ...patch, updatedAt: now };
+  return db.wallets[i];
+}
+
+function pushCreditRow(
+  db: DB,
+  row: Omit<CreditRow, "id" | "createdAt">
+): CreditRow {
+  const full: CreditRow = { ...row, id: uid("crl"), createdAt: new Date().toISOString() };
+  db.creditLedger.unshift(full);
+  const mine = db.creditLedger.filter((c) => c.userId === row.userId);
+  if (mine.length > RETENTION.creditLedgerPerUser) {
+    const keep = new Set(
+      mine.slice(0, RETENTION.creditLedgerPerUser).map((c) => c.id)
+    );
+    db.creditLedger = db.creditLedger.filter(
+      (c) => c.userId !== row.userId || keep.has(c.id)
+    );
+  }
+  return full;
+}
+
+/**
+ * Mint credits. `refId` makes it once-only: the welcome grant, a paid top-up
+ * and the PRO monthly grant all rely on this.
+ */
+export function grantCredits(input: {
+  userId: string;
+  amount: number;
+  reason: string;
+  refId?: string;
+}) {
+  const amount = Math.floor(Number(input.amount) || 0);
+  if (amount <= 0) return { ok: false as const, error: "amount must be positive", row: null };
+  const db = read();
+  if (input.refId) {
+    const dupe = db.creditLedger.find(
+      (c) => c.userId === input.userId && c.refId === input.refId
+    );
+    if (dupe) {
+      return { ok: false as const, error: "already granted", row: dupe, duplicate: true };
+    }
+  }
+  const w = db.wallets.find((x) => x.userId === input.userId);
+  const balance = (w?.balance ?? 0) + amount;
+  upsertWallet(db, input.userId, { balance });
+  const row = pushCreditRow(db, {
+    userId: input.userId,
+    delta: amount,
+    reason: input.reason,
+    refId: input.refId || null,
+    balanceAfter: balance,
+  });
+  write(db);
+  return { ok: true as const, error: undefined, row, balance, duplicate: false };
+}
+
+/**
+ * Spend credits. Fails closed: not enough balance, or no wallet at all.
+ * A refund must carry the same `refId` with a `:refund` suffix so a retry can't
+ * double-refund either.
+ */
+export function spendCredits(input: {
+  userId: string;
+  amount: number;
+  reason: string;
+  refId?: string;
+}): { ok: boolean; balance: number; needed: number; row: CreditRow | null } {
+  const amount = Math.max(1, Math.floor(Number(input.amount) || 1));
+  const db = read();
+  const w = db.wallets.find((x) => x.userId === input.userId);
+  const balance = w?.balance ?? 0;
+  if (balance < amount) {
+    return { ok: false, balance, needed: amount, row: null };
+  }
+  const next = balance - amount;
+  upsertWallet(db, input.userId, { balance: next });
+  const row = pushCreditRow(db, {
+    userId: input.userId,
+    delta: -amount,
+    reason: input.reason,
+    refId: input.refId || null,
+    balanceAfter: next,
+  });
+  write(db);
+  return { ok: true, balance: next, needed: amount, row };
+}
+
+/** Give credits back for work that did not happen. */
+export function refundCredits(input: {
+  userId: string;
+  amount: number;
+  reason: string;
+  refId?: string;
+}) {
+  const refundRef = input.refId ? `${input.refId}:refund` : undefined;
+  if (refundRef) {
+    const db = read();
+    if (db.creditLedger.some((c) => c.userId === input.userId && c.refId === refundRef)) {
+      return { ok: false as const, error: "already refunded" };
+    }
+  }
+  return grantCredits({
+    userId: input.userId,
+    amount: input.amount,
+    reason: input.reason,
+    ...(refundRef ? { refId: refundRef } : {}),
+  });
+}
+
+/** Signup grant — once per account, keyed on the user id. */
+export function grantWelcomeCredits(userId: string, amount: number) {
+  const w = getWallet(userId);
+  if (w.welcomeAt) return { ok: false as const, reason: "already granted", balance: w.balance };
+  const res = grantCredits({
+    userId,
+    amount,
+    reason: "welcome",
+    refId: `welcome:${userId}`,
+  });
+  if (res.ok) {
+    const db = read();
+    upsertWallet(db, userId, { welcomeAt: new Date().toISOString() });
+    write(db);
+  }
+  return {
+    ok: res.ok,
+    reason: res.ok ? "granted" : res.error,
+    balance: res.ok ? res.balance : getWallet(userId).balance,
+  };
+}
+
+/**
+ * PRO's monthly allowance. Driven by reads of the wallet rather than a cron
+ * job, because this deployment has no scheduler: the period key means at most
+ * one grant per calendar month per account, whichever request happens to
+ * arrive first.
+ */
+export function maybeGrantProMonthly(userId: string, plan: Plan, amount: number) {
+  if (plan !== "pro" || amount <= 0) return { granted: 0, balance: getBalance(userId) };
+  const period = new Date().toISOString().slice(0, 7);
+  const w = getWallet(userId);
+  if (w.proGrantPeriod === period) return { granted: 0, balance: w.balance };
+  const res = grantCredits({
+    userId,
+    amount,
+    reason: `pro-monthly:${period}`,
+    refId: `pro:${period}:${userId}`,
+  });
+  if (res.ok) {
+    const db = read();
+    upsertWallet(db, userId, { proGrantPeriod: period });
+    write(db);
+    return { granted: amount, balance: res.balance };
+  }
+  return { granted: 0, balance: getBalance(userId) };
+}
+
+export function listCreditLedger(userId: string, limit = 40) {
+  return read()
+    .creditLedger.filter((c) => c.userId === userId)
+    .slice(0, Math.min(Math.max(limit, 1), 200));
+}
+
+/**
+ * Rebuild a wallet from its ledger. Only used when the two disagree — which is
+ * the state a crashed or merged write can leave this JSON store in, and the
+ * moment to trust the audit trail rather than the cache.
+ */
+export function reconcileWallet(userId: string) {
+  const db = read();
+  const rows = db.creditLedger.filter((c) => c.userId === userId);
+  if (!rows.length) return { ok: true, balance: db.wallets.find((w) => w.userId === userId)?.balance ?? 0, rows: 0 };
+  const sum = rows.reduce((n, r) => n + (Number(r.delta) || 0), 0);
+  const w = db.wallets.find((x) => x.userId === userId);
+  if (w && w.balance === sum) return { ok: true, balance: sum, rows: rows.length };
+  upsertWallet(db, userId, { balance: sum });
+  write(db);
+  return { ok: false, balance: sum, rows: rows.length };
+}
+
 /**
  * Claim a one-time token. True the first time a (scope, token) pair is seen,
  * false on every replay or after expiry.
@@ -1517,7 +1807,13 @@ export function publicUser(u: User) {
  *     to reset a spent daily quota
  */
 export function migrateGuestData(guestId: string, userId: string) {
-  const moved = { conversations: 0, projects: 0, generations: 0, shares: 0 };
+  const moved: {
+    conversations: number;
+    projects: number;
+    generations: number;
+    shares: number;
+    credits?: number;
+  } = { conversations: 0, projects: 0, generations: 0, shares: 0 };
 
   if (
     !guestId ||
@@ -1555,6 +1851,53 @@ export function migrateGuestData(guestId: string, userId: string) {
     }
   }
 
+  // The wallet moves with the human, but the free signup grant does NOT stack.
+  // Every credit is mirrored in the ledger and `reconcileWallet` treats that
+  // ledger as the truth, so the transfer is done by repointing rows and then
+  // setting the balance to what the rows now add up to - a balance edited on
+  // its own would be overwritten by the next reconciliation.
+  const guestWallet = db.wallets.find((w) => w.userId === guestId);
+  const guestRows = db.creditLedger.filter((c) => c.userId === guestId);
+  if (guestWallet || guestRows.length) {
+    const guestWelcome = guestRows.find((c) => c.reason === "welcome") || null;
+    const userWelcome = db.creditLedger.find(
+      (c) => c.userId === userId && c.reason === "welcome"
+    ) || null;
+    for (const c of guestRows) c.userId = userId;
+
+    const userWallet = db.wallets.find((w) => w.userId === userId);
+    let balance = (userWallet?.balance || 0) + (guestWallet?.balance || 0);
+
+    // Two welcome rows means the guest already used their one free grant: keep
+    // the earlier one (it is the real first contact) and drop the fresh mint.
+    if (guestWelcome && userWelcome) {
+      db.creditLedger = db.creditLedger.filter((c) => c.id !== userWelcome.id);
+      balance = Math.max(0, balance - CREDITS.welcome);
+    }
+    const welcomeAt =
+      (guestWelcome && guestWelcome.createdAt) ||
+      userWallet?.welcomeAt ||
+      guestWallet?.welcomeAt ||
+      null;
+
+    const i = db.wallets.findIndex((w) => w.userId === userId);
+    const now = new Date().toISOString();
+    if (i < 0) {
+      db.wallets.push({
+        userId,
+        balance,
+        welcomeAt,
+        proGrantPeriod: null,
+        updatedAt: now,
+      });
+    } else {
+      db.wallets[i] = { ...db.wallets[i], balance, welcomeAt, updatedAt: now };
+    }
+    db.wallets = db.wallets.filter((w) => w.userId !== guestId);
+    db.creditLedger = db.creditLedger.filter((c) => c.userId !== guestId);
+    moved.credits = balance;
+  }
+
   // Merge usage rather than transfer — no quota laundering.
   const guestUsage = db.usage.filter((u) => u.userId === guestId);
   for (const gu of guestUsage) {
@@ -1574,7 +1917,8 @@ export function migrateGuestData(guestId: string, userId: string) {
 
   const touched =
     moved.conversations + moved.projects + moved.generations + moved.shares;
-  if (touched > 0 || guestUsage.length > 0) write(db);
+  // `moved.credits` is set whenever a guest wallet existed, even at balance 0.
+  if (touched > 0 || guestUsage.length > 0 || moved.credits !== undefined) write(db);
 
   return moved;
 }

@@ -39,6 +39,10 @@ buildwe-main.bundle
 .git-credentials
 
 
+# test scratch: os.tmpdir() resolves to ./tmp when TMPDIR is relative,
+# and each disposable dev server puts its build cache there
+/tmp
+
 # free local db
 /data
 *.db

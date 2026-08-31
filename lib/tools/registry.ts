@@ -201,7 +201,8 @@ function proseSpec(
   role: string,
   format: string,
   checks: ToolSpec["checks"],
-  maxTokens: number
+  maxTokens: number,
+  creditCost = 2
 ): ToolSpec {
   return {
     id,
@@ -210,6 +211,7 @@ function proseSpec(
     tagline,
     description,
     feature: "chat",
+    creditCost,
     maxTokens,
     temperature: 0.7,
     fields: [
@@ -541,6 +543,7 @@ Give exactly 5 options, one per line as "1. <comment> (why: ≤6 words)". Each 2
     description:
       "Writes a spoken script with timestamps, chapter markers and retention beats: an opening that pays off the thumbnail, a promise, then chapters that each end on a reason to keep watching. Includes a description and chapter list you can paste.",
     feature: "chat",
+    creditCost: 2,
     maxTokens: 4096,
     temperature: 0.65,
     keywords: /\b(youtube|video script|reel script|shorts script)\b/i,
@@ -603,6 +606,7 @@ Hooks must be sayable in under 3 seconds and must not promise what the video (pe
     description:
       "Writes platform-shaped ad copy (Google RSA-style headlines/descriptions, Meta primary text, LinkedIn) with the real character ceilings respected, each variant anchored to a different benefit, plus what to test first.",
     feature: "chat",
+    creditCost: 2,
     maxTokens: 1800,
     temperature: 0.85,
     keywords: /\b(ad copy|google ads|meta ads|facebook ads|advertis)\b/i,
@@ -636,6 +640,7 @@ EVERYWHERE: no invented prices, discounts, trials, awards, "award-winning", cust
     description:
       "Writes an e-commerce product page: title with keyword, 3 benefit-led paragraphs, feature→benefit table, who it's for / not for, and a short FAQ. Facts come from your spec sheet only, so nothing on the page is unsellable later.",
     feature: "chat",
+    creditCost: 2,
     maxTokens: 1800,
     temperature: 0.6,
     keywords: /\b(product description|amazon listing|shopify desc)\b/i,
@@ -692,6 +697,7 @@ Names must be ≤ 12 characters, pronounceable in Indian English, and not a real
     description:
       "Writes a release a journalist can use: headline and subhead, a datelined lede that states the news, two quote slots (with speaker left blank for you to fill), a context paragraph, the boilerplate, and the media contact line.",
     feature: "chat",
+    creditCost: 2,
     maxTokens: 1400,
     temperature: 0.45,
     keywords: /\b(press release|announcement pr|media release)\b/i,
@@ -835,6 +841,7 @@ Never invent names, dates, prices, deadlines, or prior conversations. [ADD: …]
     description:
       "Drafts a short proposal a client can sign: problem, approach, deliverables in and out of scope, milestones with weeks, what could change the price, payment terms with blanks for your numbers, and the assumptions both sides are accepting.",
     feature: "chat",
+    creditCost: 2,
     maxTokens: 2048,
     temperature: 0.45,
     keywords: /\b(proposal\b|scope of work|sow|quote for)\b/i,
@@ -926,6 +933,7 @@ Do not invent metrics, employers, dates, titles or technologies. If a result can
     description:
       "Predicts the questions this specific role will actually ask, drafts STAR answers from your experience, grades each answer against what interviewers listen for, and gives you five questions worth asking at the end.",
     feature: "chat",
+    creditCost: 2,
     maxTokens: 2600,
     temperature: 0.5,
     keywords: /\b(interview|prep for round|hr round)\b/i,
@@ -1050,6 +1058,7 @@ Keep it under 250 words unless the notes genuinely need more. Names only as they
     description:
       "Ports code between languages with the target language's idioms, not a line-by-line transliteration. Lists what changes semantically (ownership, error handling, concurrency) and what you must re-test. Compiles-only-if-true: uncertain behaviour is flagged, not hidden.",
     feature: "code",
+    creditCost: 2,
     maxTokens: 4096,
     temperature: 0.2,
     keywords: /\b(translate (this )?code|port (this|to)|convert .* to (rust|go|python|ts))/i,
@@ -1105,6 +1114,7 @@ Rules: no library swaps unless the target genuinely needs one; keep public funct
     description:
       "Writes runnable tests for a function or class: happy path, boundaries, error cases, and property-style checks where they pay. Uses the project's framework when you say which one, and states which assertions are guesses.",
     feature: "code",
+    creditCost: 2,
     maxTokens: 3000,
     temperature: 0.2,
     keywords: /\b(unit test|write tests|vitest|jest|pytest)\b/i,
