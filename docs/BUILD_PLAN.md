@@ -255,3 +255,27 @@ His spec, taken literally: *"1 normal generation = 1 credit, heavy server tools 
 6. **Three policy decisions:** voice-cloning consent policy · face-swap allowed or not · data retention days per plan.
 
 Until 1–5 arrive, Waves 0, 1, 3(partial), 7.1–7.4, 8, 9 proceed — those need no external keys, which is why I started with them.
+
+---
+
+## Wave 10 — UI surfaces (prompt pill, flyouts, pricing table, link previews, chat→workspace) — **PLANNED, awaiting his `APPROVED`**
+
+His 9-item UI/UX brief (2026-08-31). Full step-by-step plan, file:line scan of what already
+exists, reuse contract, verification protocol and risk table: **`docs/UI_UPGRADE_PLAN.md`**.
+No code in that branch of work has been written yet; the scan is what it produced.
+
+| Step | What | Needs |
+|---|---|---|
+| 1 | `lib/ui/` primitives: `useDismiss`, `Popover`, `MenuRow`, `SegmentedControl` + dark-surface tokens (zero visible change) | none |
+| 2–3 | Prompt bar → sticky pill (`components/workspace/PromptBar.tsx`), IME-safe Enter, paste/drop attach | none |
+| 4 | Attachment menu (drop-up, icon+title+subtitle rows, click-away) | none |
+| 5 | Mode selector as rich dropdown w/ chevron flip | none |
+| 6 | Sidebar profile **flyout** + cascading theme submenu + categorized sections | none |
+| 7 | `/pricing`: 4 real tiers + Personal/Business sliding segmented control; 7b = seat-aware orders in `lib/payments/razorpay.ts` + `/api/teams` enforcement | 7b touches money |
+| 8 | Rich link preview + `lib/net/ssrf.ts` (no SSRF guard exists today) | sandbox has no egress → protocol-level local tests, live check on Vercel |
+| 9 | Chat → workspace context (open file in, `buildwe-file` block, Apply to file) | none |
+| 10 | Artifacts list/pin/restore (reuses `canvasVersions`) | none |
+| 11 | Sweep: all popovers on `useDismiss`, focus trap/`inert`, ⌘K palette, `/` and `Esc` shortcuts, hex-colour lint rule, `/status` rows, tests in `npm test` | optional neon rebrand = his call |
+
+Sequencing rule agreed: one step at a time, each one gets a 2–4 item preview test script, then
+his `next` before I continue. Money changes stay in their own commit.
