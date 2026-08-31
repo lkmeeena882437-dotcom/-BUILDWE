@@ -8,6 +8,7 @@
  */
 
 import { spawn } from "node:child_process";
+import net from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -32,7 +33,33 @@ export async function waitForServer(base, timeoutMs = 120_000) {
  * Start one disposable server.
  * @param {{port:number, env?:Record<string,string>, label?:string}} opts
  */
+/** Is anything already listening? Adopting a stranger's server is how a test suite reports nonsense. */
+function portFree(port) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once("error", () => resolve(false));
+    probe.once("listening", () => probe.close(() => resolve(true)));
+    probe.listen(port, "127.0.0.1");
+  });
+}
+
+/**
+ * Find a free port at or after `want`.
+ *
+ * An interrupted previous run leaves a `next dev` bound to the requested port,
+ * and `waitForServer` then happily polls THAT server — old code, exhausted
+ * buckets — so the suite reports results about a build it didn't start. Taking
+ * the next free port removes that whole class of false result.
+ */
+async function pickPort(want) {
+  for (let p = want; p < want + 40; p++) {
+    if (await portFree(p)) return p;
+  }
+  throw new Error(`no free port in ${want}..${want + 39} — kill the leftover dev servers`);
+}
+
 export async function startServer({ port, env = {}, label = `bw-${port}`, dataDir: sharedDir }) {
+  port = await pickPort(port);
   // Two servers pointed at the SAME dataDir is how the cross-process write
   // test reproduces "next dev plus a worker plus a script" on one JSON store.
   const dataDir = sharedDir || mkdtempSync(path.join(tmpdir(), `${label}-`));
@@ -65,6 +92,7 @@ export async function startServer({ port, env = {}, label = `bw-${port}`, dataDi
   }
   return {
     base,
+    port,
     child,
     dataDir,
     log,

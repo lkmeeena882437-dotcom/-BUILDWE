@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { TOOLS } from "@/lib/tools/registry";
 import { AI_KEYS, hasProviderKey, TRUST_PROXY_HOPS, byokEncryptionConfigured, APP } from "@/lib/config";
 import { storageMode, dbLockingAvailable } from "@/lib/db/store";
 import { availableProviders } from "@/lib/ai/provider-registry";
@@ -175,6 +176,14 @@ export async function GET() {
         ? "Multi-step agent runs against a live model."
         : "The agent needs a live model; it will not fabricate a plan offline.",
       chatReady ? "llm reachable" : "no llm credential"
+    ),
+    tools: row(
+      `Writing tools (${TOOLS.length})`,
+      chatReady ? "live" : "unconfigured",
+      chatReady
+        ? "Every tool runs the same runner: server-built prompt, quota first, output graded against its own contract, one corrective pass at most."
+        : "Tools refuse to run without a live model — a template dressed up as an AI answer is not shipping, ever.",
+      chatReady ? `${TOOLS.length} specs registered` : "no llm credential"
     ),
     storage:
       storage === "supabase"

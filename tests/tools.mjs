@@ -111,8 +111,10 @@ const offline = await startServer({
   label: "tools-nomodel",
   env: { GROQ_API_KEY: "", OPENAI_API_KEY: "", OPENROUTER_API_KEY: "", NEXT_PUBLIC_DEMO_MODE: "false" },
 });
-const BASE = `http://127.0.0.1:${PORT_TRUSTED}`;
-const OFF = `http://127.0.0.1:${PORT_OFFLINE}`;
+// resolved from the servers themselves: the harness steps to a free port when a
+// previous interrupted run left one occupied.
+const BASE = trusted.base;
+const OFF = offline.base;
 
 const jar = newJar();
 const H = () => (jar.header() ? { cookie: jar.header() } : {});

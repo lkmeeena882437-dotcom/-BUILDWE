@@ -238,3 +238,4 @@ reason) instead of pretending.
 | C4 | JSON-file store under concurrency | mitigated (lock + merge); real fix is W6.1 Postgres |
 | — | `providers.ts` returned only the display label, so any second-pass call to a vendor was doomed | **fixed** — `modelId` added and used by the tool correction pass |
 | — | `streamChatOrCode`'s `{done:true}` forwarded raw ended client-side "completion" before grading | **fixed** in the tool runner (frame normalisation + carry-over buffer) |
+| A15 (new) | Server-side `fetch` without `cache` was cacheable — OAuth identity lookups and provider status polls could be served stale | **fixed** — gateway defaults to `no-store`; IdP profile/email/userinfo explicit. Proven by `npm run test:auth` (reverting the fix reproduces "stale identity served") |

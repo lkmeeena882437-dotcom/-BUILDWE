@@ -179,7 +179,16 @@ export async function fetchWithTimeout(
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: ctrl.signal });
+    return await fetch(url, {
+      // NEVER let Next's data cache answer a provider call. `init` may set its
+      // own value, but the default must be no-store: a cached GET is how a
+      // generation-status poll returns "starting" forever, and it is how an
+      // identity lookup can return somebody else's profile (found by
+      // tests/auth-hardening.mjs, which saw a stale IdP /user response).
+      cache: "no-store",
+      ...init,
+      signal: ctrl.signal,
+    });
   } catch (e) {
     const aborted =
       (e as Error)?.name === "AbortError" || /abort/i.test(String(e));

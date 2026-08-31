@@ -33,6 +33,7 @@ async function googleProfile(code: string, redirectUri: string, verifier: string
     if (!access_token) return null;
     const info = await fetch(OAUTH.google().userinfo, {
       headers: { Authorization: `Bearer ${access_token}` },
+      cache: "no-store", // identity must never come from a cache
     }).then((r) => r.json());
     if (!info?.sub) return null;
     return {
@@ -71,10 +72,16 @@ async function githubProfile(code: string, redirectUri: string, verifier: string
       "User-Agent": "BUILDWE",
     };
     const gh = OAUTH.github().api;
-    const user = await fetch(`${gh}/user`, { headers }).then((r) => r.json());
+    const user = await fetch(`${gh}/user`, {
+      headers,
+      cache: "no-store",
+    }).then((r) => r.json());
     if (!user?.id) return null;
     let email: string | undefined;
-    const emails = await fetch(`${gh}/user/emails`, { headers })
+    const emails = await fetch(`${gh}/user/emails`, {
+      headers,
+      cache: "no-store",
+    })
       .then((r) => (r.ok ? r.json() : []))
       .catch(() => []);
     const primary = Array.isArray(emails)

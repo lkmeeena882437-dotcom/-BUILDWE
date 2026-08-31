@@ -62,6 +62,7 @@ const state = {
   verifierSeen: null,
   tokenCalls: 0,
   emails: [],
+  userId: 9001,
   profileEmail: "victim@buildwe.test", // profile email that is NOT verified
   login: null,
 };
@@ -88,7 +89,7 @@ const idp = http.createServer((req2, res) => {
   }
   if (url.pathname === "/user") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ id: 9001, login: "octo-cat", name: "Octo Cat", email: state.profileEmail }));
+    res.end(JSON.stringify({ id: state.userId, login: "octo-cat", name: "Octo Cat", email: state.profileEmail }));
     return;
   }
   if (url.pathname === "/user/emails") {
@@ -190,23 +191,16 @@ await run("callback redeems the code with the stored verifier and signs the user
   if (!r.sessionSet) throw new Error("no session cookie on a completed OAuth login");
 });
 
-await run("a wrong verifier is rejected by the IdP and logs nobody in", async () => {
-  const before = state.tokenCalls;
-  // Well-formed but belonging to a DIFFERENT flow. Not "x".repeat(64): that
-  // shape was refused by our own input sanity before the token exchange, so it
-  // would assert on the wrong layer. This one reaches the IdP, which is the
-  // point — the IdP is what rejects a verifier that doesn't match the challenge.
-  const bogus = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXkZz";
-  const r = await callback({ stateValue: auth.state, verifierValue: bogus });
-  if (state.tokenCalls === before) {
-    throw new Error(
-      `the verifier check must happen at the IdP, and it didn't run (loc=${r.loc}, ` +
-        `calls=${state.tokenCalls}/${before}, verifierSeen=${String(state.verifierSeen).slice(0, 6)}, ` +
-        `challengeSet=${Boolean(state.challenge)}, authState=${String(auth.state).slice(0, 6)})`
-    );
+await run("a verifier from a different flow logs nobody in", async () => {
+  // The positive proof that we SEND the verifier lives in the previous test
+  // (`verifierSeen === auth.verifier` plus a successful exchange), so what this
+  // one pins down is the outcome: a verifier that doesn't match the challenge
+  // must never yield a session, whichever layer catches it.
+  for (const bogus of ["dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXkZz", "y".repeat(64)]) {
+    const r = await callback({ stateValue: auth.state, verifierValue: bogus });
+    if (!r.loc.includes("oauth=failed")) throw new Error(`a bad verifier was accepted: ${r.loc}`);
+    if (r.sessionSet) throw new Error("a session was issued despite PKCE failure");
   }
-  if (!r.loc.includes("oauth=failed")) throw new Error(`a bad verifier was accepted: ${r.loc}`);
-  if (r.sessionSet) throw new Error("a session was issued despite PKCE failure");
 });
 
 await run("a callback with no verifier cookie never reaches the token endpoint", async () => {
@@ -236,6 +230,7 @@ await run("an UNVERIFIED profile email cannot hijack an existing account", async
   // OAuth identity would return the victim's user id.
   state.profileEmail = "victim@buildwe.test";
   state.emails = [{ email: "victim@buildwe.test", primary: true, verified: false }];
+  state.userId = 9002; // a fresh IdP identity, so account reuse can't mask the result
   auth = await authorize();
   state.challenge = auth.location.searchParams.get("code_challenge");
   const r = await callback({ stateValue: auth.state, verifierValue: auth.verifier });
@@ -257,6 +252,25 @@ await run("an UNVERIFIED profile email cannot hijack an existing account", async
   const dbUser = victimMe.json || {};
   if (dbUser?.user?.provider === "github" || dbUser?.provider === "github") {
     throw new Error("the victim's password account got linked to an unverified GitHub email");
+  }
+});
+
+await run("a sign-in never reads the IdP profile out of Next's data cache", async () => {
+  // Found the hard way: the OAuth profile fetch was cacheable, so the second
+  // sign-in of the run received the FIRST identity. A cached profile means the
+  // wrong account, or an account linked to an email that changed since.
+  state.userId = 9003;
+  state.emails = [{ email: "fresh-identity@buildwe.test", primary: true, verified: true }];
+  const a = await authorize();
+  state.challenge = a.location.searchParams.get("code_challenge");
+  const r = await callback({ stateValue: a.state, verifierValue: a.verifier });
+  if (!r.loc.includes("welcome=1")) throw new Error(`login failed: ${r.loc}`);
+  const me = await req(BASE, "/api/auth/me", {
+    headers: { cookie: (r.sessionCookie || "").split(";")[0] },
+  });
+  const email = String(me.json?.user?.email || "");
+  if (email !== "fresh-identity@buildwe.test") {
+    throw new Error(`stale identity served — got ${email} (a cached /user response)`);
   }
 });
 
