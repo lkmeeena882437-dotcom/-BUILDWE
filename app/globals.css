@@ -388,9 +388,15 @@ button:active:not(:disabled) {
     opacity: 0;
     transform: translateY(4px) scale(0.985);
   }
+  /* Ends on `none`, not `scale(1)`, on purpose — and this is the one line in this file that
+     is load-bearing for correctness rather than taste. The animation is `both`, so the final
+     keyframe stays applied to the panel forever, and *any* non-`none` transform (including a
+     no-op `scale(1)`) turns the panel into the containing block for `position: fixed`
+     descendants. A submenu is exactly that: the panel measures it from viewport coordinates,
+     so a transformed parent would displace it by the parent's own top/left. */
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: none;
   }
 }
 
@@ -799,6 +805,32 @@ button:active:not(:disabled) {
     min-height: 40px;
     padding-top: 10px;
     padding-bottom: 10px;
+  }
+}
+
+/* ── Step 6: sidebar rows that carry a menu (ProfileFlyout, Settings) ── */
+.bw-side-row {
+  --bw-focus-r: 16px;
+  transition: background var(--dur) var(--ease);
+}
+
+.bw-side-row:hover {
+  background: var(--secondary);
+}
+
+.bw-side-row__chev {
+  transition: transform var(--dur) var(--ease);
+}
+
+/* The list used to gain and lose a scrollbar as the 11th chat appeared, shifting every
+   row sideways by the gutter width mid-read. Reserving it costs 8px nobody notices. */
+.bw-side-list {
+  scrollbar-gutter: stable;
+}
+
+@media (pointer: coarse) {
+  .bw-side-row {
+    min-height: 40px;
   }
 }
 

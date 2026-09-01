@@ -46,6 +46,7 @@ import clsx from "clsx";
  * measurement written down instead of the clever version.
  */
 import { PromptBarDemo } from "./PromptBarDemo";
+import { ProfileFlyoutDemo } from "./ProfileFlyoutDemo";
 import {
   MenuDivider,
   MenuLabel,
@@ -90,6 +91,7 @@ export function Lab() {
 
       <div className="grid gap-4">
         <PromptBarDemo log={log} />
+        <ProfileFlyoutDemo log={log} />
         <AttachDemo log={log} />
         <FlyoutDemo log={log} theme={theme} setTheme={setTheme} />
         <SegDemo log={log} plan={plan} setPlan={setPlan} />

@@ -256,6 +256,28 @@ try {
     assert.ok(!labHtml.includes("Nothing attached"), "rows inside a closed menu must not render");
   });
 
+  await run("Step 6: the account menu is a closed button in the rail, with no rows in the DOM", async () => {
+    const html = await (await fetch(`${srv.base}/dev/ui-lab`)).text();
+    const at = html.indexOf('data-action="profile-menu"');
+    assert.ok(at > -1, "the account row must render as a button (the lab mounts the real component)");
+    const tag = html.slice(at, html.indexOf(">", at));
+    // All three ARIA states have to be on the element the user tabs to, and in the markup
+    // the server sent - not patched in by an effect, which is when "it works in a browser"
+    // stops being checkable here.
+    assert.ok(tag.includes('aria-haspopup="menu"'), "it must announce itself as a menu button");
+    assert.ok(tag.includes('aria-expanded="false"'), "and say it is closed");
+    assert.ok(tag.includes('aria-controls="bw-profile-menu"'), "with the panel's id, which is how one-open-at-a-time works");
+
+    // Closed means absent, not hidden: rows are tabbable buttons, and a menu that is
+    // display:none still leaves its rows in the tab order on some browsers.
+    for (const row of ["profile-account", "profile-credits", "profile-plans", "profile-teams", "profile-byok", "profile-theme", "profile-signout"]) {
+      assert.ok(!html.includes(`data-action="${row}"`), `${row} must not exist until the menu is opened`);
+    }
+    for (const v of ["system", "light", "dark"]) {
+      assert.ok(!html.includes(`data-action="theme-${v}"`), `the theme submenu (${v}) must be doubly closed`);
+    }
+  });
+
   await run("segmented control renders one selected tab over N segments", async () => {
     assert.ok(labHtml.includes('role="tablist"'));
     const items = labHtml.match(/data-bw-seg-item="[^"]+"/g) || [];
@@ -329,7 +351,7 @@ try {
     assert.match(css, /prefers-reduced-motion[^)]*\)\s*\{?\s*\*[^}]*animation-duration:\s*0\.01ms/s, "the global guard must still zero animations");
   });
 
-  await run("the customer-facing pages are untouched, and only Btn was pulled into the app", async () => {
+  await run("the customer-facing pages are untouched, and lib/ui stays out of them", async () => {
     for (const [name, html] of [["/", homeHtml], ["/pricing", pricingHtml]]) {
       assert.ok(!html.includes("bw-pop"), `${name} must not use the popover yet`);
       assert.ok(!html.includes("data-bw-seg"), `${name} must not use the segmented control yet`);
@@ -346,12 +368,19 @@ try {
       (bar.match(/fixed inset-0 z-40 cursor-default/g) || []).length;
     assert.equal(overlays, 2, "only page.tsx's two remaining menus may still hand-roll an overlay");
     assert.equal((bar.match(/fixed inset-0/g) || []).length, 0, "the composer owns no overlay of any kind");
-    // page.tsx may reach into lib/ui for exactly one thing (Btn, which it now shares
-    // with the pill). The popover/menu/segmented primitives stay out of the page until
-    // the step that actually needs them — that is what keeps a "refactor" from becoming
-    // an unrequested re-skin of 400 lines it was not asked to touch.
+    // page.tsx may reach into lib/ui for exactly two things: Btn (shared with the pill)
+    // and SegmentedControl, which Step 6 added because the settings sheet's theme picker
+    // had to become the same control the account menu uses. Everything else — the popover,
+    // the menu rows — stays out of the page until the step that needs it, which is what
+    // keeps a "refactor" from turning into an unrequested re-skin of 400 lines. Both are
+    // deep imports rather than the barrel, so the page's chunk pays for two modules and
+    // not for lib/ui.
     const uiImports = [...page.matchAll(/from "@\/lib\/ui([^"]*)"/g)].map((m) => m[1]);
-    assert.deepEqual([...new Set(uiImports)].sort(), ["/Btn"], "page.tsx should import only lib/ui/Btn");
+    assert.deepEqual(
+      [...new Set(uiImports)].sort(),
+      ["/Btn", "/SegmentedControl"],
+      "page.tsx may import Btn and SegmentedControl, from their own modules, nothing else"
+    );
   });
 } finally {
   await srv.stop();
@@ -592,6 +621,69 @@ await run("Step 5: the answer-style panel is a popover over primitives, not a fo
   // because the unlabelled chip that set depth directly is gone.
   assert.ok(!bar.includes("onClick={() => setDepth(d)}"), "no unlabelled depth chips left");
   assert.ok(!bar.includes("onClick={() => setTone(t)}"), "no unlabelled tone chips left");
+});
+
+await run("Step 6: the flyout is an address book for surfaces that already exist", () => {
+  const fly = readFileSync(path.join(ROOT, "components", "workspace", "ProfileFlyout.tsx"), "utf8");
+  const code = codeOnly(fly);
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  const theme = readFileSync(path.join(ROOT, "lib", "client", "theme.ts"), "utf8");
+  const css = readFileSync(path.join(ROOT, "app", "globals.css"), "utf8");
+
+  // Rows are calls into the page's existing modal system. If a row ever grows its own
+  // `setModal`, the app has a second profile sheet with a different list of fields.
+  for (const [prop, sheet] of [
+    ["onOpenProfile", '"profile"'],
+    ["onOpenPlans", '"plans"'],
+    ["onOpenTeams", '"teams"'],
+    ["onOpenByok", '"byok"'],
+  ]) {
+    assert.ok(fly.includes(`${prop}: () => void`), `the flyout must ask for ${prop} rather than assume a modal`);
+    assert.ok(page.includes(`${prop}={() => setModal(${sheet})}`), `and page.tsx must wire it to the ${sheet} sheet`);
+  }
+  assert.ok(page.includes("onTheme={setThemePref}"), "theme goes to the page's one setter");
+  assert.ok(page.includes("onSignOut={doLogout}"), "sign-out is the same doLogout the profile sheet uses");
+  assert.ok(code.includes("openCredits()"), "credits opens the existing wallet sheet");
+  assert.ok(!/setModal\(/.test(code) && !code.includes("<Sheet"), "the component owns no sheets and no modal state");
+  assert.equal((code.match(/useState\(false\)/g) || []).length, 2, "open and themeOpen are its only state - every fact is a prop");
+  assert.equal((code.match(/useState\(/g) || []).length, 2, "and there is no third one hiding a copy of app state");
+
+  // The menu plumbing is the primitives'; a second implementation is the thing Step 1
+  // existed to prevent.
+  assert.ok(fly.includes("menuTriggerProps(open, PROFILE_MENU_ID)") && fly.includes("id={PROFILE_MENU_ID}"), "trigger and panel share one id constant");
+  assert.ok(fly.includes('label="Account"'), "the panel names itself - the trigger's aria-label is the fallback");
+  assert.ok(!/addEventListener|useDismiss\(|onKeyDown/.test(code), "no dismissal or key code here: Popover does both");
+  assert.ok(fly.includes("submenu") && fly.includes("pause={themeOpen}") && fly.includes("allowSubmenus"), "the nested Theme menu follows the documented submenu contract");
+  assert.ok(fly.includes('mode="fixed"'), "the submenu is fixed, because the parent panel scrolls (overflow: hidden auto) and would clip an absolute child");
+  assert.ok(fly.includes('mode="absolute"'), "the parent is absolute, because its only overflow-hidden ancestor is the viewport-sized workspace root");
+  // Only the `to` frame matters for correctness: the animation is fill-mode `both`, so that
+  // is the value the panel keeps forever. Scoped to it because the file's own comment about
+  // `scale(1)` sits between the two frames, and prose is not a regression.
+  const kfTo = css.match(/@keyframes bw-pop-in \{[\s\S]*?\n  to \{([^}]*)\}/);
+  assert.ok(kfTo, "the panel's entrance keyframes must still have a `to` frame");
+  assert.ok(kfTo[1].includes("transform: none;"), "and end on transform:none, which is what keeps a fixed submenu anchored to the viewport, not to the panel");
+  assert.ok(!/scale\(1\)/.test(kfTo[1]), "a no-op scale(1) is still a transform and would displace the submenu");
+
+  // One list of theme values, used by both surfaces.
+  for (const v of ["system", "light", "dark"]) {
+    assert.ok(theme.includes(`value: "${v}"`), `THEME_ITEMS must carry ${v}`);
+  }
+  assert.ok(fly.includes("THEME_ITEMS.map") && page.includes("items={THEME_ITEMS}"), "the flyout and the settings sheet read the same array");
+  assert.ok(!/\["system", Monitor, "System"\]/.test(codeOnly(page)), "the sheet's private tuple list is gone");
+  assert.ok(!/type ThemePref =/.test(codeOnly(page)), "the type has one owner too");
+  assert.ok(page.includes("<SegmentedControl items={THEME_ITEMS}"), "the sheet uses the shared control, so aria-selected says which theme is on");
+
+  // Numbers shown in the menu must be live, and prices must never be copied here.
+  assert.ok(code.includes("useWallet()"), "balance and the cheapest pack come from the wallet store");
+  assert.ok(!/₹\s?\d|\d+\/mo/.test(code), "no price literal pasted into a menu row");
+  assert.ok(css.includes(".bw-side-list {") && css.includes("scrollbar-gutter: stable"), "the history list reserves its scrollbar gutter");
+  assert.ok(page.includes("bw-side-list"), "and the sidebar list actually asks for it");
+  assert.ok(css.indexOf(".bw-side-list") < css.lastIndexOf("@media (prefers-reduced-motion"), "and the new rules stay before the reduced-motion guard");
+
+  // A collapsed rail is an icon-only button: it must still be nameable and tappable.
+  assert.ok(fly.includes('aria-label={collapsed ? "Account menu" : undefined}'), "the trigger names itself when there is no text next to it");
+  assert.ok(page.includes('aria-label="Settings"') && page.includes('title={sidebarOpen ? undefined : "Settings"}'), "so does the settings row beside it");
+  assert.ok(/@media \(pointer: coarse\) \{\s*\.bw-side-row \{\s*min-height: 40px/.test(css), "and both grow to 40px on touch");
 });
 
 rmSync(outDir, { recursive: true, force: true });

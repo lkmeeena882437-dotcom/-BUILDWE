@@ -27,9 +27,6 @@ import {
   LogOut,
   LogIn,
   CreditCard,
-  Sun,
-  Moon,
-  Monitor,
   Star,
   PanelLeftClose,
   PanelLeft,
@@ -122,8 +119,9 @@ import { WalletChip, openCredits, useWallet } from "@/components/billing/Credits
 import { PromptBar } from "@/components/workspace/PromptBar";
 import { Btn } from "@/lib/ui/Btn";
 import { MODE_META, type Mode } from "@/lib/client/modes";
-
-type ThemePref = "system" | "light" | "dark";
+import { ProfileFlyout } from "@/components/workspace/ProfileFlyout";
+import { SegmentedControl } from "@/lib/ui/SegmentedControl";
+import { THEME_ITEMS, type ThemePref } from "@/lib/client/theme";
 
 type Msg = {
   id: string;
@@ -2098,7 +2096,7 @@ function Dashboard() {
                   </button>
                 </div>
               )}
-              <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
+              <div className="bw-side-list min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
                 {filteredHistory.map((h) => (
                   <div key={h.id} className="group flex items-center rounded-xl" style={h.id === convId ? { background: "var(--secondary)" } : undefined}>
                     <button type="button" onClick={() => openHist(h.id)} className="min-w-0 flex-1 px-2.5 py-2 text-left">
@@ -2139,22 +2137,28 @@ function Dashboard() {
               />
             </div>
           )}
-          <button type="button" onClick={() => setModal("settings")} className={clsx("flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm", sidebarOpen ? "px-3" : "justify-center")} style={{ color: "var(--muted)" }}>
+          {/* aria-label always, title only when collapsed: with the labels hidden these rows
+              were icon-only buttons with no accessible name at all. */}
+          <button type="button" onClick={() => setModal("settings")} aria-label="Settings" title={sidebarOpen ? undefined : "Settings"} className={clsx("bw-side-row flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm", sidebarOpen ? "px-3" : "justify-center")} style={{ color: "var(--muted)" }}>
             <Settings className="h-4 w-4" />
             {sidebarOpen && "Settings"}
           </button>
           {loggedIn ? (
-            <button type="button" onClick={() => setModal("profile")} className={clsx("flex w-full items-center gap-2.5 rounded-2xl py-2 text-sm", sidebarOpen ? "px-3" : "justify-center")}>
-              <span className="flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
-                {(me?.name || "U").slice(0, 1).toUpperCase()}
-              </span>
-              {sidebarOpen && (
-                <span className="min-w-0 text-left">
-                  <span className="block truncate text-[12px] font-medium">{me?.name}</span>
-                  <span className="text-[10px]" style={{ color: "var(--muted)" }}>{plan === "pro" ? "PRO" : "Free"}</span>
-                </span>
-              )}
-            </button>
+            <ProfileFlyout
+              collapsed={!sidebarOpen}
+              name={me?.name}
+              email={me?.user?.email}
+              plan={plan}
+              byokActive={byokActive}
+              teamName={teams.find((t) => t.id === activeTeam)?.name}
+              themePref={themePref}
+              onTheme={setThemePref}
+              onOpenProfile={() => setModal("profile")}
+              onOpenPlans={() => setModal("plans")}
+              onOpenTeams={() => setModal("teams")}
+              onOpenByok={() => setModal("byok")}
+              onSignOut={doLogout}
+            />
           ) : (
             <button type="button" onClick={() => { setAuthTab("login"); setModal("auth"); }} className={clsx("flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm font-medium", sidebarOpen ? "px-3" : "justify-center")} style={{ background: "var(--ink)", color: "var(--bg)" }}>
               <LogIn className="h-4 w-4" />
@@ -3263,17 +3267,10 @@ function Dashboard() {
               <ChevronRight className="h-4 w-4" style={{ color: "var(--soft)" }} />
             </button>
             <div className="px-1 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Theme</div>
-            <div className="grid grid-cols-3 gap-1.5">
-              {([
-                ["system", Monitor, "System"],
-                ["light", Sun, "Light"],
-                ["dark", Moon, "Dark"],
-              ] as const).map(([id, Icon, label]) => (
-                <button key={id} type="button" onClick={() => setThemePref(id)} className="flex items-center justify-center gap-1 rounded-xl border py-2.5 text-[11px] font-medium" style={themePref === id ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" } : { borderColor: "var(--border)", color: "var(--muted)" }}>
-                  <Icon className="h-3.5 w-3.5" /> {label}
-                </button>
-              ))}
-            </div>
+            {/* Same THEME_ITEMS the flyout submenu lists, in the shared control: these three
+                buttons marked the active one with colour alone, which a screen reader cannot
+                read, and left the sheet and the menu free to drift apart. */}
+            <SegmentedControl items={THEME_ITEMS} value={themePref} onChange={setThemePref} ariaLabel="Theme" full dark={false} />
             <div className="pt-3">
               <button type="button" onClick={() => setModal("models")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Layers className="h-4 w-4 opacity-70" /> Models <span className="ml-auto text-[10px]" style={{ color: "var(--soft)" }}>Live + Soon</span></button>
               <button type="button" onClick={async () => { try { const s = await fetchSkills(); setSkillList(s.skills || []); } catch {} setModal("skills"); }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Sparkles className="h-4 w-4 opacity-70" /> Skills &amp; Mind</button>
