@@ -1,5 +1,8 @@
 /** Browser helpers for BUILDWE APIs */
 
+import type { PreviewDto } from "@/lib/net/urls";
+import type { PaletteStudio, PaletteTool } from "./palette";
+
 export type MeResponse = {
   userId: string;
   kind: "user" | "guest";
@@ -15,6 +18,41 @@ export type MeResponse = {
   usage: { chat: number; code: number; image: number; audio: number; day: string };
   limits: { chat: number; code: number; image: number; audio: number };
 };
+
+/**
+ * Credit signals travel to the wallet UI as window events rather than imports,
+ * so this module stays free of React. Two events exist:
+ *   bw:credits:receipt   - a paid call succeeded and reports the new balance
+ *   bw:credits:shortfall - the server refused for lack of credits (402), and
+ *                          the wallet UI opens its top-up sheet
+ */
+function creditsEvent(name: string, detail: unknown) {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent(name, { detail }));
+  } catch {
+    /* no CustomEvent - the UI simply stays as it is */
+  }
+}
+
+/** Called on every paid response: keep the chip honest, surface the top-up. */
+export function noteCredits(r: Response, j: unknown) {
+  const o = (j || {}) as { code?: unknown; balance?: unknown; needed?: unknown; credits?: { balance?: unknown; charged?: unknown } };
+  if (r.status === 402 && String(o.code || "") === "INSUFFICIENT_CREDITS") {
+    creditsEvent("bw:credits:shortfall", {
+      balance: Number(o.balance || 0),
+      needed: Number(o.needed || 0),
+    });
+    return;
+  }
+  const rec = o.credits;
+  if (rec && typeof rec.balance === "number") {
+    creditsEvent("bw:credits:receipt", {
+      balance: rec.balance,
+      charged: Number(rec.charged || 0),
+    });
+  }
+}
 
 async function readJson(r: Response) {
   const text = await r.text();
@@ -97,6 +135,32 @@ export async function deleteHistory(id: string) {
   });
 }
 
+/**
+ * Metadata for one link, for the card under an answer.
+ *
+ * Unlike the rest of this module this never throws: a preview is decoration on a
+ * message that is already on screen, and making a card's failure somebody else's
+ * error state would be worse than no card. The server's refusal (an internal
+ * address, a site that is down, a page that describes nothing) all land in the
+ * same place — `null` — and the component removes itself.
+ */
+export async function fetchPreviewApi(
+  url: string,
+  signal?: AbortSignal
+): Promise<PreviewDto | null> {
+  try {
+    const r = await fetch(`/api/preview?url=${encodeURIComponent(url)}`, {
+      credentials: "include",
+      signal,
+    });
+    const j = await readJson(r);
+    if (!r.ok || j?.ok !== true || !j.preview) return null;
+    return j.preview as PreviewDto;
+  } catch {
+    return null;
+  }
+}
+
 export async function streamAI(
   endpoint: "/api/ai/chat" | "/api/ai/code",
   body: unknown,
@@ -169,6 +233,7 @@ export async function generateImage(
     }),
   });
   const j = await readJson(r);
+  noteCredits(r, j);
   if (!r.ok) throw new Error(j.error || "Couldn’t create that image. Try again.");
   return j as {
     id: string;
@@ -189,6 +254,7 @@ export async function generateAudio(text: string, voice: string, speed: number) 
     body: JSON.stringify({ text, voice, speed }),
   });
   const j = await readJson(r);
+  noteCredits(r, j);
   if (!r.ok) throw new Error(j.error || "Couldn’t generate voice. Try again.");
   return j as {
     id: string;
@@ -247,6 +313,7 @@ export type AgentEvent =
       steps: number;
       verified: boolean;
       primaryFile?: { path: string; content: string; lang: string };
+      credits?: { charged: number; balance: number };
     };
 
 /**
@@ -273,6 +340,7 @@ export async function runAgentApi(
 
   if (!r.ok || !r.body) {
     const j = await readJson(r);
+    noteCredits(r, j);
     const err = new Error(j.error || "The agent couldn't start.") as Error & {
       code?: string;
       hint?: string;
@@ -298,7 +366,12 @@ export async function runAgentApi(
       if (!t.startsWith("data:")) continue;
       try {
         const ev = JSON.parse(t.slice(5).trim()) as AgentEvent;
-        if (ev.type === "result") final = ev;
+        if (ev.type === "result") {
+          final = ev;
+          if (ev.credits && typeof ev.credits.balance === "number") {
+            creditsEvent("bw:credits:receipt", ev.credits);
+          }
+        }
         onEvent(ev);
       } catch {
         /* skip malformed frame */
@@ -342,22 +415,128 @@ export async function codeActionApi(
 }
 
 
-export async function compareApi(prompt: string) {
+export async function compareApi(prompt: string, models?: string[]) {
   const r = await fetch("/api/ai/compare", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify(models && models.length ? { prompt, models } : { prompt }),
   });
   const j = await readJson(r);
-  if (!r.ok) throw new Error(j.error || "Comparison failed");
-  return j as {
-    ok: boolean;
-    available: boolean;
-    complexity: string;
-    lanes: { label: string; model: string; live: boolean; reply: string }[];
-    synthesis: string;
+  noteCredits(r, j);
+  if (!r.ok) {
+    const err = new Error(j.error || "Comparison failed") as Error & { code?: string; hint?: string };
+    if (j.code) err.code = j.code;
+    if (j.hint) err.hint = j.hint;
+    throw err;
+  }
+  return j as CompareRun;
+}
+
+/** One lane of a comparison: a model the user picked, whether it answered, and what it said. */
+export type CompareLane = {
+  id: string;
+  label: string;
+  model: string;
+  live: boolean;
+  reply: string;
+  /** Only on a lane that did not answer: the reason, in the reader's terms. */
+  note?: string;
+};
+
+export type CompareRun = {
+  ok: boolean;
+  available: boolean;
+  complexity?: string;
+  message?: string;
+  lanes: CompareLane[];
+  synthesis: string;
+  /** Which lanes the combined answer was built from — the run uses every lane that answered. */
+  combinedFrom?: string[];
+  /** Said when the judge pass itself could not run: the lanes stand on their own. */
+  synthesisNote?: string;
+  credits?: {
+    perLane: number;
+    held: number;
+    charged: number;
+    refunded: number;
+    balance?: number;
+    lanes: { total: number; live: number; dead: number };
   };
+};
+
+/**
+ * `GET /api/ai/compare` — what a comparison will accept and what it costs, before anything runs.
+ * Deliberately small: the model rows themselves come from `/api/ai/models`, so the projection is
+ * not written twice. Throwing on a non-2xx like `fetchModels` does, because a picker that cannot
+ * read its prices must say so rather than guess them.
+ */
+export type CompareContract = {
+  ok: boolean;
+  minLanes: number;
+  maxLanes: number;
+  perLane: number;
+  /** What folding a chosen subset of answers into one costs — one lane's worth, one judge pass. */
+  mixCost?: number;
+  lanes: number;
+  defaults: { id: string; label: string; model: string }[];
+  note?: string;
+  error?: string;
+};
+
+export async function fetchCompareContract(): Promise<CompareContract> {
+  const r = await fetch("/api/ai/compare", { cache: "no-store" });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "The comparison settings could not be read.");
+  return j as CompareContract;
+}
+
+/**
+ * One answer folded back into a fresh combined answer. `lanes` is the subset the reader picked,
+ * each as `{ id, reply }` straight out of the run that produced it — the models are not asked
+ * again, so this costs one judge pass and nothing else. `used` comes back from the server because
+ * "which lanes, and how much of each" is its fact, not the client's.
+ */
+export type CompareMixResult = {
+  ok: boolean;
+  action: "mix";
+  available: boolean;
+  synthesis: string;
+  message?: string;
+  /** The answers that went in, and how much of each the judge actually saw. */
+  used: { id: string; label: string; model: string; chars: number; trimmed?: boolean; note?: string }[];
+  credits?: {
+    perLane: number;
+    held: number;
+    charged: number;
+    refunded: number;
+    balance?: number;
+    lanes: { total: number; live: number; dead: number };
+  };
+};
+
+export async function compareMixApi(
+  prompt: string,
+  lanes: { id: string; reply: string }[]
+): Promise<CompareMixResult> {
+  const r = await fetch("/api/ai/compare", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "mix", prompt, lanes }),
+  });
+  const j = await readJson(r);
+  noteCredits(r, j);
+  if (!r.ok) {
+    const err = new Error(j.error || "Could not combine those answers") as Error & {
+      code?: string;
+      hint?: string;
+    };
+    if (j.code) err.code = j.code;
+    if (j.hint) err.hint = j.hint;
+    throw err;
+  }
+  return j as CompareMixResult;
 }
 
 /* ── BYOK (bring your own key) ──────────────────────────── */
@@ -464,6 +643,7 @@ export async function transcribeAudio(
     body: form,
   });
   const j = await readJson(r);
+  noteCredits(r, j);
   if (!r.ok) throw new Error(j.error || "Couldn't transcribe that audio");
   return j;
 }
@@ -478,6 +658,7 @@ export async function visionApi(imageDataUrl: string, prompt: string) {
     body: JSON.stringify({ image: imageDataUrl, prompt }),
   });
   const j = await readJson(r);
+  noteCredits(r, j);
   if (!r.ok) throw new Error(j.error || "Couldn't analyze that image");
   return j as { ok: boolean; text: string; model: string; live: boolean };
 }
@@ -498,6 +679,26 @@ export async function analyzeFileApi(name: string, text: string) {
 
 /* ── Share links ────────────────────────────────────────── */
 
+/**
+ * One answer of a chat, as its own public page (the question and that reply — not the whole
+ * thread). `messageId` is the only difference from `createShare`, and the server keeps the rest:
+ * re-sharing the same answer refreshes the same link rather than minting another one.
+ */
+export async function shareAnswer(
+  conversationId: string,
+  messageId: string
+): Promise<{ id: string; url: string; scope: string }> {
+  const r = await fetch("/api/share", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ conversationId, messageId }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "A link could not be made for that answer.");
+  return { id: String(j.id), url: String(j.url), scope: String(j.scope || "answer") };
+}
+
 export async function createShare(conversationId: string) {
   const r = await fetch("/api/share", {
     method: "POST",
@@ -512,10 +713,20 @@ export async function createShare(conversationId: string) {
 
 /* ── Projects ───────────────────────────────────────────── */
 
-export async function fetchProjects() {
+export async function fetchProjects(): Promise<{
+  projects: { id: string; name: string; createdAt: string }[];
+  /** The store's own cap on a project name; 0 when the server did not say. */
+  nameMax: number;
+}> {
   const r = await fetch("/api/projects", { credentials: "include" });
   const j = await readJson(r);
-  return j as { projects: { id: string; name: string; createdAt: string }[] };
+  // Throws rather than answering with an empty list: the caller keeps whatever chips it
+  // already has, which is the honest state during a bad read.
+  if (!r.ok) throw new Error(String(j.error || "Could not load your projects."));
+  return {
+    projects: (j.projects || []) as { id: string; name: string; createdAt: string }[],
+    nameMax: Number(j.nameMax) || 0,
+  };
 }
 
 export async function createProject(name: string) {
@@ -636,13 +847,58 @@ export async function sendFeedback(kind: "up" | "down", note?: string) {
   return readJson(r);
 }
 
-export async function fetchModels() {
-  const r = await fetch("/api/ai/models");
-  return readJson(r) as Promise<{
-    live: { id: string; name: string; blurb: string; status: string; badge?: string; family: string }[];
-    all: { id: string; name: string; blurb: string; status: string; badge?: string; family: string }[];
-    llmLive: boolean;
-  }>;
+/** The marketing ladder (`live` / `all`): branded seats, some of them not yet available. */
+export type ModelLadderRow = {
+  id: string;
+  name: string;
+  blurb: string;
+  status: string;
+  badge?: string;
+  family: string;
+};
+
+/**
+ * A real model row from `selectable`, mirroring `SelectableRow` in the route. This is what a picker
+ * must render, because it is the only list that knows whether *this deployment* can call the thing:
+ * `available: false` with a `whyNot` is a key that is not set, not a broken feature.
+ */
+export type SelectableModel = {
+  id: string;
+  label: string;
+  brand: string;
+  provider: string;
+  tiers: string[];
+  quality: number;
+  latency: string;
+  strengths: string[];
+  available: boolean;
+  whyNot?: string;
+};
+
+export type ModelsInfo = {
+  live: ModelLadderRow[];
+  all: ModelLadderRow[];
+  /**
+   * Per-capability rows, each saying whether THIS reader can call it — deployment key or the
+   * reader's own BYOK key, either way. Every picker in the app reads its list from here rather
+   * than keeping a copy: `selectable.chat` is what the compare lane picker lists.
+   */
+  selectable: Record<string, SelectableModel[]>;
+  ready: Record<string, { total: number; ready: number }>;
+  /** Capabilities the catalog routes but the picker must not offer (the router itself). */
+  internal?: string[];
+  llmLive: boolean;
+  /** True when the readiness above is being carried by the signed-in user's own key. */
+  byokActive?: boolean;
+  catalogSize: number;
+  note?: string;
+};
+
+export async function fetchModels(): Promise<ModelsInfo> {
+  const r = await fetch("/api/ai/models", { cache: "no-store" });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "The model list could not be read.");
+  return j as ModelsInfo;
 }
 
 export async function fetchSkills() {
@@ -666,7 +922,7 @@ export async function saveSkills(skills: string[]) {
 
 export type GenerationItem = {
   id: string;
-  type: "image" | "audio" | "code";
+  type: "image" | "audio" | "code" | "text";
   prompt: string;
   outputUrl?: string;
   outputText?: string;
@@ -692,6 +948,122 @@ export async function fetchGenerations(
   const j = await readJson(r);
   if (!r.ok) return [];
   return (j.generations || []) as GenerationItem[];
+}
+
+/**
+ * One creation, as the list shows it. Declared on its own rather than
+ * `GenerationItem & {…}` because the raw shape has `outputUrl?: string` and this one
+ * needs `string | null` — an intersection of the two collapses to a type nothing can
+ * assign, which is how "optional or null" usually turns into a cast at the call site.
+ */
+export type ArtifactItem = {
+  id: string;
+  type: "image" | "audio" | "code" | "text";
+  prompt: string;
+  title: string | null;
+  pinned: boolean;
+  outputUrl: string | null;
+  outputText?: string;
+  meta?: Record<string, unknown>;
+  /** Already has a public link — the menu says "Copy link" instead of "Share". */
+  shareId: string | null;
+  /** False when there is nothing a reader could open (audio made without media storage). */
+  shareable: boolean;
+  createdAt: string;
+};
+
+function failWith(j: unknown, fallback: string): never {
+  const o = (j || {}) as { error?: unknown; code?: unknown };
+  const e = new Error(String(o.error || fallback)) as Error & { code?: string };
+  if (o.code) e.code = String(o.code);
+  throw e;
+}
+
+/**
+ * The curated list. Unlike fetchGenerations() this throws: a library that quietly
+ * answers "nothing here yet" while the rows still exist teaches people their work is
+ * gone, which is worse than a retry button.
+ */
+export async function fetchArtifacts(
+  type?: ArtifactItem["type"],
+  limit = 60
+): Promise<{ artifacts: ArtifactItem[]; titleMax: number }> {
+  const qs = new URLSearchParams({ view: "artifacts", limit: String(limit) });
+  if (type) qs.set("type", type);
+  const r = await fetch(`/api/ai/generations?${qs.toString()}`, { credentials: "include" });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "Could not load your creations.");
+  return {
+    artifacts: (j.artifacts || []) as ArtifactItem[],
+    titleMax: Number(j.titleMax) || 120,
+  };
+}
+
+/** The whole row, untruncated — what "open in canvas" needs for a code artifact. */
+export async function fetchArtifact(id: string): Promise<ArtifactItem> {
+  const r = await fetch(`/api/ai/generations?id=${encodeURIComponent(id)}`, {
+    credentials: "include",
+  });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "That creation could not be opened.");
+  return j.artifact as ArtifactItem;
+}
+
+export async function updateArtifact(
+  id: string,
+  patch: { title?: string | null; pinned?: boolean }
+): Promise<ArtifactItem> {
+  const r = await fetch("/api/ai/generations", {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, ...patch }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "That change could not be saved.");
+  return j.artifact as ArtifactItem;
+}
+
+export async function deleteArtifact(id: string): Promise<void> {
+  const r = await fetch(`/api/ai/generations?id=${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "That creation could not be deleted.");
+}
+
+/**
+ * Keep one answer out of a chat in the creations list, where it can be named, pinned, shared and
+ * deleted like anything else made in a studio. Idempotent server-side, so a double click updates
+ * the same row instead of leaving a second one to notice and clean up.
+ */
+export async function saveAnswer(
+  conversationId: string,
+  messageId: string
+): Promise<{ artifact: ArtifactItem; created: boolean }> {
+  const r = await fetch("/api/ai/generations", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "save-answer", conversationId, messageId }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "That answer could not be saved.");
+  return { artifact: j.artifact as ArtifactItem, created: Boolean(j.created) };
+}
+
+/** Public link for one creation. Repeating it refreshes the same link, never a new one. */
+export async function shareArtifact(id: string): Promise<{ id: string; url: string }> {
+  const r = await fetch("/api/share", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ artifactId: id }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "A share link could not be made for that creation.");
+  return { id: String(j.id), url: String(j.url) };
 }
 
 /* ── Project files — Coding Agent (Update #1 §3) ──────────── */
@@ -749,4 +1121,33 @@ export async function deleteProjectFileApi(id: string) {
     credentials: "include",
   });
   return r.ok;
+}
+/**
+ * GET /api/tools — the registry's own public projection, flattened.
+ *
+ * The palette asks for this the first time it opens rather than importing
+ * `lib/tools/registry`: the registry holds 31 tool specs with their input schemas,
+ * prompts and examples, which is tens of kilobytes of the workspace bundle spent to
+ * fill a menu. The response is already grouped by category; the palette is a flat
+ * ranked list, so the flattening happens here, once, and nothing else has to know.
+ *
+ * It throws on a bad read. The caller shows "Tool list unavailable" and keeps every
+ * other row — a catalogue that failed to load must not be presented as "there are no
+ * tools", which is the same lie `GET /api/projects` used to tell with `{projects: []}`.
+ */
+export async function fetchToolCatalogue(): Promise<{
+  tools: PaletteTool[];
+  studios: PaletteStudio[];
+  count: number;
+}> {
+  // brief=1: labels and routes only. See the projection in app/api/tools/route.ts.
+  const r = await fetch("/api/tools?brief=1", { credentials: "include" });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(String(j.error || "Could not load the tool list."));
+  const groups = (j.groups || []) as { tools?: PaletteTool[] }[];
+  return {
+    tools: groups.flatMap((g) => g.tools || []),
+    studios: (j.studios || []) as PaletteStudio[],
+    count: Number(j.count) || 0,
+  };
 }

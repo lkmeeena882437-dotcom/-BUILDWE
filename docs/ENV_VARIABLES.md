@@ -52,9 +52,12 @@ Supabase me **do** keys dikhengi. `anon` **nahi** — **`service_role`** leni ha
 Abhi platform **demo mode** me hai, matlab PRO upgrade button asli paise nahi
 leta. Asli payment chalu karne ke liye ye 4 chahiye:
 
+Koi **demo/mock switch nahi hai** is repo me: keys na hone par checkout `503 CHECKOUT_UNAVAILABLE`
+deta hai aur PRO ya credits kisi bhi haalat me nahi milte — ek flag jo "paid" bol de, wo
+feature nahi bug hota (audit C1 isi liye gaya).
+
 | Variable | Kahan milega |
 |---|---|
-| `NEXT_PUBLIC_DEMO_MODE` | `false` likho — **ye likhe bina payment demo me hi rahega** |
 | `NEXT_PUBLIC_RAZORPAY_KEY_ID` | Razorpay → Settings → API Keys (`rzp_live_...`) |
 | `RAZORPAY_KEY_SECRET` | Wahi page, secret wala |
 | `RAZORPAY_WEBHOOK_SECRET` | Razorpay → Webhooks → banate waqt set karte ho |

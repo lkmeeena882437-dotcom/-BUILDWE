@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
-import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
-import { rateLimitDurable } from "@/lib/rate-limit/durable";
+import { limitAi } from "@/lib/rate-limit/guard";
+
 import { streamChatOrCode } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import {
@@ -14,15 +14,20 @@ import { understandPrompt } from "@/lib/ai/understanding";
 import { qualityGate } from "@/lib/ai/quality";
 import { estimateComplexity } from "@/lib/ai/models-catalog";
 import { INPUT_LIMITS, toUserFacingError } from "@/lib/ai/gateway";
+import { userProviderKeys } from "@/lib/ai/byok";
 import { bump } from "@/lib/metrics/metrics";
 import {
   appendMessages,
   createConversation,
-  findUserById,
   isTeamMember,
+  listProjectFiles,
   uid,
 } from "@/lib/db/store";
-import { decryptSecret } from "@/lib/crypto";
+import {
+  fileEditInstruction,
+  formatProjectContext,
+  parseContextInput,
+} from "@/lib/ai/workspace-context";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,8 +35,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
-    const ip = clientIp(req);
-    const rl = await rateLimitDurable(`ai:chat:${session.userId}:${ip}`, 60, 60_000);
+    const rl = await limitAi("chat", session.userId, 60, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
         { error: "Too many requests — wait a moment.", code: "RATE_LIMIT", hint: "Thoda ruk ke Try again dabao — 1 minute me limit reset ho jaati hai." },
@@ -60,6 +64,15 @@ export async function POST(req: NextRequest) {
         },
         { status: 413 }
       );
+    }
+
+    // Workspace context (UI step 9): a chat can be pointed at the file the user has
+    // open. Shape is validated here, ownership by the store query, and "that file is
+    // gone" is answered with *no context and a plain reason* rather than a failed chat —
+    // losing an answer to a stale chip would be a worse bug than losing the context.
+    const ctxIn = parseContextInput(body.context);
+    if (!ctxIn.ok) {
+      return NextResponse.json({ error: ctxIn.error, code: ctxIn.code }, { status: 400 });
     }
 
     const limit = checkLimit(session.userId, session.plan, "chat");
@@ -175,6 +188,29 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    let workspace: { text: string; stats: ReturnType<typeof formatProjectContext>["stats"] } | null = null;
+    let workspaceRef: { requested: string; attached: false; reason: "not_found" | "empty_project" } | null = null;
+    if (ctxIn.value) {
+      try {
+        const rows = listProjectFiles(ctxIn.value.projectId, session.userId);
+        const out = formatProjectContext(rows, {
+          purpose: "chat",
+          openPath: ctxIn.value.path,
+        });
+        if (out.stats.openAttached) workspace = out;
+        else workspaceRef = {
+          requested: ctxIn.value.path,
+          attached: false,
+          reason: rows.length ? "not_found" : "empty_project",
+        };
+      } catch (e) {
+        console.error("[bw] chat workspace context", e);
+      }
+    }
+    const contextMeta = workspace
+      ? { attached: true as const, ...workspace.stats }
+      : workspaceRef;
+
     const styleLines: string[] = [];
     if (depth === "short") {
       styleLines.push("LENGTH: Answer in 1–3 sentences. No lists, no preamble.");
@@ -193,6 +229,9 @@ export async function POST(req: NextRequest) {
     const systemParts = [
       styleLines.length ? styleLines.join("\n") : "",
       understood.systemHint,
+      // The file the reader is looking at, then how to hand an edit back. Instruction
+      // second so it is the last thing before the conversation.
+      workspace ? `${workspace.text}\n\n${fileEditInstruction(workspace.stats)}` : "",
       ...systemHintExtras,
       contextBlock
         ? `${contextBlock}\n\nAnswer using these results where relevant. Cite sources inline as [1], [2]. If the results don't cover it, say so and answer from your own knowledge.`
@@ -202,13 +241,10 @@ export async function POST(req: NextRequest) {
       ? [{ role: "system", content: systemParts.join("\n\n") }, ...body.messages]
       : body.messages;
 
-    // BYOK — the user's own keys take precedence
-    const owner = findUserById(session.userId);
-    const byok = owner?.byok || {};
-    const userKeys = {
-      groq: byok.groq ? decryptSecret(byok.groq) : undefined,
-      openrouter: byok.openrouter ? decryptSecret(byok.openrouter) : undefined,
-    };
+    // BYOK — the user's own keys take precedence. Decrypted by `lib/ai/byok.ts`, the one place
+    // that knows which providers a user may store a key for, so this cannot drift from what
+    // /api/user/keys accepts or from what /api/ai/models reports as reachable.
+    const userKeys = userProviderKeys(session.userId);
 
     const altModel = Number(body.altModel) > 0 && Number(body.altModel) < 4 ? Number(body.altModel) : 0;
 
@@ -273,6 +309,7 @@ export async function POST(req: NextRequest) {
                     })),
                   }
                 : {}),
+              ...(contextMeta ? { context: contextMeta } : {}),
             },
           },
         ]);
@@ -304,6 +341,10 @@ export async function POST(req: NextRequest) {
                         })),
                       }
                     : {}),
+                  // What the model was actually shown. The chip and the line under the
+                  // answer both read this, so the UI can never claim context it did not
+                  // send (or hide that it dropped one).
+                  ...(contextMeta ? { context: contextMeta } : {}),
                 },
               })}\n\n`
             )

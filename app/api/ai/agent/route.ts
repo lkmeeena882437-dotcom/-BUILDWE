@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
-import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
-import { rateLimitDurable } from "@/lib/rate-limit/durable";
+import { limitAi } from "@/lib/rate-limit/guard";
+
 import { runAgent, type AgentEvent } from "@/lib/ai/agent";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
+import { creditGate, refundArtifact, getBalance } from "@/lib/credits";
 import { findUserById, listProjects, createProject } from "@/lib/db/store";
-import { decryptSecret } from "@/lib/crypto";
 import { bump } from "@/lib/metrics/metrics";
+import { userProviderKeys } from "@/lib/ai/byok";
 import { INPUT_LIMITS } from "@/lib/ai/gateway";
 
 export const runtime = "nodejs";
@@ -31,10 +32,9 @@ function sse(event: AgentEvent): string {
 export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
-    const ip = clientIp(req);
 
     // Tighter than chat: each run is a multi-step loop, not one completion.
-    const rl = await rateLimitDurable(`ai:agent:${session.userId}:${ip}`, 6, 60_000);
+    const rl = await limitAi("agent", session.userId, 6, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
         {
@@ -87,14 +87,16 @@ export async function POST(req: NextRequest) {
         createProject(session.userId, "Agent workspace").id;
     }
 
-    const userKeys = user?.byok
-      ? {
-          groq: user.byok.groq ? decryptSecret(user.byok.groq) || undefined : undefined,
-          openrouter: user.byok.openrouter
-            ? decryptSecret(user.byok.openrouter) || undefined
-            : undefined,
-        }
-      : undefined;
+    // Same resolver the chat and compare routes use: an agent run that ignored a user's own key
+    // would fall back to the platform's, or to nothing.
+    const userKeys = userProviderKeys(session.userId);
+
+    // An agent run is the most expensive thing on the platform (a plan plus
+    // several model calls plus file writes), so it is held before the first
+    // step and given back if the run does not finish its job.
+    const agentRefId = `agent:${session.userId}:${Date.now()}`;
+    const gate = creditGate(session.userId, "agent", agentRefId);
+    if (!gate.ok) return gate.res;
 
     bump("agent_run");
 
@@ -129,6 +131,9 @@ export async function POST(req: NextRequest) {
           recordUsage(session.userId, "code");
           if (result.verified) bump("agent_verified");
           if (!result.ok) bump("agent_failed");
+          if (!result.ok) {
+            refundArtifact(session.userId, "agent", gate.hold.cost, agentRefId);
+          }
 
           controller.enqueue(
             encoder.encode(
@@ -140,14 +145,19 @@ export async function POST(req: NextRequest) {
                 steps: result.steps,
                 verified: result.verified,
                 ...(result.primaryFile ? { primaryFile: result.primaryFile } : {}),
+                credits: {
+                  charged: result.ok ? gate.hold.cost : 0,
+                  balance: getBalance(session.userId),
+                },
               })}\n\n`
             )
           );
         } catch (e) {
           console.error("[bw] agent run", e);
+          refundArtifact(session.userId, "agent", gate.hold.cost, agentRefId);
           send({
             type: "error",
-            text: "The agent hit an unexpected problem and stopped. Nothing was left half-written.",
+            text: "The agent hit an unexpected problem and stopped. Nothing was left half-written, and the credits were returned.",
           });
         } finally {
           controller.close();

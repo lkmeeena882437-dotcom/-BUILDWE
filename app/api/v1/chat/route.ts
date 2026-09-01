@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
-import { rateLimitDurable } from "@/lib/rate-limit/durable";
+import { limitAi } from "@/lib/rate-limit/guard";
+
 import { streamChatOrCode } from "@/lib/ai/providers";
+import { modelDetailLabel } from "@/lib/ai/models-catalog";
 import { findApiKeyByHash, findUserById, touchApiKey } from "@/lib/db/store";
+import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { sha256Hex, decryptSecret } from "@/lib/crypto";
 
 export const runtime = "nodejs";
@@ -13,7 +15,8 @@ export const dynamic = "force-dynamic";
  *
  * Headers: Authorization: Bearer bw_sk_…
  * Body:    { "prompt": "..." }  or  { "messages": [{role, content}, …], "mode": "chat"|"code" }
- * Returns: { ok, model, live, reply }
+ * Returns: { ok, model, modelBrand, live, reply } — `model` names the row that answered, so a
+ * caller can budget by model; `modelBrand` is what the product shows an end user.
  */
 
 async function resolveKey(req: NextRequest) {
@@ -33,7 +36,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const rl = await rateLimitDurable(`devapi:${apiKey.id}:${clientIp(req)}`, 30, 60_000);
+    const rl = await limitAi("devapi", apiKey.id, 30, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
         { ok: false, error: "Rate limit — 30 requests/min per key." },
@@ -63,16 +66,40 @@ export async function POST(req: NextRequest) {
     }
 
     const user = findUserById(apiKey.userId);
-    const byok = user?.byok || {};
+    if (!user) {
+      return NextResponse.json(
+        { ok: false, error: "This API key's account no longer exists." },
+        { status: 403 }
+      );
+    }
+
+    // Every developer-API call is a real, billable model call, so it has to
+    // consume the same allowance the web app does (audit HIGH: this route was
+    // the one place with no quota at all — 5 curl calls, 5 free completions).
+    const limit = checkLimit(user.id, user.plan, "chat");
+    if (!limit.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: limit.message || "Daily limit reached for this key.",
+          code: "LIMIT",
+          used: limit.used,
+          max: limit.max,
+        },
+        { status: 429 }
+      );
+    }
+
+    const byok = user.byok || {};
     const userKeys = {
       groq: byok.groq ? decryptSecret(byok.groq) : undefined,
       openrouter: byok.openrouter ? decryptSecret(byok.openrouter) : undefined,
     };
 
-    const { stream, model, live } = await streamChatOrCode({
+    const { stream, model, modelId, live } = await streamChatOrCode({
       mode,
       messages,
-      plan: user?.plan || "free",
+      plan: user.plan,
       promptForRouting: messages[messages.length - 1]?.content || "",
       userKeys,
     });
@@ -99,13 +126,21 @@ export async function POST(req: NextRequest) {
     }
 
     touchApiKey(apiKey.id);
+    // Count only work we actually performed against a provider; a purely
+    // offline answer must not burn the caller's quota.
+    if (live) recordUsage(user.id, mode === "code" ? "code" : "chat");
 
     return NextResponse.json({
       ok: true,
-      model,
+      // A developer integrating against this API budgets by model, so `model` is the row that
+      // actually answered, not the brand. `modelBrand` stays for anything that shows the label to
+      // an end user, so the white-labelling contract did not move — it just stopped being the only
+      // answer available.
+      model: modelDetailLabel(modelId, mode === "code" ? "code" : "chat"),
+      modelBrand: model,
       live,
       reply,
-      usage: { characters: reply.length },
+      usage: { characters: reply.length, counted: live },
     });
   } catch (e) {
     console.error("[bw] v1 chat", e);

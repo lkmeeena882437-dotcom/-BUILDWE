@@ -92,6 +92,12 @@ export function checkLimit(
   return { ok: true, used, max, window: "day" };
 }
 
-export function recordUsage(userId: string, feature: Feature) {
-  return bumpUsage(userId, feature, 1);
+/**
+ * Count work that was actually performed. `n` exists because one request is
+ * not always one model call — a multi-model comparison costs as many calls as
+ * it had live lanes, and charging it as 1 made it the cheapest way to buy
+ * free compute (audit A4).
+ */
+export function recordUsage(userId: string, feature: Feature, n = 1) {
+  return bumpUsage(userId, feature, Math.max(1, Math.floor(n) || 1));
 }

@@ -42,7 +42,7 @@ export default function SecurityPage() {
           <li>Per-user and per-IP rate limits on every AI, search, auth, and payment route.</li>
           <li>Fair-use daily limits enforced server-side — not just hidden in the UI.</li>
           <li>Provider failures fall back automatically; one unavailable service never blocks the workspace.</li>
-          <li>Storage writes are atomic — a crash can't leave a half-written database.</li>
+          <li>Storage writes are atomic — a crash can&apos;t leave a half-written database.</li>
         </ul>
       </Section>
 

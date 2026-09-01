@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
-import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
-import { rateLimitDurable } from "@/lib/rate-limit/durable";
+import { limitAi } from "@/lib/rate-limit/guard";
+
 import { visionComplete } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
-import { addGeneration, findUserById } from "@/lib/db/store";
+import { addGeneration, findUserById, uid } from "@/lib/db/store";
+import { creditGate, creditReceipt, refundArtifact } from "@/lib/credits";
 import { decryptSecret } from "@/lib/crypto";
 
 export const runtime = "nodejs";
@@ -15,8 +16,7 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB
 export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
-    const ip = clientIp(req);
-    const rl = await rateLimitDurable(`ai:vision:${session.userId}:${ip}`, 20, 60_000);
+    const rl = await limitAi("vision", session.userId, 20, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
         { error: "Too many requests — wait a moment." },
@@ -60,7 +60,29 @@ export async function POST(req: NextRequest) {
       groq: byok.groq ? decryptSecret(byok.groq) : undefined,
     };
 
-    const result = await visionComplete({ prompt, imageDataUrl: image, userKeys });
+    const visionId = uid("vis");
+    // BYOK does not waive the credit: it changes whose key is billed, not
+    // whether the run costs anything. Otherwise pasting a key would be a
+    // free-credits exploit on every metered surface.
+    const gate = creditGate(session.userId, "vision", visionId);
+    if (!gate.ok) return gate.res;
+    let result: Awaited<ReturnType<typeof visionComplete>>;
+    try {
+      result = await visionComplete({ prompt, imageDataUrl: image, userKeys });
+    } catch (e) {
+      refundArtifact(session.userId, "vision", gate.hold.cost, visionId);
+      throw e;
+    }
+    if (!result.live || !String(result.text || "").trim()) {
+      refundArtifact(session.userId, "vision", gate.hold.cost, visionId);
+      return NextResponse.json(
+        {
+          error: "The vision model did not answer. Your credit was given back - try again.",
+          code: "PROVIDER_EMPTY",
+        },
+        { status: 502 }
+      );
+    }
 
     try {
       recordUsage(session.userId, "image");
@@ -80,6 +102,7 @@ export async function POST(req: NextRequest) {
       text: result.text,
       model: result.model,
       live: result.live,
+      credits: creditReceipt(session.userId, gate.hold),
     });
     attachGuestCookie(res, session.userId);
     return res;

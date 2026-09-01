@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
-import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
-import { rateLimitDurable } from "@/lib/rate-limit/durable";
+import { limitAi } from "@/lib/rate-limit/guard";
+
 import { generateAudioPlan } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { addGeneration, uid } from "@/lib/db/store";
 import { INPUT_LIMITS } from "@/lib/ai/gateway";
 import { persistDataUrl, mediaStorageEnabled } from "@/lib/storage/media";
+import { creditGate, creditReceipt, refundArtifact } from "@/lib/credits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,8 +15,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
-    const ip = clientIp(req);
-    const rl = await rateLimitDurable(`ai:audio:${session.userId}:${ip}`, 20, 60_000);
+    const rl = await limitAi("audio", session.userId, 20, 60_000);
     if (!rl.ok) {
       return NextResponse.json({ error: "Too many requests — wait a moment." }, { status: 429 });
     }
@@ -48,12 +48,34 @@ export async function POST(req: NextRequest) {
     const voice = String(body?.voice || "nova");
     const speed = Number(body?.speed) || 1;
 
-    const plan = await generateAudioPlan({
-      text,
-      voice,
-      speed,
-      plan: session.plan,
-    });
+    const genId = uid("gen");
+    const gate = creditGate(session.userId, "audio", genId);
+    if (!gate.ok) return gate.res;
+    let plan: Awaited<ReturnType<typeof generateAudioPlan>>;
+    try {
+      plan = await generateAudioPlan({
+        text,
+        voice,
+        speed,
+        plan: session.plan,
+      });
+    } catch (e) {
+      refundArtifact(session.userId, "audio", gate.hold.cost, genId);
+      throw e;
+    }
+    // Two different things can come back from that call. `browser-tts` means
+    // the browser's own speech engine served it - no server call, no cost, so
+    // the hold is returned. A real mp3 that came back empty is a failed run,
+    // which is also not billable, and the client is told so.
+    if (plan.type !== "mp3") {
+      refundArtifact(session.userId, "audio", gate.hold.cost, genId);
+    } else if (!plan.audioUrl) {
+      refundArtifact(session.userId, "audio", gate.hold.cost, genId);
+      return NextResponse.json(
+        { error: "The voice provider returned nothing - your credit was given back.", code: "PROVIDER_EMPTY" },
+        { status: 502 }
+      );
+    }
 
     try {
       recordUsage(session.userId, "audio");
@@ -61,7 +83,7 @@ export async function POST(req: NextRequest) {
       /* */
     }
 
-    let id = uid("gen");
+    let id = genId;
 
     // Persist the audio itself, not just a row saying it existed. Previously
     // the MP3 lived only in a base64 data URL held in memory, so history
@@ -101,6 +123,7 @@ export async function POST(req: NextRequest) {
       ...plan,
       // Prefer the hosted URL so the client caches a real file, not base64.
       ...(storedUrl ? { audioUrl: storedUrl, stored: true } : {}),
+      credits: creditReceipt(session.userId, gate.hold),
     });
     attachGuestCookie(res, session.userId);
     return res;

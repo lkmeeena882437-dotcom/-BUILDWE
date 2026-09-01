@@ -165,9 +165,15 @@ body.lock-scroll {
     opacity: 0;
     transform: translateY(10px);
   }
+  /* Ends on `none`, not `translateY(0)`: with `animation-fill-mode: both` the final frame is the
+     element's permanent style, and a permanent non-`none` transform turns this box into the
+     containing block for every `position: fixed` descendant — which is how a popover opened inside
+     it ends up beside the wrong thing. Found once already (bw-pop-in, step 6) and the same shape
+     was still here twice over, so the `to` frames of all three entrance animations are pinned by
+     tests/ui.mjs now. */
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 .anim-fade-up {
@@ -251,14 +257,20 @@ body.lock-scroll {
   --ease: cubic-bezier(0.2, 0.8, 0.3, 1);
   --shadow-1: 0 1px 2px rgb(20 17 15 / 0.05);
   --shadow-2: 0 8px 28px rgb(20 17 15 / 0.12);
+  /* Status colours as they must read on a *dark surface*. `.dark` adopts these as its
+     palette and `.bw-pop--dark` re-declares them, so a dark menu opened in the light theme
+     does not paint `--err`'s light value (#c0392b, ~3:1 on near-black) on a near-black
+     panel. One pair of literals, two consumers — the alternative is a hex in each place. */
+  --ok-on-dark: #4caf76;
+  --err-on-dark: #e57368;
 }
 
 .dark {
-  --ok: #4caf76;
+  --ok: var(--ok-on-dark);
   --ok-soft: #14301f;
   --warn: #e0b34c;
   --warn-soft: #33290f;
-  --err: #e57368;
+  --err: var(--err-on-dark);
   --err-soft: #39190f;
   --info: #7ca7f0;
   --info-soft: #16233d;
@@ -268,7 +280,11 @@ body.lock-scroll {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 6px;
+  /* A fixed 6px here silently re-rounded every focused control — a 10px menu row or a
+     999px pill button visibly changed its own corners the moment it took focus. The
+     default is unchanged (6px) for everything that predates this; a component declares
+     its own radius once, in one place. */
+  border-radius: var(--bw-focus-r, 6px);
 }
 
 /* ── Micro-interactions ─────────────────────────────────── */
@@ -299,8 +315,13 @@ button:active:not(:disabled) {
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
-    filter: blur(0);
+    /* `transform: none` and `filter: none`, not `translateY(0) scale(1)` and `blur(0)`. Both are
+       visually identical at rest and both are wrong structurally: a non-`none` filter ALSO makes
+       an element a containing block for fixed descendants, so a sheet that finished animating
+       would keep displacing any menu opened inside it. `@supports not (backdrop-filter…)` above
+       is the same class of care — the blur is a decoration, not a layout input. */
+    transform: none;
+    filter: none;
   }
 }
 .anim-sheet {
@@ -314,7 +335,7 @@ button:active:not(:disabled) {
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 .anim-rise {
@@ -351,6 +372,752 @@ button:active:not(:disabled) {
 .bw-badge-err { background: var(--err-soft); color: var(--err); }
 .bw-badge-warn { background: var(--warn-soft); color: var(--warn); }
 .bw-badge-info { background: var(--info-soft); color: var(--info); }
+
+
+/* ── Dark popover surface (lib/ui) ────────────────────────────
+   The app has exactly one permanently-dark surface today — the code/agent panel on
+   --code-bg — and the one popover inside it hard-codes its background
+   (bg-[#1e1b18] at app/page.tsx:3047). Menus and flyouts need the same look without
+   inventing a second palette, so it becomes a token pair: in Light mode it reads as
+   the code panel beside it, in Dark mode it is the theme's own elevated card. Hover
+   and divider colour derive from currentColor so one .bw-menu-row works on either. */
+:root {
+  --surface-dark: #1e1b18;
+  --surface-dark-fg: #f4f0e8;
+  --surface-dark-muted: rgba(244, 240, 232, 0.6);
+  --surface-dark-border: rgba(255, 255, 255, 0.1);
+}
+
+.dark {
+  --surface-dark: #26221e;
+  --surface-dark-fg: var(--ink);
+  --surface-dark-muted: var(--muted);
+  --surface-dark-border: var(--border);
+}
+
+/* ── Popovers (lib/ui/Popover.tsx) ────────────────────────────
+   Outer node positions, inner node paints and scrolls. Entrance is opacity +
+   translate + scale from the trigger's corner: the origin follows
+   [data-placement], so a menu that flipped above still grows out of the button that
+   opened it. prefers-reduced-motion is neutralised globally at the end of this file. */
+@keyframes bw-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+  /* Ends on `none`, not `scale(1)`, on purpose — and this is the one line in this file that
+     is load-bearing for correctness rather than taste. The animation is `both`, so the final
+     keyframe stays applied to the panel forever, and *any* non-`none` transform (including a
+     no-op `scale(1)`) turns the panel into the containing block for `position: fixed`
+     descendants. A submenu is exactly that: the panel measures it from viewport coordinates,
+     so a transformed parent would displace it by the parent's own top/left. */
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.bw-pop {
+  z-index: 50;
+}
+
+.bw-pop__panel {
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-2);
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 6px;
+  animation: bw-pop-in var(--dur) var(--ease) both;
+  transform-origin: top left;
+}
+
+.bw-pop[data-placement="above"] .bw-pop__panel {
+  transform-origin: bottom left;
+}
+
+.bw-pop[data-placement="left"] .bw-pop__panel {
+  transform-origin: top right;
+}
+
+.bw-pop--dark {
+  background: var(--surface-dark);
+  border-color: var(--surface-dark-border);
+  color: var(--surface-dark-fg);
+  /* Custom properties inherit down the DOM, not from the surface that is painted — so
+     without these two lines a danger row or a status badge inside a dark menu resolves
+     against the *page* theme and gets the light palette's darker ink. */
+  --ok: var(--ok-on-dark);
+  --err: var(--err-on-dark);
+}
+
+.bw-pop--light {
+  background: var(--card);
+  border-color: var(--border);
+  color: var(--ink);
+}
+
+/* ── Menu rows (lib/ui/MenuRow.tsx) ─────────────────────────── */
+.bw-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.bw-menu-row__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  opacity: 0.75;
+}
+
+.bw-menu-row:hover:not(.is-disabled),
+.bw-menu-row:focus-visible:not(.is-disabled) {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.bw-menu-row:active:not(.is-disabled) {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  transform: scale(0.99);
+}
+
+.bw-menu-row[aria-current="true"] {
+  color: var(--accent);
+}
+
+.bw-menu-row[aria-current="true"] .bw-menu-row__icon {
+  opacity: 1;
+}
+
+.bw-menu-row--danger {
+  color: var(--err);
+}
+
+.bw-menu-row.is-disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.bw-menu-divider {
+  height: 1px;
+  margin: 5px 8px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.bw-menu-label {
+  padding: 8px 10px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.5;
+}
+
+/* Not every popover is a list of menu rows. `padding: 6px` suits rows; a panel holding
+   blocks (the answer-style control) needs its own rhythm, and that belongs here rather
+   than in a chain of Tailwind utilities at the call site. */
+.bw-pop__stack {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0 3px 4px;
+}
+
+.bw-pop__stack .bw-menu-label {
+  padding: 8px 7px 3px;
+}
+
+/* ── Segmented control (lib/ui/SegmentedControl.tsx) ──────────
+   The indicator animates transform + width only, so the slide stays composited
+   instead of relayouting the row on every frame. */
+.bw-seg {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--secondary);
+}
+
+.bw-seg--full {
+  display: flex;
+  width: 100%;
+}
+
+.bw-seg--dark {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  border-color: var(--surface-dark-border);
+}
+
+.bw-seg__ind {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 0;
+  border-radius: 999px;
+  background: var(--card);
+  box-shadow: var(--shadow-1);
+  transition:
+    transform var(--dur) var(--ease),
+    width var(--dur) var(--ease),
+    opacity var(--dur-fast) var(--ease);
+  pointer-events: none;
+}
+
+.bw-seg--dark .bw-seg__ind {
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  box-shadow: none;
+}
+
+.bw-seg__btn {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  transition:
+    color var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+.bw-seg--sm .bw-seg__btn {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.bw-seg--full .bw-seg__btn {
+  flex: 1 1 0;
+}
+
+.bw-seg--dark .bw-seg__btn {
+  color: var(--surface-dark-muted);
+}
+
+.bw-seg__btn.is-active {
+  color: var(--ink);
+}
+
+.bw-seg--dark .bw-seg__btn.is-active {
+  color: var(--surface-dark-fg);
+}
+
+.bw-seg__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.bw-seg__btn:not(:disabled):active {
+  transform: scale(0.985);
+}
+
+
+/* ── Composer pill (components/workspace/PromptBar.tsx) ─────
+   The field used to be a card in an opaque footer with a hairline above it. As a pill it
+   floats: the footer is translucent + blurred so answers scroll under it, and the ring
+   follows `:focus-within` on the pill rather than the textarea alone, so it stays lit
+   while focus is on the attach menu or a trailing action. Shadow goes one step up on
+   focus and back down on blur — that is the whole "focus animation". */
+.bw-dock {
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+  backdrop-filter: blur(10px) saturate(1.05);
+  -webkit-backdrop-filter: blur(10px) saturate(1.05);
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .bw-dock {
+    background: var(--bg-elevated);
+  }
+}
+
+.bw-pill {
+  border: 1px solid var(--border);
+  border-radius: 26px;
+  background: var(--card);
+  box-shadow: var(--shadow-1);
+  transition:
+    box-shadow var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.bw-pill:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow: var(--shadow-2);
+}
+
+.bw-pill__input {
+  color: inherit;
+  caret-color: var(--accent);
+}
+
+/* Step 3: the drop target and the character counter live inside the pill. The drop
+   overlay must beat the textarea for hit-testing, and the counter only exists when it
+   has something to say - so it is never a permanent line of chrome. */
+.bw-pill__drop {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--accent-soft) 86%, var(--card));
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.bw-pill.is-drop {
+  border-color: var(--accent);
+  border-style: dashed;
+  box-shadow: var(--shadow-2);
+}
+
+.bw-pill__count {
+  margin: 0 14px -2px;
+  text-align: right;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bw-pill__count.is-near {
+  color: var(--soft);
+}
+
+.bw-pill__count.is-over {
+  color: var(--err);
+}
+
+/* Step 4: the recording has to stay visible after the menu closes, because closing is
+   what starting does. Red dot + clock + the two controls, and the dot pulses only
+   while motion is allowed (the reduced-motion guard at the bottom of this file wins). */
+.bw-pill__voice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 14px 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.bw-pill__rec {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--err);
+  flex: none;
+  animation: bw-rec 1.6s ease-out infinite;
+}
+
+@keyframes bw-rec {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--err) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.bw-pill__voicebtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.bw-pill__voicebtn:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+/* Step 5: the mode trigger. Two things Tailwind cannot say here:
+   • min-width, so the pill does not reflow when the label changes (Auto → Vision is two
+     characters wider, and a control that slides sideways under the cursor is a mis-tap);
+     the wider floor only applies where the label is actually shown (sm+).
+   • the chevron's turn, keyed off aria-expanded rather than a class duplicated from
+     state — the attribute is the truth the popover already keeps. */
+.bw-mode__btn {
+  --bw-focus-r: 14px;
+  min-width: 52px;
+  justify-content: flex-start;
+}
+
+@media (min-width: 640px) {
+  .bw-mode__btn {
+    min-width: 92px;
+  }
+}
+
+.bw-mode__chev {
+  transition: transform var(--dur, 180ms) ease;
+}
+
+.bw-mode__btn[aria-expanded="true"] .bw-mode__chev {
+  transform: rotate(180deg);
+}
+
+/* ── Focus radius + touch targets for the shared controls ──
+   Each primitive already owns a corner radius; --bw-focus-r tells the global ring to keep
+   it. On touch (coarse pointers) menu rows grow, because a 34px row is a mis-tap and the
+   attach menu is the one place a thumb is guaranteed to land. */
+.bw-menu-row {
+  --bw-focus-r: 10px;
+}
+
+.bw-seg__btn {
+  --bw-focus-r: 999px;
+}
+
+.bw-pop__panel {
+  --bw-focus-r: 14px;
+}
+
+.bw-pill button {
+  --bw-focus-r: 12px;
+}
+
+.bw-pill__send {
+  --bw-focus-r: 16px;
+}
+
+@media (pointer: coarse) {
+  .bw-menu-row {
+    min-height: 40px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+}
+
+/* ── Step 6: sidebar rows that carry a menu (ProfileFlyout, Settings) ── */
+.bw-side-row {
+  --bw-focus-r: 16px;
+  transition: background var(--dur) var(--ease);
+}
+
+.bw-side-row:hover {
+  background: var(--secondary);
+}
+
+.bw-side-row__chev {
+  transition: transform var(--dur) var(--ease);
+}
+
+/* The list used to gain and lose a scrollbar as the 11th chat appeared, shifting every
+   row sideways by the gutter width mid-read. Reserving it costs 8px nobody notices. */
+.bw-side-list {
+  scrollbar-gutter: stable;
+}
+
+@media (pointer: coarse) {
+  .bw-side-row {
+    min-height: 40px;
+  }
+}
+
+/* ── Step 7a: /pricing tier cards ────────────────────────── */
+/* Only a live CTA moves: a disabled one is a statement about the account, and lifting it
+   on hover would invite the click it just refused. */
+.bw-tier__cta {
+  --bw-focus-r: 16px;
+  transition: background var(--dur) var(--ease), transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+
+.bw-tier__cta:not([disabled]):hover {
+  transform: translateY(-1px);
+}
+
+/* ── Step 6b: grouped history in the sidebar ─────────────── */
+.bw-side-group__head {
+  --bw-focus-r: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--soft);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.bw-side-group__head:hover {
+  background: var(--secondary);
+  color: var(--muted);
+}
+
+.bw-side-group__chev {
+  opacity: 0.7;
+  transition: transform var(--dur) var(--ease);
+}
+
+/* The chevron answers the ARIA state, not a class a caller has to remember to toggle. */
+.bw-side-group__head[aria-expanded="true"] .bw-side-group__chev {
+  transform: rotate(90deg);
+}
+
+.bw-side-group__count {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+/* A folded group can hide the conversation you are reading, and a list long enough to fold is
+   a list long enough to scroll it out of sight - so the count of the group holding it is tinted. */
+.bw-side-group__count.is-now {
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* A control that is `display: none` until you hover is not a keyboard control at all, and the
+   per-chat delete used to be exactly that (it also never appeared on a tablet, which has no
+   hover to wait for). These reveal by opacity - on hover, on focus, and always where there is
+   no pointer to hover with. */
+.bw-side-hover {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.bw-side-item:hover .bw-side-hover,
+.bw-side-hover:focus-visible {
+  opacity: 1;
+}
+
+@media (pointer: coarse) {
+  .bw-side-hover {
+    opacity: 1;
+  }
+
+  .bw-side-group__head {
+    min-height: 40px;
+  }
+}
+
+/* ── Link previews ───────────────────────────────────────── */
+/* A card is a small amount of somebody else's content inside our layout, so it is
+   boxed, clamped, and never allowed to set its own height: an og:image arrives late,
+   and a card that grows on load pushes the conversation around. */
+.bw-previews {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.bw-preview {
+  --bw-focus-r: 12px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+.bw-preview:hover {
+  border-color: color-mix(in srgb, var(--ink) 24%, transparent);
+}
+
+.bw-preview__mark {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--secondary);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.bw-preview__body {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.bw-preview__host {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--soft);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bw-preview__title {
+  display: block;
+  margin-top: 1px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  text-decoration: none;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bw-preview__title:hover {
+  text-decoration: underline;
+}
+
+.bw-preview__desc {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.bw-preview__imgbtn {
+  align-self: center;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  background: var(--secondary);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.bw-preview__imgbtn:hover {
+  color: var(--ink);
+}
+
+.bw-preview__img {
+  display: block;
+  width: 100%;
+  max-height: 168px;
+  margin-top: 8px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+/* ── Workspace apply rows ───────────────────────────────── */
+/* The row is a control with a state, so it looks like one: a boxed line, the verb on the
+   right, and the reason for a refusal inline rather than in a toast that disappears. */
+.bw-apply {
+  --bw-focus-r: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--secondary);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.bw-apply--blocked {
+  border-style: dashed;
+}
+
+.bw-apply__meta {
+  margin-left: 6px;
+  color: var(--soft);
+  font-size: 11px;
+}
+
+.bw-apply__btn {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: var(--ink);
+  color: var(--bg);
+  cursor: pointer;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.bw-apply__btn:hover {
+  opacity: 0.86;
+}
+
+.bw-apply__btn:disabled {
+  background: var(--secondary);
+  color: var(--soft);
+  cursor: not-allowed;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.bw-apply__done {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ok);
+}
+
+.bw-apply__err {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--err);
+}
 
 /* ── Reduced motion: respect the user ───────────────────── */
 @media (prefers-reduced-motion: reduce) {

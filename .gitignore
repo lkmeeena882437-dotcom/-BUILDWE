@@ -39,8 +39,19 @@ buildwe-main.bundle
 .git-credentials
 
 
+# test scratch: os.tmpdir() resolves to ./tmp when TMPDIR is relative,
+# and each disposable dev server puts its build cache there
+/tmp
+
 # free local db
 /data
 *.db
 .env.local
 
+# ── internal working notes, kept on disk but never published ────────────────
+# This repo is public. Audit findings, competitor analysis, gap lists and the
+# step tracker describe what the product does not do yet - that is a roadmap for
+# someone looking for a soft spot, not documentation. The files stay in the
+# workspace (docs/internal/) so the plan can keep being followed; they are simply
+# not tracked.
+/docs/internal/

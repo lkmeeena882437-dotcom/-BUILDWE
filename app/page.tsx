@@ -10,10 +10,6 @@ import React, {
 } from "react";
 import Link from "next/link";
 import {
-  MessageSquare,
-  Code2,
-  Image as ImageIcon,
-  Mic2,
   Send,
   Square,
   Copy,
@@ -24,19 +20,12 @@ import {
   Settings,
   Sparkles,
   ChevronRight,
-  ChevronLeft,
   X,
   Menu,
   Zap,
-  Paperclip,
-  Mic,
-  MicOff,
   LogOut,
   LogIn,
   CreditCard,
-  Sun,
-  Moon,
-  Monitor,
   Star,
   PanelLeftClose,
   PanelLeft,
@@ -51,25 +40,19 @@ import {
   Play,
   FlaskConical,
   Wrench,
+  LayoutGrid,
   Recycle,
   SquarePen,
-  ThumbsUp,
-  ThumbsDown,
   Download,
   Layers,
-  Globe,
   Share2,
-  FolderPlus,
   FolderOpen,
-  ImagePlus,
-  XCircle,
   Eye,
   KeyRound,
   Terminal,
   Printer,
   Users,
   UserPlus,
-  SlidersHorizontal,
   Chrome,
   Github,
   HelpCircle,
@@ -99,10 +82,14 @@ import {
   analyzeFileApi,
   createShare,
   fetchProjects,
+  saveAnswer,
+  shareAnswer,
   createProject,
   assignProject,
   deleteProjectApi,
   fetchByok,
+  compareMixApi,
+  fetchCompareContract,
   saveByok,
   fetchTeams,
   createTeam,
@@ -122,13 +109,70 @@ import {
   type ProjectFileMeta,
   type TeamView,
   type MeResponse,
-} from "@/lib/client/api";
+  type ModelsInfo,
+  type CompareContract,
+  type CompareRun } from "@/lib/client/api";
+import type { MixEntry } from "@/components/workspace/CompareResults";
 import { ImageStudio, type StudioImage } from "@/components/workspace/ImageStudio";
 import { AudioStudio } from "@/components/workspace/AudioStudio";
-import { AdSlot } from "@/components/AdSlot";
+import { CanvasHistoryMenu, type CanvasVersion } from "@/components/workspace/CanvasHistoryMenu";
+import { ProjectMoveMenu } from "@/components/workspace/ProjectMoveMenu";
+import type { PaletteRow } from "@/lib/client/palette";
+import { Sheet } from "@/components/workspace/Sheet";
+import { MessageActions } from "@/components/workspace/MessageActions";
+import { EmptyState } from "@/components/workspace/EmptyState";
+import dynamic from "next/dynamic";
 
-type Mode = "auto" | "chat" | "code" | "image" | "audio";
-type ThemePref = "system" | "light" | "dark";
+/* The creations list is opened by a click, not by a page load: ~3 kB of First Load JS for
+   every session that never opens it is the wrong trade, so the panel (and its row menu,
+   which is the only thing that pulls in Popover/MenuRow here) arrives as its own chunk. */
+/* ⌘K, lazy for the same reason as the panel above: the shortcut is for the person who wants it,
+   and a workspace that ships a 31-tool jump list to every first visit pays for it on every load.
+   No `loading` shell here — the sheet that arrives IS the loading state, and a skeleton that
+   flashes for one frame in a dialog is noise. */
+/* The lane picker too: its weight is a list of models nobody needs until they have decided to
+   compare, and it renders inside a sheet that is itself conditional. Same shape as the two above —
+   no loading shell, because "Reading which models this run can ask…" already is one. */
+const CompareLanes = dynamic(
+  () => import("@/components/workspace/CompareLanes").then((m) => m.CompareLanes),
+  { ssr: false }
+);
+
+/* Same reason as the picker above, and it only appears once a comparison has answered. */
+const CompareResults = dynamic(
+  () => import("@/components/workspace/CompareResults").then((m) => m.CompareResults),
+  { ssr: false }
+);
+
+const CommandPalette = dynamic(
+  () => import("@/components/workspace/CommandPalette").then((m) => m.CommandPalette),
+  { ssr: false }
+);
+
+const CreationsPanel = dynamic(
+  () => import("@/components/workspace/CreationsPanel").then((m) => m.CreationsPanel),
+  {
+    ssr: false,
+    loading: () => (
+      <p className="py-6 text-xs" style={{ color: "var(--muted)" }}>
+        Opening your creations…
+      </p>
+    ),
+  }
+);
+import { AdSlot } from "@/components/AdSlot";
+import { renderSafeMarkdown } from "@/lib/safe-md";
+import { LinkPreviews } from "@/components/chat/LinkPreviews";
+import { FileApplyBlocks } from "@/components/chat/FileApplyBlocks";
+import { useProPrice } from "@/components/billing/useProPrice";
+import { WalletChip, openCredits, useWallet } from "@/components/billing/CreditsUI";
+import { PromptBar } from "@/components/workspace/PromptBar";
+import { Btn } from "@/lib/ui/Btn";
+import { MODE_META, type Mode } from "@/lib/client/modes";
+import { ProfileFlyout } from "@/components/workspace/ProfileFlyout";
+import { SegmentedControl } from "@/lib/ui/SegmentedControl";
+import { THEME_ITEMS, type ThemePref } from "@/lib/client/theme";
+import { groupHistory } from "@/lib/client/groupHistory";
 
 type Msg = {
   id: string;
@@ -137,6 +181,24 @@ type Msg = {
   streaming?: boolean;
   image?: string;
   sources?: { title: string; url: string; host: string }[];
+  /**
+   * Workspace context, as reported by the server on the stream and stored on the
+   * message. It is the *server's* answer, not an echo of what the client asked for,
+   * so the line under an answer can say "nothing was read" when that is what
+   * actually happened (the file was renamed or deleted after the chip was set).
+   */
+  context?: {
+    attached: boolean;
+    openPath?: string | null;
+    openAttached?: boolean;
+    files?: number;
+    included?: number;
+    truncated?: number;
+    omitted?: number;
+    chars?: number;
+    requested?: string;
+    reason?: "not_found" | "empty_project";
+  };
   understood?: string;
   clarifier?: string;
   quality?: { label: "good" | "review"; notes: string[] };
@@ -171,55 +233,6 @@ type HistItem = {
 
 type ProjectItem = { id: string; name: string; createdAt: string };
 
-const MODE_META: {
-  id: Mode;
-  label: string;
-  icon: React.ElementType;
-  headline: string;
-  sub: string;
-  power: string;
-}[] = [
-  {
-    id: "auto",
-    label: "Auto",
-    icon: Bot,
-    headline: "Ask once. BUILDWE routes it.",
-    sub: "One box for thinking, building, visuals, and voice.",
-    power: "Smart routing",
-  },
-  {
-    id: "chat",
-    label: "Chat",
-    icon: MessageSquare,
-    headline: "Think. Write. Understand.",
-    sub: "Decide faster. Write sharper. Learn without noise.",
-    power: "BUILDWE Chat",
-  },
-  {
-    id: "code",
-    label: "Code",
-    icon: Code2,
-    headline: "Build. Debug. Ship.",
-    sub: "Scaffold, fix, and ship — without leaving the workspace.",
-    power: "BUILDWE Code",
-  },
-  {
-    id: "image",
-    label: "Vision",
-    icon: ImageIcon,
-    headline: "Imagine. Create. Transform.",
-    sub: "Brand frames, product shots, and scenes on demand.",
-    power: "BUILDWE Vision",
-  },
-  {
-    id: "audio",
-    label: "Voice",
-    icon: Mic2,
-    headline: "Speak. Listen. Create.",
-    sub: "Natural speech for briefs, stories, and product copy.",
-    power: "BUILDWE Voice",
-  },
-];
 
 const SUGGEST: Record<Mode, string[]> = {
   auto: [
@@ -284,25 +297,53 @@ function rid() {
 }
 
 function md(text: string) {
-  let h = text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-  h = h.replace(/```(\w+)?\n([\s\S]*?)```/g, (_m, lang, code) => {
-    return `<pre data-lang="${lang || ""}"><code>${code.replace(/\n$/, "")}</code></pre>`;
-  });
-  h = h.replace(/`([^`]+)`/g, "<code>$1</code>");
-  h = h.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  h = h.replace(/^(?:- |\* )(.+)$/gm, "<li>$1</li>");
-  h = h.replace(/(<li>[\s\S]*?<\/li>)(?:\n<li>[\s\S]*?<\/li>)*/g, (m) => `<ul>${m}</ul>`);
-  return h
-    .split(/\n{2,}/)
-    .map((b) =>
-      b.startsWith("<pre") || b.startsWith("<ul")
-        ? b
-        : `<p>${b.replace(/\n/g, "<br/>")}</p>`
-    )
-    .join("");
+  // Shared hardened renderer (audit C2): the inline version escaped `& < >`
+  // but not quotes, so a fence label or a link target could close an
+  // attribute and run script in every reader's browser.
+  return renderSafeMarkdown(text);
+}
+
+/**
+ * One line under an answer: which project file it was written against, in the numbers
+ * the server reported. Truncation is named because a model that answered about a file
+ * it only saw half of is the thing a reader is entitled to know about.
+ */
+function ContextNote({
+  context,
+}: {
+  context: NonNullable<Msg["context"]>;
+}) {
+  if (!context.attached) {
+    const why =
+      context.reason === "empty_project"
+        ? "this project has no files yet"
+        : "that file is not in this project any more";
+    return (
+      <p
+        className="mt-2 text-[11px] leading-snug"
+        style={{ color: "var(--muted)" }}
+        data-context-note="none"
+      >
+        No workspace context was read — {why}.
+      </p>
+    );
+  }
+  const k = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} kB`);
+  const parts = [k(context.chars || 0)];
+  const others = (context.included || 0) - (context.openAttached ? 1 : 0);
+  if (others > 0) parts.push(`${others} other file${others === 1 ? "" : "s"}`);
+  if (context.truncated) parts.push(`${context.truncated} truncated`);
+  if (context.omitted) parts.push(`${context.omitted} over budget`);
+  return (
+    <p
+      className="mt-2 text-[11px] leading-snug"
+      style={{ color: "var(--muted)" }}
+      data-context-note="attached"
+    >
+      Read <span className="font-mono">{context.openPath || "the project"}</span> ·{" "}
+      {parts.join(" · ")} of context
+    </p>
+  );
 }
 
 function extractCode(text: string) {
@@ -315,137 +356,41 @@ function extractCode(text: string) {
   return blocks;
 }
 
-function Btn({
-  children,
-  onClick,
-  disabled,
-  variant = "primary",
-  size = "md",
-  className,
-  type = "button",
-  style,
-  title,
-  "aria-label": al,
-}: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  disabled?: boolean;
-  variant?: "primary" | "ghost" | "ink" | "icon" | "soft";
-  size?: "sm" | "md" | "lg";
-  className?: string;
-  type?: "button" | "submit";
-  style?: React.CSSProperties;
-  title?: string;
-  "aria-label"?: string;
-}) {
-  const base =
-    variant === "primary"
-      ? { background: "var(--accent)" }
-      : variant === "ink"
-        ? { background: "var(--ink)", color: "var(--bg)" }
-        : variant === "soft"
-          ? { background: "var(--accent-soft)", color: "var(--accent)" }
-          : variant === "ghost"
-            ? {
-                borderColor: "var(--border)",
-                background: "var(--card)",
-                color: "var(--ink)",
-              }
-            : { color: "var(--muted)" };
-  return (
-    <button
-      type={type}
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={al}
-      title={title || al}
-      className={clsx(
-        "inline-flex items-center justify-center gap-1.5 font-medium transition active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40",
-        variant === "primary" && "rounded-2xl text-white shadow-sm",
-        variant === "ghost" && "rounded-2xl border",
-        variant === "ink" && "rounded-2xl",
-        variant === "soft" && "rounded-2xl",
-        variant === "icon" && "rounded-xl",
-        size === "sm" && variant !== "icon" && "h-9 px-3.5 text-sm",
-        size === "md" && variant !== "icon" && "h-10 px-4 text-sm",
-        size === "lg" && variant !== "icon" && "h-12 px-5 text-[15px]",
-        variant === "icon" && (size === "sm" ? "h-8 w-8" : "h-10 w-10"),
-        className
-      )}
-      style={style ? { ...base, ...style } : base}
-    >
-      {children}
-    </button>
-  );
-}
+/* The Models sheet's captions, and the arithmetic its two summaries share. Presentation lives here;
+   which models exist, and whether they can be called, comes only from /api/ai/models. */
+const MODEL_CAPTION: Record<string, string> = {
+  chat: "Chat & reasoning",
+  code: "Code",
+  image: "Image",
+  audio: "Voice",
+  stt: "Transcription",
+  vision: "Image reading",
+};
 
-function Sheet({
-  children,
-  onClose,
-  title,
-  wide,
-}: {
-  children: React.ReactNode;
-  onClose: () => void;
-  title?: string;
-  wide?: boolean;
-}) {
-  useEffect(() => {
-    const k = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", k);
-    document.body.classList.add("lock-scroll");
-    return () => {
-      window.removeEventListener("keydown", k);
-      document.body.classList.remove("lock-scroll");
-    };
-  }, [onClose]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
-      <button type="button" className="absolute inset-0 bg-black/35" aria-label="Close" onClick={onClose} />
-      <div
-        role="dialog"
-        aria-modal
-        className={clsx(
-          "relative z-10 max-h-[90dvh] w-full overflow-y-auto rounded-t-3xl border p-5 shadow-2xl sm:rounded-3xl",
-          wide ? "max-w-lg" : "max-w-md"
-        )}
-        style={{
-          borderColor: "var(--border)",
-          background: "var(--card)",
-          color: "var(--ink)",
-          paddingBottom: "calc(18px + var(--safe-b))",
-        }}
-      >
-        <div className="mb-3 flex justify-center sm:hidden">
-          <span className="h-1 w-10 rounded-full" style={{ background: "var(--border)" }} />
-        </div>
-        {title && (
-          <div className="mb-4 flex items-center gap-2">
-            <button type="button" onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-xl" style={{ color: "var(--muted)" }} aria-label="Back">
-              <ChevronLeft className="h-5 w-5" />
-            </button>
-            <h2 className="flex-1 text-base font-semibold tracking-tight">{title}</h2>
-            <button type="button" onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-xl" style={{ color: "var(--muted)" }} aria-label="Close">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        )}
-        {children}
-      </div>
-    </div>
-  );
-}
+const readyCount = (info: ModelsInfo) =>
+  Object.values(info.ready).reduce((n, r) => n + r.ready, 0);
+const readyTotal = (info: ModelsInfo) =>
+  Object.values(info.ready).reduce((n, r) => n + r.total, 0);
 
 function Dashboard() {
   const [view, setView] = useState<"home" | "app">("home");
   const [mode, setMode] = useState<Mode>("chat");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  /* Which history groups the person folded up. Deliberately not persisted: the sidebar renders
+     on the client after the session loads, so a preference read from storage at first render
+     would either flash the unfolded list or hydrate into a different tree than the server sent.
+     The one place a fold is worth keeping across a reload - the rail width - is the same
+     trade-off and is left alone for the same reason. */
+  const [foldedGroups, setFoldedGroups] = useState<string[]>([]);
   const [drawer, setDrawer] = useState(false);
   const [modal, setModal] = useState<
-    null | "auth" | "settings" | "plans" | "profile" | "models" | "skills" | "byok" | "teams" | "compare"
+    null | "auth" | "settings" | "plans" | "profile" | "models" | "skills" | "byok" | "teams" | "compare" | "creations"
   >(null);
   const [authTab, setAuthTab] = useState<"login" | "register">("login");
+  /* Not a `modal` value: the palette is orthogonal to which sheet is open (it is how you get to
+     one), it closes on its own terms, and folding it into the union would make every sheet's
+     `onClose={() => setModal(null)}` a second way to dismiss it by accident. */
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [themePref, setThemePref] = useState<ThemePref>("system");
   const [dark, setDark] = useState(false);
 
@@ -502,15 +447,34 @@ function Dashboard() {
   const [authBusy, setAuthBusy] = useState(false);
   const [skillDraft, setSkillDraft] = useState("");
   const [skillList, setSkillList] = useState<string[]>([]);
-  const [modelsCatalog, setModelsCatalog] = useState<
-    { id: string; name: string; blurb: string; status: string; badge?: string; family: string }[]
-  >([]);
+  /* What this deployment can call, from `/api/ai/models`. The sheet used to render the marketing
+     ladder (`all`), which lists "coming soon" seats nobody can pick — and when the fetch failed it
+     fell back to a hardcoded list containing an invented model. A read-out about *which model
+     answers you* is the one place a made-up row is unacceptable, so there is no fallback: the sheet
+     says it failed and offers to try again. `null` while loading, and the two are told apart. */
+  const [modelsInfo, setModelsInfo] = useState<ModelsInfo | null>(null);
+  const [modelsErr, setModelsErr] = useState("");
 
   // web search + vision attachment
   const [webSearchOn, setWebSearchOn] = useState(false);
   const [comparePrompt, setComparePrompt] = useState("");
   const [compareBusy, setCompareBusy] = useState(false);
-  const [compareResult, setCompareResult] = useState<Awaited<ReturnType<typeof compareApi>> | null>(null);
+  const [compareResult, setCompareResult] = useState<CompareRun | null>(null);
+  /* Which lanes this run should ask. `null` means "the deployment's default set", and the set
+     itself is read from the server (`GET /api/ai/compare`) rather than copied into this file —
+     three hard-coded seats used to be the only answer anyone could get, and a picker built on a
+     guess about them is how a client ends up offering a model the server refuses. */
+  const [laneContract, setLaneContract] = useState<CompareContract | null>(null);
+  const [laneErr, setLaneErr] = useState("");
+  const [laneIds, setLaneIds] = useState<string[] | null>(null);
+  const [compareErr, setCompareErr] = useState("");
+  /* The mix. `mixes[0]` is the run's own combined answer and every later entry is one the reader
+     folded themselves, so the strip can say which is which (and which cost a credit). `null`
+     include means "every lane that answered", which is what the run did. */
+  const [mixes, setMixes] = useState<MixEntry[]>([]);
+  const [mixView, setMixView] = useState(0);
+  const [mixInclude, setMixInclude] = useState<string[] | null>(null);
+  const [mixBusy, setMixBusy] = useState(false);
   const [attachment, setAttachment] = useState<{ dataUrl: string; name: string } | null>(null);
   const [visionBusy, setVisionBusy] = useState(false);
 
@@ -533,6 +497,10 @@ function Dashboard() {
   const [projFilesBusy, setProjFilesBusy] = useState(false);
   const [projFilesErr, setProjFilesErr] = useState("");
   const [openFileId, setOpenFileId] = useState<string | null>(null);
+  // Chat -> workspace (UI step 9): opt-in per file. The chip in the composer is the
+  // only way context gets attached, because "silently read whatever is open" is how a
+  // chat product ends up spending tokens and quoting files the reader never meant to send.
+  const [chatCtxPath, setChatCtxPath] = useState<string | null>(null);
   const [newFilePath, setNewFilePath] = useState("");
   // Coding Agent run state — the agent works autonomously, so the user needs
   // to see each step as it happens rather than a single opaque spinner.
@@ -547,28 +515,47 @@ function Dashboard() {
     verified: boolean;
   } | null>(null);
   const agentAbort = useRef<AbortController | null>(null);
-  const [canvasVersions, setCanvasVersions] = useState<
-    { ts: number; code: string; lang: string }[]
-  >([]);
+  const [canvasVersions, setCanvasVersions] = useState<CanvasVersion[]>([]);
   const [canvasActionBusy, setCanvasActionBusy] = useState<string | null>(null);
   const [canvasConsole, setCanvasConsole] = useState<{
     kind: "run" | "test" | "note";
     ok: boolean;
     text: string;
   } | null>(null);
-  const [verMenu, setVerMenu] = useState(false);
 
   // response style (human-language controls)
   const [depth, setDepth] = useState<"short" | "balanced" | "detailed" | "deep">("balanced");
   const [tone, setTone] = useState<"simple" | "standard" | "expert">("standard");
-  const [styleMenu, setStyleMenu] = useState(false);
   const [streamPhase, setStreamPhase] = useState("");
   const lastPrompt = useRef("");
   const phaseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // share
   const [shareNote, setShareNote] = useState("");
-  const [projMenu, setProjMenu] = useState(false);
+  /* Which answer of this chat currently has a link being minted, or a save in flight: the buttons
+     show a spinner for that one message only, so twelve answers do not all go idle at once. */
+  const [sharingMsg, setSharingMsg] = useState<string | null>(null);
+  const [savingMsg, setSavingMsg] = useState<string | null>(null);
+  /* Answers promoted to creations *this session*. It is a hint for the row's label, not the source
+     of truth — the panel reads the server — and re-saving is idempotent server-side, so being
+     wrong after a reload costs a refresh rather than a duplicate. */
+  const [savedAnswers, setSavedAnswers] = useState<string[]>([]);
+  /** /api/projects answers with the store's cap; 0 until the first read lands. */
+  const [projNameMax, setProjNameMax] = useState(0);
+  /* ── Step 11 sweep: name fields, a delete form, and per-chat composer drafts ── */
+  const [newProjOpen, setNewProjOpen] = useState(false);
+  const [newProjName, setNewProjName] = useState("");
+  const [newTeamName, setNewTeamName] = useState("");
+  const [deleteArmed, setDeleteArmed] = useState(false);
+  const [deleteSecret, setDeleteSecret] = useState("");
+  const [deleteErr, setDeleteErr] = useState("");
+  /**
+   * One unsent message per conversation, in memory only. A draft that survives switching
+   * chats is the difference between "my text is still where I left it" and a half-written
+   * message landing in the wrong thread; persisting it to storage would outlive a reload
+   * with no way to tell the reader which chat it belonged to, so it does not.
+   */
+  const draftsRef = useRef(new Map<string, string>());
   const [verifying, setVerifying] = useState<string | null>(null);
 
   // BYOK
@@ -585,6 +572,9 @@ function Dashboard() {
   const imgAttachRef = useRef<HTMLInputElement>(null);
 
   const meta = MODE_META.find((m) => m.id === mode)!;
+  // one shared wallet read (module-level cache in CreditsUI) - the pill needs the
+  // server's own message ceiling for its counter, nothing more.
+  const wallet = useWallet();
   const plan = me?.plan || "free";
   const loggedIn = me?.kind === "user";
 
@@ -598,6 +588,54 @@ function Dashboard() {
         (!q || h.title.toLowerCase().includes(q) || h.preview.toLowerCase().includes(q))
     );
   }, [history, search, activeProject, activeTeam]);
+
+  /* Two mechanisms, two jobs, by design: the chips above narrow the list (a *filter*), the
+     headers below organise what is left (a *presentation*). Grouping never removes a chat -
+     `groupHistory` places every item by an `else`, and the chips keep working on top of it, so
+     "Projects: Launch" still shows only that group. The rules live in lib/client/groupHistory.ts
+     where a test can run them. */
+  const historyGroups = useMemo(
+    () => groupHistory(filteredHistory, { projects, teams }),
+    [filteredHistory, projects, teams]
+  );
+
+  /* One list, two surfaces (the sidebar and the phone drawer), so one answer to "what does empty
+     mean here" — and it has to be the *right* answer. A single fixed sentence over a search that
+     matched nothing tells a person their work is gone, which is the one thing an empty state must
+     never imply. Null when there is something to show, so both call sites render nothing. */
+  const emptyChats = (() => {
+    if (filteredHistory.length) return null;
+    const q = search.trim();
+    if (q) {
+      return {
+        title: "No chat matches that search",
+        body: `Nothing titled or saying “${q.slice(0, 40)}”.`,
+        action: { label: "Clear search", onClick: () => setSearch("") },
+      };
+    }
+    const scope = activeTeam
+      ? teams.find((t) => t.id === activeTeam)?.name
+      : activeProject
+        ? projects.find((x) => x.id === activeProject)?.name
+        : null;
+    if (scope) {
+      return {
+        title: `Nothing in “${scope}” yet`,
+        body: "Chats you start while it is selected get filed here.",
+        action: {
+          label: "Show all chats",
+          onClick: () => {
+            setActiveProject(null);
+            setActiveTeam(null);
+          },
+        },
+      };
+    }
+    return {
+      title: "Your chats land here",
+      body: "Send a message below — this list fills up as soon as you have an answer.",
+    };
+  })();
 
   /* theme */
   useEffect(() => {
@@ -691,6 +729,7 @@ function Dashboard() {
     try {
       const p = await fetchProjects();
       setProjects(p.projects || []);
+      setProjNameMax(p.nameMax || 0);
     } catch {
       /* */
     }
@@ -703,6 +742,19 @@ function Dashboard() {
     } catch {
       /* */
     }
+  }, []);
+
+  /** Kept separate from the mount effect so the sheet's Retry refetches instead of apologising. */
+  const loadModels = useCallback(() => {
+    setModelsErr("");
+    return fetchModels()
+      .then((m) => setModelsInfo(m))
+      .catch((e) => {
+        // A keyless deployment answers 200 with everything marked unavailable; a 500 or a dead
+        // server must not be shown as "you have no models".
+        setModelsInfo(null);
+        setModelsErr((e as Error).message || "The model list could not be read.");
+      });
   }, []);
 
   useEffect(() => {
@@ -719,10 +771,9 @@ function Dashboard() {
         }
       })
       .catch(() => {});
-    fetchModels()
-      .then((m) => setModelsCatalog(m.all || []))
-      .catch(() => {});
-  }, [refreshMe, refreshHistory, refreshGenerations, refreshProjects, refreshTeams]);
+    void loadModels();
+  }, [refreshMe, refreshHistory, refreshGenerations, refreshProjects, refreshTeams, loadModels]);
+
 
   const doSaveByok = async (which: "groq" | "openrouter", clear?: boolean) => {
     setByokBusy(true);
@@ -736,6 +787,10 @@ function Dashboard() {
       setByokActive(Boolean(r.active));
       setByokDraft((d) => ({ ...d, [which]: "" }));
       setByokNote(clear ? "Key removed." : `Saved — ${which === "groq" ? "Groq" : "OpenRouter"} key is now powering your chats ⚡`);
+      // …and the model lists are refetched, because "which lanes can run" is now answered with
+      // this key in mind: /api/ai/models drives both the Models sheet and the compare picker, so
+      // without this the row they just made live would still say "no key here" until a reload.
+      void loadModels();
     } catch (e) {
       setByokNote((e as Error).message);
     } finally {
@@ -817,6 +872,8 @@ function Dashboard() {
   };
 
   const newChat = () => {
+    // The half-written message stays with the chat it was written in.
+    draftsRef.current.set(convId || "__new", input);
     setConvId(null);
     setMessages([]);
     setInput("");
@@ -829,20 +886,24 @@ function Dashboard() {
     setConvTeamId(null);
     setCanvasTab("code");
     setAttachment(null);
+    // A new chat starts with nothing attached - not even the file the last one read.
+    setChatCtxPath(null);
   };
 
   const openHist = async (id: string) => {
+    draftsRef.current.set(convId || "__new", input);
     try {
       const c = await loadConversation(id);
       setConvId(c.id);
       setMessages(
         (c.messages || [])
           .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
-          .map((m: { id: string; role: string; content: string; meta?: { sources?: Msg["sources"]; understood?: string; qualityLabel?: "good" | "review" } }) => ({
+          .map((m: { id: string; role: string; content: string; meta?: { sources?: Msg["sources"]; context?: Msg["context"]; understood?: string; qualityLabel?: "good" | "review" } }) => ({
             id: m.id,
             role: m.role as "user" | "assistant",
             content: m.content,
             sources: m.meta?.sources,
+            context: m.meta?.context as Msg["context"],
             understood: m.meta?.understood,
             ...(m.meta?.qualityLabel ? { quality: { label: m.meta.qualityLabel, notes: [] } } : {}),
           }))
@@ -853,6 +914,11 @@ function Dashboard() {
       setCanvasTab("code");
       setView("app");
       setDrawer(false);
+      // What was typed for *this* chat comes back, and the file the previous chat was
+      // reading does not travel with the person: the chip is about this project's files,
+      // and a stale one would spend the context budget on a file nobody meant to send.
+      setInput(draftsRef.current.get(c.id) || "");
+      setChatCtxPath(null);
       const last = [...(c.messages || [])].reverse().find((m: { role: string }) => m.role === "assistant");
       if (last) {
         const blocks = extractCode(last.content);
@@ -867,11 +933,14 @@ function Dashboard() {
     }
   };
 
-  const stop = () => {
+  /* Both aborts are useCallback with no dependencies — refs and setters only — because the global
+     Escape handler below lists them, and a function recreated on every render would tear that
+     listener down and rebuild it on every keystroke. */
+  const stop = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
     setStreaming(false);
-  };
+  }, []);
 
   const streamPhaseRef = useRef("");
 
@@ -888,18 +957,183 @@ function Dashboard() {
     }
   };
 
+  /**
+   * One answer, its own public page: the question and that reply. The chat's own share (the header
+   * button) is a different link over a different snapshot, and `/s/[id]` renders both because both
+   * are rows in the same `shares` table — that is the whole reason this is 12 lines here.
+   */
+  const shareThisAnswer = async (m: Msg) => {
+    if (!convId || sharingMsg) return;
+    setSharingMsg(m.id);
+    try {
+      const s = await shareAnswer(convId, m.id);
+      const url = `${window.location.origin}${s.url}`;
+      // Same clipboard-first, show-the-url-fallback path as the chat link: on http:// in a browser
+      // that refuses the API, the link is still usable if it is on screen.
+      try {
+        await navigator.clipboard.writeText(url);
+        setShareNote("Answer link copied to clipboard ✓");
+      } catch {
+        setShareNote(url);
+      }
+      setTimeout(() => setShareNote(""), 4500);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSharingMsg(null);
+    }
+  };
+
+  const saveThisAnswer = async (m: Msg) => {
+    if (!convId || savingMsg) return;
+    setSavingMsg(m.id);
+    try {
+      await saveAnswer(convId, m.id);
+      setSavedAnswers((ids) => (ids.includes(m.id) ? ids : [...ids, m.id]));
+      setShareNote("Saved to creations — name it, pin it or publish it from there ✓");
+      setTimeout(() => setShareNote(""), 4500);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSavingMsg(null);
+    }
+  };
+
+  const downloadAnswer = (m: Msg) => {
+    const blob = new Blob([m.content], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "buildwe-answer.txt";
+    a.click();
+  };
+
+  const rateAnswer = async (vote: "up" | "down", messageId: string) => {
+    await sendFeedback(vote, vote === "up" ? "helpful and on-topic" : "missed my message or too generic");
+    setCopied(`${vote}-${messageId}`);
+    setTimeout(() => setCopied(null), 1000);
+  };
+
+  /** The lane list and its price, read when the sheet opens. Separate from `loadModels` on purpose:
+   *  the picker needs `/api/ai/models` *and* `/api/ai/compare`, and a retry should say which one
+   *  failed rather than silently refetching a list that was fine. */
+  const loadLanes = useCallback(() => {
+    setLaneErr("");
+    return fetchCompareContract()
+      .then((c) => setLaneContract(c))
+      .catch((e) => {
+        setLaneContract(null);
+        setLaneErr((e as Error).message || "The comparison settings could not be read.");
+      });
+  }, []);
+
+  const chosenLanes = useMemo(() => {
+    if (laneIds) return laneIds;
+    return (laneContract?.defaults || []).map((d) => d.id);
+  }, [laneIds, laneContract]);
+  /** What the run will be held for, computed from the server's own per-lane price. */
+  const compareCost = (laneContract?.perLane || 0) * chosenLanes.length;
+  /** 0 unless the wallet has actually been read — an unloaded balance is not a reason to block a
+   *  button, and a stale-low one is the reason the server's hold stays the real gate. */
+  const compareShort =
+    laneContract && wallet.loaded && compareCost > wallet.balance ? compareCost - wallet.balance : 0;
+  /* Which answers the combined one is made of. Until the reader touches a checkbox that is
+     "every lane that answered" — the same set the run itself was judged on. */
+  const mixLanes = useMemo(() => {
+    const live = (compareResult?.lanes || []).filter((l) => l.live && l.reply.trim());
+    if (!mixInclude) return live.map((l) => l.id);
+    return live.filter((l) => mixInclude.includes(l.id)).map((l) => l.id);
+  }, [compareResult, mixInclude]);
+  const mixCost = laneContract?.mixCost ?? laneContract?.perLane ?? 1;
+  const mixShort =
+    wallet.loaded && mixes.length > 0 && mixCost > wallet.balance ? mixCost - wallet.balance : 0;
+
+  /** Toggle a lane. Bounded to the range the server enforces, so a click can't produce a 400. */
+  const toggleLane = (id: string) => {
+    const max = laneContract?.maxLanes || 6;
+    const min = laneContract?.minLanes || 2;
+    setLaneIds((prev) => {
+      const cur = prev || (laneContract?.defaults || []).map((d) => d.id);
+      if (cur.includes(id)) {
+        return cur.length <= min ? cur : cur.filter((x) => x !== id);
+      }
+      return cur.length >= max ? cur : [...cur, id];
+    });
+  };
+
   const doCompare = async () => {
     const p = comparePrompt.trim();
     if (!p || compareBusy) return;
     setCompareBusy(true);
     setError("");
+    setCompareErr("");
     try {
-      const r = await compareApi(p);
+      const r = await compareApi(p, laneContract ? chosenLanes : undefined);
       setCompareResult(r);
+      // One entry per combined answer, starting with the one this run produced: the reader can
+      // fold a subset and step back to this one rather than losing it.
+      const from = r.combinedFrom || r.lanes.filter((l) => l.live).map((l) => l.id);
+      setMixes(
+        r.available
+          ? [{ synthesis: r.synthesis || r.synthesisNote || "", from, paid: false }]
+          : []
+      );
+      setMixView(0);
+      setMixInclude(null);
+      refreshMe();
     } catch (e) {
-      setError((e as Error).message);
+      // The route refuses a bad lane list with a `hint` that says what to send instead; a sheet
+      // that swallowed that into the page-level toast would hide the only actionable part of it.
+      const err = e as Error & { hint?: string };
+      setCompareErr(err.hint ? `${err.message} ${err.hint}` : err.message);
     } finally {
       setCompareBusy(false);
+    }
+  };
+
+  const toggleMixLane = (id: string) => {
+    setMixInclude((prev) => {
+      const cur = prev || (compareResult?.lanes || []).filter((l) => l.live).map((l) => l.id);
+      return cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+    });
+  };
+
+  /** Fold the checked answers into a new combined one. No model is re-asked, so the price is one
+   *  lane's worth and the server says so on the button rather than the client quoting itself. */
+  const doMix = async () => {
+    const p = comparePrompt.trim();
+    if (!p || mixBusy || mixLanes.length < 2) return;
+    setMixBusy(true);
+    setCompareErr("");
+    try {
+      const byId = new Map((compareResult?.lanes || []).map((l) => [l.id, l] as const));
+      const answers = mixLanes.map((id) => ({ id, reply: byId.get(id)?.reply || "" }));
+      const r = await compareMixApi(p, answers);
+      if (!r.available) {
+        setMixes((m) => [
+          ...m,
+          {
+            synthesis: "",
+            from: mixLanes,
+            used: r.used,
+            paid: true,
+            note: r.message || "The combined-answer pass could not run, so nothing was charged.",
+          },
+        ]);
+        setMixView(mixes.length);
+        setMixInclude(mixLanes);
+        return;
+      }
+      setMixes((m) => [...m, { synthesis: r.synthesis, from: mixLanes, used: r.used, paid: true }]);
+      setMixView(mixes.length);
+      // The new entry is built from exactly what was checked, so the checkbox state has to follow
+      // it: leaving it behind would make the button look stale one step later.
+      setMixInclude(mixLanes);
+      refreshMe();
+    } catch (e) {
+      const err = e as Error & { hint?: string };
+      setCompareErr(err.hint ? `${err.message} ${err.hint}` : err.message);
+    } finally {
+      setMixBusy(false);
     }
   };
 
@@ -907,7 +1141,32 @@ function Dashboard() {
     const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content || "";
     setComparePrompt(input.trim() || lastUser.slice(0, 500));
     setCompareResult(null);
+    setCompareErr("");
+    setMixes([]);
+    setMixView(0);
+    setMixInclude(null);
     setModal("compare");
+  };
+
+  /* Read the lane contract when the sheet opens — from *any* opening. The composer button and the
+     ⌘K palette both reach this sheet, and an effect that only the button called left the palette
+     route staring at "Reading which models this run can ask…" forever. Refetched on every open
+     rather than cached: the default lanes depend on which keys are connected right now. */
+  useEffect(() => {
+    if (modal === "compare") void loadLanes();
+  }, [modal, loadLanes]);
+
+  /**
+   * Go back to a saved version without losing the one on screen. The list used to be
+   * one-way: picking version 4 replaced the canvas and the content you were looking at was
+   * simply not in the list any more, so a mis-click had no way back except undo-by-memory.
+   */
+  const restoreCanvasVersion = (v: CanvasVersion) => {
+    if (v.code === codePanel) return;
+    if (codePanel.trim()) pushCanvasVersion(codePanel, codeLang);
+    setCodePanel(v.code);
+    setCodeLang(v.lang);
+    beat("canvas_version_restore");
   };
 
   const pushCanvasVersion = (code: string, lang: string) => {
@@ -1079,7 +1338,6 @@ function Dashboard() {
   };
 
   const doAssignProject = async (projectId: string | null) => {
-    setProjMenu(false);
     if (!convId) {
       setActiveProject(projectId);
       return;
@@ -1094,22 +1352,26 @@ function Dashboard() {
     }
   };
 
-  const doNewProject = async () => {
-    setProjMenu(false);
-    const name = window.prompt("Project name? (e.g. Startup site, DSA prep)");
-    if (!name?.trim()) return;
+  /**
+   * Create a project from whatever the field holds. It rethrows after reporting, because
+   * the two callers keep their input on failure and clear it on success — a `window.prompt`
+   * could not do the first half, which is why a failed name used to vanish.
+   */
+  const doNewProject = async (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
     try {
-      const { project } = await createProject(name.trim());
+      const { project } = await createProject(trimmed);
       const item: ProjectItem = { ...project, createdAt: new Date().toISOString() };
       setProjects((ps) => [...ps, item]);
       await doAssignProject(item.id);
     } catch (e) {
       setError((e as Error).message);
+      throw e;
     }
   };
 
   const doAssignTeam = async (teamId: string | null) => {
-    setProjMenu(false);
     if (!convId) {
       setActiveTeam(teamId);
       setActiveProject(null);
@@ -1126,14 +1388,16 @@ function Dashboard() {
     }
   };
 
-  const doNewTeam = async () => {
-    const name = window.prompt("Team name? (e.g. Studio crew, College project)");
-    if (!name?.trim()) return;
+  const doNewTeam = async (name?: string) => {
+    const trimmed = (name ?? "").trim();
+    if (!trimmed) return;
     try {
-      const { team } = await createTeam(name.trim());
+      const { team } = await createTeam(trimmed);
       setTeams((ts) => [...ts, team]);
+      setNewTeamName("");
       setTeamNote(`Team “${team.name}” created — invite friends with the code below.`);
     } catch (e) {
+      // The field keeps its text on failure: the name is the thing worth retrying.
       setTeamNote((e as Error).message);
     }
   };
@@ -1303,6 +1567,12 @@ function Dashboard() {
 
   const currentProjectId = convProjectId ?? activeProject ?? null;
 
+  useEffect(() => {
+    // A path belonging to another project is not "still selected", it is a bug
+    // waiting to be attached. Drop it rather than resolve it against the wrong project.
+    setChatCtxPath(null);
+  }, [currentProjectId]);
+
   const loadProjFiles = useCallback(async () => {
     if (!currentProjectId) {
       setProjFiles([]);
@@ -1368,6 +1638,45 @@ function Dashboard() {
     }
   };
 
+  /**
+   * Write a code block from an answer into the project. Returns the error *sentence*
+   * to show, or null on success - the row owns its own state, so this must not throw
+   * over a path the model invented.
+   */
+  const applyFileBlock = async (block: {
+    path: string;
+    content: string;
+    lang: string | null;
+  }): Promise<string | null> => {
+    if (!currentProjectId) {
+      return "Pick a project first - files are saved inside a project.";
+    }
+    try {
+      await saveProjectFileApi({
+        projectId: currentProjectId,
+        path: block.path,
+        content: block.content,
+        ...(block.lang ? { lang: block.lang } : {}),
+      });
+      // Its own counter: "the model wrote a file" and "the reader pressed Save canvas"
+      // are different features, and one number for both hides which one is used.
+      beat("project_file_apply");
+      await loadProjFiles();
+      // If that file is the one open in the canvas, the canvas has to agree with the
+      // file straight away - and the version history keeps the previous content first,
+      // so the existing Restore affordance covers this with no new machinery.
+      const openPath = projFiles.find((f) => f.id === openFileId)?.path;
+      if (openPath && openPath === block.path) {
+        pushCanvasVersion(codePanel, codeLang);
+        setCodePanel(block.content);
+        setCodeLang(block.lang || codeLang);
+      }
+      return null;
+    } catch (e) {
+      return (e as Error).message || "Save failed.";
+    }
+  };
+
   const removeProjFile = async (id: string) => {
     setProjFilesBusy(true);
     setProjFilesErr("");
@@ -1383,6 +1692,30 @@ function Dashboard() {
   };
 
 
+  /* ── Creations (the artifacts list) ────────────────────── */
+
+  /**
+   * Put a stored code answer into the canvas. The content that was in the canvas becomes
+   * a version first — the same promise the file-apply rows keep — so the existing History
+   * / Restore covers "I opened the wrong thing over my work" without new machinery.
+   */
+  const openArtifactCode = (code: string, lang: string) => {
+    if (codePanel.trim()) pushCanvasVersion(codePanel, codeLang);
+    setCodePanel(code);
+    setCodeLang(lang);
+    setMode("code");
+    setCanvasTab("code");
+    setModal(null);
+    beat("artifact_open_canvas");
+  };
+
+  /** The studios restore their own history on mount, so switching is the whole action. */
+  const openArtifactStudio = (kind: "image" | "audio") => {
+    setMode(kind);
+    setModal(null);
+    beat("artifact_open_studio");
+  };
+
   /* ── Coding Agent run ───────────────────────────────────── */
 
   const runCodingAgent = async (goalText?: string) => {
@@ -1396,6 +1729,7 @@ function Dashboard() {
     setView("app");
     setMode("code");
     setInput("");
+    draftsRef.current.delete(convId || "__new");
     if (taRef.current) taRef.current.style.height = "48px";
     beat("agent_run");
 
@@ -1490,12 +1824,88 @@ function Dashboard() {
     }
   };
 
-  const stopAgent = () => {
+  const stopAgent = useCallback(() => {
     agentAbort.current?.abort();
     agentAbort.current = null;
     setAgentBusy(false);
     setAgentLog((l) => [...l, { kind: "msg", label: "Stopped by you." }]);
+  }, []);
+
+  /**
+   * Every palette row lands here. The switch is exhaustive over `PaletteKind` on purpose: a new
+   * kind in lib/client/palette.ts does not compile until the page says what it does, which is the
+   * only guarantee that a rendered row is never a dead one.
+   */
+  const pickPaletteRow = (row: PaletteRow) => {
+    switch (row.kind) {
+      case "new":
+        newChat();
+        break;
+      case "stop":
+        if (agentBusy) stopAgent();
+        else stop();
+        break;
+      case "mode":
+        switchMode(row.value as Mode);
+        break;
+      case "modal":
+        setModal(row.value as "auth" | "settings" | "plans" | "profile" | "models" | "skills" | "byok" | "teams" | "compare" | "creations");
+        break;
+      case "theme":
+        setThemePref(row.value as ThemePref);
+        break;
+      case "chat":
+        void openHist(row.value);
+        break;
+      case "tool":
+      case "studio":
+        // MenuRow renders those as links (`/tools/[slug]`, `/studios/[slug]`), the same plain <a>
+        // the sidebar uses for the two index pages. Nothing to do here, and nothing to fake.
+        break;
+    }
   };
+
+  /**
+   * The workspace's three shortcuts. Registered once, on the app view only — the landing page is a
+   * document about the product, not a place to run ⌘K.
+   *
+   * Escape is the one that needed a rule rather than a check: popovers consume it on `document` and
+   * `Sheet` consumes it on `window`, both marking the event handled, and `document` fires before
+   * `window`. So `e.defaultPrevented` IS the precedence — this listener stops a run only when
+   * nothing nearer the keyboard wanted the key. No layer tracks any other layer's open state.
+   */
+  useEffect(() => {
+    if (view !== "app") return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      const typing =
+        !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        // Chrome/Safari give ⌘K to the address bar's search; taking it is the point of the shortcut.
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+        return;
+      }
+      if (e.key === "/" && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const composer = document.querySelector<HTMLTextAreaElement>("[data-composer]");
+        if (!composer) return;
+        e.preventDefault();
+        composer.focus({ preventScroll: true });
+        return;
+      }
+      if (e.key === "Escape" && !e.defaultPrevented) {
+        if (agentBusy) {
+          e.preventDefault();
+          stopAgent();
+        } else if (streaming) {
+          e.preventDefault();
+          stop();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [view, agentBusy, streaming, stop, stopAgent]);
 
   const send = async (
     override?: string,
@@ -1506,6 +1916,7 @@ function Dashboard() {
     setError("");
     setView("app");
     setInput("");
+    draftsRef.current.delete(convId || "__new");
     if (taRef.current) taRef.current.style.height = "48px";
 
     let resolved: Mode = mode;
@@ -1626,6 +2037,11 @@ function Dashboard() {
           depth,
           tone,
           ...(retry?.altModel ? { altModel: retry.altModel } : {}),
+          // One file, if the reader pointed at one. No `context` field means the server
+          // sends no workspace block at all - the absence is the signal.
+          ...(chatCtxPath && currentProjectId
+            ? { context: { projectId: currentProjectId, path: chatCtxPath } }
+            : {}),
         },
         (ev) => {
           if (ev.meta && typeof ev.meta === "object") {
@@ -1634,6 +2050,7 @@ function Dashboard() {
               model?: string;
               live?: boolean;
               sources?: Msg["sources"];
+              context?: Msg["context"];
               understood?: string;
               clarifier?: string;
               fallbackNote?: string;
@@ -1643,6 +2060,7 @@ function Dashboard() {
             if (
               meta.understood ||
               meta.sources?.length ||
+              meta.context ||
               meta.fallbackNote ||
               meta.live === false
             ) {
@@ -1654,6 +2072,7 @@ function Dashboard() {
                         ...(meta.understood ? { understood: meta.understood } : {}),
                         ...(meta.clarifier ? { clarifier: meta.clarifier } : {}),
                         ...(meta.sources?.length ? { sources: meta.sources } : {}),
+                        ...(meta.context ? { context: meta.context } : {}),
                         ...(meta.fallbackNote ? { fallbackNote: meta.fallbackNote } : {}),
                         ...(meta.live === false ? { offline: true } : {}),
                       }
@@ -1805,23 +2224,50 @@ function Dashboard() {
     }
   };
 
+  /**
+   * Both plans sheets (the workspace one and the mobile drawer's) used to carry their own
+   * copy of this, and the drawer's copy forgot the logged-in branch — so a signed-in person
+   * tapping "Upgrade to PRO" there got the *login* form. One handler, both call sites.
+   */
+  const goProFromPlans = () => {
+    if (!loggedIn) {
+      setAuthTab("register");
+      setModal("auth");
+      return;
+    }
+    setModal(null);
+    // Seats and the gateway live on /pricing; the sheet stays a summary rather than a
+    // second checkout that could disagree with it.
+    window.location.href = "/pricing";
+  };
+
   const doLogout = async () => {
     await apiLogout();
     await refreshMe();
     setModal(null);
   };
 
-  const doDeleteAccount = async () => {
-    const user = me?.user;
-    const isOauth = (user as unknown as { provider?: string })?.provider === "google" ||
-      (user as unknown as { provider?: string })?.provider === "github";
-    const answer = window.prompt(
-      isOauth
-        ? `This PERMANENTLY deletes your account, chats, projects, teams, and keys. Type DELETE to confirm:`
-        : `This PERMANENTLY deletes your account, chats, projects, teams, and keys.\nEnter your password to confirm:`
-    );
-    if (!answer) return;
+  /**
+   * Account deletion, inside the app rather than in a browser dialog.
+   *
+   * This used to ask for the account **password** with `window.prompt`, which is wrong on
+   * three counts at once: a prompt renders what you type in plain text, it sits outside the
+   * app's focus management (and outside `Sheet`, whose job is exactly that), and some
+   * embedded browsers refuse `prompt` outright and return null — so the button did nothing
+   * at all, with no message anywhere. Here the field is a real `type="password"`, a refusal
+   * is reported where the person is looking, and an OAuth account — which has no password to
+   * give — still has to write the word.
+   */
+  const oauthOnly =
+    (me?.user as unknown as { provider?: string } | undefined)?.provider === "google" ||
+    (me?.user as unknown as { provider?: string } | undefined)?.provider === "github";
+
+  const doDeleteAccount = async (answer: string) => {
+    const value = answer.trim();
+    if (!value || authBusy) return;
+    const isOauth = oauthOnly;
     setAuthBusy(true);
+    setDeleteErr("");
     try {
       const r = await fetch("/api/auth/delete", {
         method: "POST",
@@ -1838,10 +2284,14 @@ function Dashboard() {
       setTeams([]);
       setProjects([]);
       setModal(null);
+      setDeleteArmed(false);
+      setDeleteSecret("");
       await refreshMe();
       setTeamNote("Account deleted. We're sorry to see you go.");
     } catch (e) {
-      window.alert((e as Error).message);
+      // The strip in the sheet, not window.alert: an alert steals focus, cannot be styled,
+      // and is gone the moment it is dismissed — with no way to read the reason again.
+      setDeleteErr((e as Error).message);
     } finally {
       setAuthBusy(false);
     }
@@ -2033,7 +2483,7 @@ function Dashboard() {
           />
         )}
         {modal === "plans" && (
-          <PlansSheet plan={plan} onClose={() => setModal(null)} onPro={() => setModal("auth")} />
+          <PlansSheet plan={plan} onClose={() => setModal(null)} onPro={goProFromPlans} />
         )}
       </div>
     );
@@ -2060,15 +2510,33 @@ function Dashboard() {
           )}
         </div>
 
-        <div className="p-2.5">
+        <div className="flex items-center gap-1.5 p-2.5">
           <button
             type="button"
             onClick={newChat}
-            className={clsx("flex w-full items-center gap-2 rounded-2xl border py-2.5 text-sm font-medium", sidebarOpen ? "px-3" : "justify-center")}
+            className={clsx("flex min-w-0 flex-1 items-center gap-2 rounded-2xl border py-2.5 text-sm font-medium", sidebarOpen ? "px-3" : "justify-center")}
             style={{ borderColor: "var(--border)", background: "var(--card)" }}
           >
             <Plus className="h-4 w-4" style={{ color: "var(--accent)" }} />
             {sidebarOpen && "New chat"}
+          </button>
+          {/* A shortcut nobody can find is a hidden feature, so the key is printed where the
+              action lives. Icon-only in the collapsed rail, same 40px target as its neighbour. */}
+          <button
+            type="button"
+            onClick={() => setPaletteOpen(true)}
+            aria-label="Quick find"
+            title="Quick find — chats, modes, sheets, tools (⌘K)"
+            className={clsx("flex h-10 shrink-0 items-center gap-1.5 rounded-2xl border px-2 text-[10px] font-semibold", !sidebarOpen && "w-10 justify-center px-0")}
+            style={{ borderColor: "var(--border)", color: "var(--muted)", background: "var(--card)" }}
+          >
+            <Search className="h-4 w-4 shrink-0" style={{ color: "var(--accent)" }} />
+            {sidebarOpen && (
+              <>
+                Quick find
+                <span className="font-mono text-[9px]" style={{ color: "var(--soft)" }}>⌘K</span>
+              </>
+            )}
           </button>
         </div>
 
@@ -2091,6 +2559,32 @@ function Dashboard() {
           })}
         </nav>
 
+        {/* Purpose-built generators live at /tools — the sidebar links to the
+            real routes, it doesn't reimplement a second copy of the catalogue
+            that could drift from the registry. */}
+        <nav className="space-y-0.5 px-2.5 pb-2">
+          {[
+            { href: "/tools", label: "Tools", icon: Wrench },
+            { href: "/studios", label: "Studios", icon: LayoutGrid },
+          ].map((l) => {
+            const Icon = l.icon;
+            return (
+              <a
+                key={l.href}
+                href={l.href}
+                className={clsx(
+                  "flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm font-medium",
+                  sidebarOpen ? "px-3" : "justify-center"
+                )}
+                style={{ color: "var(--muted)" }}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                {sidebarOpen && l.label}
+              </a>
+            );
+          })}
+        </nav>
+
         <div className="flex min-h-0 flex-1 flex-col border-t" style={{ borderColor: "var(--border)" }}>
           {sidebarOpen && (
             <>
@@ -2098,22 +2592,24 @@ function Dashboard() {
               <div className="px-2.5 pb-2">
                 <div className="relative">
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2" style={{ color: "var(--soft)" }} />
-                  <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search" className="h-9 w-full rounded-xl pl-8 pr-2 text-xs outline-none" style={{ background: "var(--secondary)" }} />
+                  <input value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Search history" placeholder="Search" className="h-9 w-full rounded-xl pl-8 pr-2 text-xs outline-none" style={{ background: "var(--secondary)" }} />
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1">
                   <button
                     type="button"
                     onClick={() => setActiveProject(null)}
+                    aria-pressed={!activeProject}
                     className="rounded-full px-2 py-1 text-[10px] font-semibold"
                     style={!activeProject ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
                   >
                     All
                   </button>
                   {projects.map((p) => (
-                    <span key={p.id} className="group inline-flex items-center">
+                    <span key={p.id} className="bw-side-item group inline-flex items-center">
                       <button
                         type="button"
                         onClick={() => setActiveProject(p.id)}
+                        aria-pressed={activeProject === p.id}
                         className="rounded-l-full px-2 py-1 text-[10px] font-semibold"
                         style={activeProject === p.id ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
                       >
@@ -2122,7 +2618,7 @@ function Dashboard() {
                       <button
                         type="button"
                         aria-label={`Delete ${p.name}`}
-                        className="rounded-r-full px-1 py-1 opacity-0 transition group-hover:opacity-100"
+                        className="bw-side-hover rounded-r-full px-1 py-1"
                         style={{ color: "var(--soft)" }}
                         onClick={async () => {
                           await deleteProjectApi(p.id);
@@ -2139,27 +2635,78 @@ function Dashboard() {
                   <button
                     type="button"
                     aria-label="New project"
-                    onClick={doNewProject}
+                    aria-expanded={newProjOpen}
+                    onClick={() => setNewProjOpen((v) => !v)}
                     className="rounded-full px-2 py-1 text-[10px] font-semibold"
                     style={{ background: "var(--secondary)", color: "var(--muted)" }}
                   >
                     <Plus className="mr-0.5 inline h-2.5 w-2.5" />Project
                   </button>
+                  {/* The name is asked for in the row it belongs to, not in a browser dialog:
+                      the field keeps what was typed when the server says no, which a
+                      window.prompt cannot do — it closes and the name is gone. */}
+                  {newProjOpen && (
+                    <span className="mt-1 flex w-full items-center gap-1.5">
+                      <input
+                        autoFocus
+                        value={newProjName}
+                        onChange={(e) => setNewProjName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            setNewProjOpen(false);
+                          }
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void doNewProject(newProjName)
+                              .then(() => {
+                                setNewProjName("");
+                                setNewProjOpen(false);
+                              })
+                              .catch(() => {});
+                          }
+                        }}
+                        {...(projNameMax ? { maxLength: projNameMax } : {})}
+                        aria-label="New project name"
+                        placeholder="Startup site, DSA prep…"
+                        className="h-7 min-w-0 flex-1 rounded-full border px-2 text-[11px] outline-none"
+                        style={{ borderColor: "var(--border)", background: "var(--bg)", color: "var(--ink)" }}
+                      />
+                      <button
+                        type="button"
+                        disabled={!newProjName.trim()}
+                        onClick={() =>
+                          void doNewProject(newProjName)
+                            .then(() => {
+                              setNewProjName("");
+                              setNewProjOpen(false);
+                            })
+                            .catch(() => {})
+                        }
+                        className="rounded-full px-2 py-1 text-[10px] font-semibold disabled:opacity-40"
+                        style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+                      >
+                        Add
+                      </button>
+                    </span>
+                  )}
                 </div>
                 <div className="mt-1.5 flex flex-wrap gap-1">
                   <button
                     type="button"
                     onClick={() => { setActiveTeam(null); setActiveProject(null); }}
+                    aria-pressed={!activeTeam && !activeProject}
                     className="rounded-full px-2 py-1 text-[10px] font-semibold"
                     style={!activeTeam ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
                   >
                     Personal
                   </button>
                   {teams.map((t) => (
-                    <span key={t.id} className="group inline-flex items-center">
+                    <span key={t.id} className="bw-side-item group inline-flex items-center">
                       <button
                         type="button"
                         onClick={() => { setActiveTeam(t.id); setActiveProject(null); }}
+                        aria-pressed={activeTeam === t.id}
                         className="rounded-l-full px-2 py-1 text-[10px] font-semibold"
                         style={activeTeam === t.id ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
                       >
@@ -2168,7 +2715,7 @@ function Dashboard() {
                       <button
                         type="button"
                         aria-label={`Leave ${t.name}`}
-                        className="rounded-r-full px-1 py-1 opacity-0 transition group-hover:opacity-100"
+                        className="bw-side-hover rounded-r-full px-1 py-1"
                         style={{ color: "var(--soft)" }}
                         onClick={() => doLeaveTeam(t.id, t.name)}
                       >
@@ -2203,30 +2750,77 @@ function Dashboard() {
                   </button>
                 </div>
               )}
-              <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
-                {filteredHistory.map((h) => (
-                  <div key={h.id} className="group flex items-center rounded-xl" style={h.id === convId ? { background: "var(--secondary)" } : undefined}>
-                    <button type="button" onClick={() => openHist(h.id)} className="min-w-0 flex-1 px-2.5 py-2 text-left">
-                      <div className="truncate text-[13px] font-medium">{h.mine === false && <Users className="mr-1 inline h-3 w-3" style={{ color: "var(--accent)" }} />}{h.title}</div>
-                      <div className="truncate text-[10px]" style={{ color: "var(--soft)" }}>{h.mode} · {h.preview}</div>
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Delete"
-                      className="mr-1 hidden h-7 w-7 items-center justify-center rounded-lg group-hover:flex"
-                      style={{ color: "var(--soft)" }}
-                      onClick={async () => {
-                        await deleteHistory(h.id);
-                        if (convId === h.id) newChat();
-                        refreshHistory();
-                      }}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ))}
-                {!filteredHistory.length && (
-                  <p className="px-2 py-8 text-center text-[11px]" style={{ color: "var(--soft)" }}>No history yet</p>
+              <div className="bw-side-list min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+                {historyGroups.map((g) => {
+                  /* A user with no projects and no teams has exactly one group, and a "Chats"
+                     header above a list that was already called History is decoration that also
+                     happens to be a button in the tab order. So: headers appear when there is
+                     something to choose between. The row markup below stays a single copy. */
+                  const plain = historyGroups.length === 1 && historyGroups[0].kind === "chat";
+                  const folded = !plain && foldedGroups.includes(g.key);
+                  // Folding must not be able to hide which conversation you are looking at.
+                  const holdsOpen = g.items.some((h) => h.id === convId);
+                  const headId = `bw-side-group-${g.key}`;
+                  return (
+                    <div key={g.key} className="mb-1">
+                      {plain || (
+                      <button
+                        type="button"
+                        id={headId}
+                        aria-expanded={!folded}
+                        aria-controls={`${headId}-list`}
+                        data-action={`group-${g.kind}`}
+                        className="bw-side-group__head"
+                        title={folded ? `Show ${g.label}${holdsOpen ? " · your open chat is in here" : ""}` : `Hide ${g.label}`}
+                        onClick={() =>
+                          setFoldedGroups((cur) => (folded ? cur.filter((k) => k !== g.key) : [...cur, g.key]))
+                        }
+                      >
+                        <ChevronRight className="bw-side-group__chev h-3 w-3" aria-hidden />
+                        <span className="min-w-0 flex-1 truncate text-left">{g.label}</span>
+                        {/* The count is outside the button's label so a screen reader reads
+                            "Launch, collapsed, 4 items" instead of "Launch 4". */}
+                        <span className={clsx("bw-side-group__count", holdsOpen && "is-now")} aria-hidden>{g.items.length}</span>
+                      </button>
+                      )}
+                      {!folded && (
+                        <div id={`${headId}-list`} role={plain ? undefined : "group"} aria-labelledby={plain ? undefined : headId} className="space-y-0.5">
+                          {g.items.map((h) => (
+                            <div key={h.id} className="bw-side-item group flex items-center rounded-xl" style={h.id === convId ? { background: "var(--secondary)" } : undefined}>
+                              <button type="button" onClick={() => openHist(h.id)} className="min-w-0 flex-1 px-2.5 py-2 text-left">
+                                <div className="truncate text-[13px] font-medium">{h.mine === false && <Users className="mr-1 inline h-3 w-3" style={{ color: "var(--accent)" }} />}{h.title}</div>
+                                <div className="truncate text-[10px]" style={{ color: "var(--soft)" }}>{h.mode} · {h.preview}</div>
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={`Delete ${h.title}`}
+                                className="bw-side-hover mr-1 flex h-7 w-7 items-center justify-center rounded-lg"
+                                style={{ color: "var(--soft)" }}
+                                onClick={async () => {
+                                  await deleteHistory(h.id);
+                                  if (convId === h.id) newChat();
+                                  refreshHistory();
+                                }}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {emptyChats && (
+                  <EmptyState
+                    art="chats"
+                    compact
+                    marker="sidebar-empty"
+                    title={emptyChats.title}
+                    action={emptyChats.action}
+                  >
+                    {emptyChats.body}
+                  </EmptyState>
                 )}
               </div>
             </>
@@ -2236,25 +2830,40 @@ function Dashboard() {
         <div className="space-y-1 border-t p-2.5" style={{ borderColor: "var(--border)" }}>
           {sidebarOpen && plan === "free" && (
             <div className="mb-2">
-              <AdSlot plan={plan} slot="sidebar" onGoPro={() => setModal("plans")} />
+              <AdSlot
+                plan={plan}
+                slot="sidebar"
+                onGoPro={() => setModal("plans")}
+                onAddKey={() => setModal("byok")}
+              />
             </div>
           )}
-          <button type="button" onClick={() => setModal("settings")} className={clsx("flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm", sidebarOpen ? "px-3" : "justify-center")} style={{ color: "var(--muted)" }}>
+          {/* aria-label always, title only when collapsed: with the labels hidden these rows
+              were icon-only buttons with no accessible name at all. */}
+          <button type="button" onClick={() => setModal("creations")} aria-label="Creations" title={sidebarOpen ? undefined : "Creations"} className={clsx("bw-side-row flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm", sidebarOpen ? "px-3" : "justify-center")} style={{ color: "var(--muted)" }}>
+            <Layers className="h-4 w-4" />
+            {sidebarOpen && "Creations"}
+          </button>
+          <button type="button" onClick={() => setModal("settings")} aria-label="Settings" title={sidebarOpen ? undefined : "Settings"} className={clsx("bw-side-row flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm", sidebarOpen ? "px-3" : "justify-center")} style={{ color: "var(--muted)" }}>
             <Settings className="h-4 w-4" />
             {sidebarOpen && "Settings"}
           </button>
           {loggedIn ? (
-            <button type="button" onClick={() => setModal("profile")} className={clsx("flex w-full items-center gap-2.5 rounded-2xl py-2 text-sm", sidebarOpen ? "px-3" : "justify-center")}>
-              <span className="flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
-                {(me?.name || "U").slice(0, 1).toUpperCase()}
-              </span>
-              {sidebarOpen && (
-                <span className="min-w-0 text-left">
-                  <span className="block truncate text-[12px] font-medium">{me?.name}</span>
-                  <span className="text-[10px]" style={{ color: "var(--muted)" }}>{plan === "pro" ? "PRO" : "Free"}</span>
-                </span>
-              )}
-            </button>
+            <ProfileFlyout
+              collapsed={!sidebarOpen}
+              name={me?.name}
+              email={me?.user?.email}
+              plan={plan}
+              byokActive={byokActive}
+              teamName={teams.find((t) => t.id === activeTeam)?.name}
+              themePref={themePref}
+              onTheme={setThemePref}
+              onOpenProfile={() => setModal("profile")}
+              onOpenPlans={() => setModal("plans")}
+              onOpenTeams={() => setModal("teams")}
+              onOpenByok={() => setModal("byok")}
+              onSignOut={doLogout}
+            />
           ) : (
             <button type="button" onClick={() => { setAuthTab("login"); setModal("auth"); }} className={clsx("flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm font-medium", sidebarOpen ? "px-3" : "justify-center")} style={{ background: "var(--ink)", color: "var(--bg)" }}>
               <LogIn className="h-4 w-4" />
@@ -2283,59 +2892,23 @@ function Dashboard() {
             </div>
             <div className="hidden truncate text-[11px] sm:block" style={{ color: "var(--muted)" }}>{meta.headline}{modelTag ? ` · ${modelTag}` : ""}</div>
           </div>
-          <div className="relative">
-            <Btn
-              variant="icon"
-              size="sm"
-              aria-label="Move to project"
-              onClick={() => setProjMenu((v) => !v)}
-              style={convProjectId ? { background: "var(--accent-soft)", color: "var(--accent)" } : undefined}
-            >
-              <FolderOpen className="h-4 w-4" />
-            </Btn>
-            {projMenu && (
-              <>
-                <button type="button" className="fixed inset-0 z-40 cursor-default" aria-label="Close menu" onClick={() => setProjMenu(false)} />
-                <div className="absolute right-0 z-50 mt-2 w-52 overflow-hidden rounded-2xl border shadow-lg" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
-                  <div className="px-3 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Move chat to</div>
-                  <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: !convProjectId ? "var(--accent)" : "var(--ink)" }} onClick={() => doAssignProject(null)}>
-                    <FolderOpen className="h-3.5 w-3.5" /> No project
-                  </button>
-                  {projects.map((p) => (
-                    <button key={p.id} type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: convProjectId === p.id ? "var(--accent)" : "var(--ink)" }} onClick={() => doAssignProject(p.id)}>
-                      <FolderOpen className="h-3.5 w-3.5" /> <span className="truncate">{p.name}</span>
-                    </button>
-                  ))}
-                  <button type="button" className="flex w-full items-center gap-2 border-t px-3 py-2.5 text-left text-sm font-medium" style={{ borderColor: "var(--border)", color: "var(--accent)" }} onClick={doNewProject}>
-                    <FolderPlus className="h-3.5 w-3.5" /> New project
-                  </button>
-                  <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Shared with team</div>
-                  {teams.length ? (
-                    <>
-                      <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: !convTeamId ? "var(--muted)" : "var(--ink)" }} onClick={() => doAssignTeam(null)}>
-                        <FolderOpen className="h-3.5 w-3.5" /> Not shared
-                      </button>
-                      {teams.map((t) => (
-                        <button key={t.id} type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: convTeamId === t.id ? "var(--accent)" : "var(--ink)" }} onClick={() => doAssignTeam(t.id)}>
-                          <Users className="h-3.5 w-3.5" /> <span className="truncate">{t.name}</span>
-                          <span className="ml-auto text-[9px]" style={{ color: "var(--soft)" }}>{t.memberCount}</span>
-                        </button>
-                      ))}
-                    </>
-                  ) : (
-                    <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: "var(--accent)" }} onClick={() => { setProjMenu(false); setModal("teams"); }}>
-                      <UserPlus className="h-3.5 w-3.5" /> Create / join a team
-                    </button>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
+          <ProjectMoveMenu
+            projects={projects.map((p) => ({ id: p.id, name: p.name }))}
+            teams={teams.map((t) => ({ id: t.id, name: t.name, memberCount: t.memberCount }))}
+            projectId={convProjectId}
+            teamId={convTeamId}
+            nameMax={projNameMax}
+            onAssignProject={doAssignProject}
+            onAssignTeam={doAssignTeam}
+            onCreateProject={doNewProject}
+            onOpenTeams={() => setModal("teams")}
+          />
           {convId && !!messages.length && (
             <Btn variant="icon" size="sm" aria-label="Share chat" title="Copy public share link" onClick={doShare}>
               <Share2 className="h-4 w-4" />
             </Btn>
           )}
+          <WalletChip />
           {plan === "pro" ? (
             <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold" style={{ background: "var(--ink)", color: "var(--bg)" }}><Star className="h-3 w-3" /> PRO</span>
           ) : (
@@ -2442,7 +3015,7 @@ function Dashboard() {
                         ))}
                       </div>
                       <div className="mt-4 w-full max-w-md">
-                        <AdSlot plan={plan} slot="chat-empty" onGoPro={() => setModal("plans")} />
+                        <AdSlot plan={plan} slot="chat-empty" onGoPro={() => setModal("plans")} onAddKey={() => setModal("byok")} />
                       </div>
                     </div>
                   )}
@@ -2498,6 +3071,25 @@ function Dashboard() {
                                   <p className="whitespace-pre-wrap">{m.content}</p>
                                 ) : (
                                   <div className="prose-bw" dangerouslySetInnerHTML={{ __html: md(m.content || "") }} />
+                                )}
+                                {/* One card per link the answer actually cited, read by our own server
+                                    (see /api/preview). Not while streaming: a card appearing mid-sentence
+                                    moves the text the reader is following. */}
+                                {!isUser && !m.streaming && (
+                                  <LinkPreviews text={m.content || ""} exclude={m.sources?.map((s) => s.url)} />
+                                )}
+                                {/* What the answer was built on, in the server's own numbers, and the
+                                    Apply rows for any file block in it. Both are assistant-only and
+                                    hidden while streaming: a button for a block that has not finished
+                                    arriving is a bug. */}
+                                {!isUser && !m.streaming && m.context ? <ContextNote context={m.context} /> : null}
+                                {!isUser && !m.streaming && (
+                                  <FileApplyBlocks
+                                    text={m.content || ""}
+                                    projectId={currentProjectId}
+                                    knownPaths={projFiles.map((f) => f.path)}
+                                    onApply={applyFileBlock}
+                                  />
                                 )}
                                 {!isUser && !!m.sources?.length && !m.streaming && (
                                   <div className="mt-3 flex flex-wrap gap-1.5 border-t pt-2" style={{ borderColor: "var(--border)" }}>
@@ -2601,124 +3193,46 @@ function Dashboard() {
                                 </div>
                               )}
                               {!isUser && m.content && !m.streaming && !m.recovery && (
-                                <div className="mt-1 flex gap-0.5">
-                                  <Btn variant="icon" size="sm" aria-label="Copy" onClick={() => copy(m.content, m.id)}>
-                                    {copied === m.id ? <Check className="h-3.5 w-3.5" style={{ color: "var(--accent)" }} /> : <Copy className="h-3.5 w-3.5" />}
-                                  </Btn>
-                                  <Btn
-                                    variant="icon"
-                                    size="sm"
-                                    aria-label="Regenerate"
-                                    onClick={() => {
+                                <MessageActions
+                                  handlers={{
+                                    copy: () => void copy(m.content, m.id),
+                                    copied: copied === m.id,
+                                    verify: () => void doVerify(m),
+                                    verifying: verifying === m.id,
+                                    hasVerdict: Boolean(m.verified),
+                                    share: () => void shareThisAnswer(m),
+                                    sharing: sharingMsg === m.id,
+                                    save: () => void saveThisAnswer(m),
+                                    saving: savingMsg === m.id,
+                                    saved: savedAnswers.includes(m.id),
+                                    openCreations: () => setModal("creations"),
+                                    regenerate: () => {
                                       const idx = messages.findIndex((x) => x.id === m.id);
                                       const prevUser = [...messages.slice(0, idx)].reverse().find((x) => x.role === "user");
                                       if (!prevUser || streaming) return;
                                       beat("regenerate");
                                       setMessages((ms) => ms.filter((x) => x.id !== m.id));
                                       setTimeout(() => send(prevUser.content), 30);
-                                    }}
-                                  >
-                                    <RotateCcw className="h-3.5 w-3.5" />
-                                  </Btn>
-                                  <Btn
-                                    variant="icon"
-                                    size="sm"
-                                    aria-label="Edit prompt"
-                                    onClick={() => {
+                                    },
+                                    editPrompt: () => {
                                       const idx = messages.findIndex((x) => x.id === m.id);
                                       const prevUser = [...messages.slice(0, idx)].reverse().find((x) => x.role === "user");
                                       if (!prevUser) return;
                                       setInput(prevUser.content);
                                       requestAnimationFrame(grow);
-                                    }}
-                                  >
-                                    <SquarePen className="h-3.5 w-3.5" />
-                                  </Btn>
-                                  <Btn
-                                    variant="icon"
-                                    size="sm"
-                                    aria-label="Good reply"
-                                    onClick={async () => {
-                                      await sendFeedback("up", "helpful and on-topic");
-                                      setCopied("up-" + m.id);
-                                      setTimeout(() => setCopied(null), 1000);
-                                    }}
-                                  >
-                                    <ThumbsUp className="h-3.5 w-3.5" />
-                                  </Btn>
-                                  <Btn
-                                    variant="icon"
-                                    size="sm"
-                                    aria-label="Bad reply"
-                                    onClick={async () => {
-                                      await sendFeedback("down", "missed my message or too generic");
-                                      setCopied("down-" + m.id);
-                                      setTimeout(() => setCopied(null), 1000);
-                                    }}
-                                  >
-                                    <ThumbsDown className="h-3.5 w-3.5" />
-                                  </Btn>
-                                  <span className="mx-1 h-3 w-px" style={{ background: "var(--border)" }} />
-                                  {[
-                                    ["Simplify", "Rewrite your previous answer in simple, beginner-friendly language — keep every fact."],
-                                    ["Shorten", "Rewrite your previous answer much shorter — only the essentials, keep it accurate."],
-                                    ["Expand", "Expand your previous answer with more detail and useful examples — keep it accurate."],
-                                    ["Explain", "Explain your previous answer step by step like I'm new to this topic."],
-                                    ["Example", "Give one concrete example for your previous answer."],
-                                    ["Document", "Turn your previous answer into a clean shareable document: a clear title, short intro, well-organised sections with headings, and a one-line summary at the end. Keep every fact exactly as stated."],
-                                    ["Table", "Turn your previous answer into a markdown table with clear column headers — one row per item. Keep every fact exactly as stated, and add a one-line note under the table."],
-                                    ["Report", "Turn your previous answer into a short professional report: Title, Key findings (bullets), Details, Risks or caveats, and Recommended next steps. Keep every fact exactly as stated."],
-                                  ].map(([label, instruction]) => (
-                                    <button
-                                      key={label}
-                                      type="button"
-                                      disabled={streaming}
-                                      onClick={() => send(instruction)}
-                                      className="rounded-lg px-1.5 py-1 text-[10px] font-semibold transition hover:opacity-80 disabled:opacity-40"
-                                      style={{ background: "var(--secondary)", color: "var(--muted)" }}
-                                    >
-                                      {label}
-                                    </button>
-                                  ))}
-                                  <Btn
-                                    variant="icon"
-                                    size="sm"
-                                    aria-label="Verify claims"
-                                    title="Verify — check facts against live sources"
-                                    disabled={verifying === m.id}
-                                    onClick={() => doVerify(m)}
-                                  >
-                                    {verifying === m.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-                                  </Btn>
-                                  <Btn
-                                    variant="icon"
-                                    size="sm"
-                                    aria-label="Use as prompt"
-                                    title="Use this answer as your next prompt"
-                                    onClick={() => {
+                                    },
+                                    useAsPrompt: () => {
                                       setInput(m.content.slice(0, 2000));
                                       requestAnimationFrame(grow);
                                       taRef.current?.focus();
-                                    }}
-                                  >
-                                    <SquarePen className="h-3.5 w-3.5" />
-                                  </Btn>
-                                  <Btn
-                                    variant="icon"
-                                    size="sm"
-                                    aria-label="Save answer"
-                                    title="Save this answer to a file"
-                                    onClick={() => {
-                                      const blob = new Blob([m.content], { type: "text/plain" });
-                                      const a = document.createElement("a");
-                                      a.href = URL.createObjectURL(blob);
-                                      a.download = "buildwe-answer.txt";
-                                      a.click();
-                                    }}
-                                  >
-                                    <Download className="h-3.5 w-3.5" />
-                                  </Btn>
-                                </div>
+                                    },
+                                    download: () => downloadAnswer(m),
+                                    feedback: (vote) => void rateAnswer(vote, m.id),
+                                    transform: (instruction) => void send(instruction),
+                                    blocked: streaming,
+                                    blockedNote: "Wait for this answer to finish",
+                                  }}
+                                />
                               )}
                               {!isUser && m.clarifier && !m.streaming && (
                                 <p className="mt-1 rounded-xl px-2.5 py-1.5 text-[11px]" style={{ background: "var(--info-soft)", color: "var(--info)" }}>
@@ -2768,220 +3282,50 @@ function Dashboard() {
                 </div>
               </div>
 
-              {/* composer */}
-              <div className="shrink-0 border-t px-3 py-2.5 sm:px-5" style={{ borderColor: "var(--border)", background: "color-mix(in srgb, var(--bg-elevated) 95%, transparent)" }}>
-                <div className="mx-auto max-w-2xl">
-                  {error && (
-                    <div className="anim-rise mb-2 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2 text-xs" style={{ background: "var(--err-soft)", color: "var(--err)" }}>
-                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                      <span className="min-w-0 flex-1">{error}</span>
-                      {/limit|PRO/i.test(error) ? (
-                        <button type="button" className="font-semibold underline" onClick={() => setModal("plans")}>Upgrade</button>
-                      ) : lastPrompt.current ? (
-                        <button type="button" className="font-semibold underline" onClick={() => { setError(""); send(lastPrompt.current); }}>Try again</button>
-                      ) : null}
-                    </div>
-                  )}
-                  {streaming && (
-                    <div className="anim-rise mb-1.5 flex items-center gap-1.5 px-1 text-[11px]" style={{ color: "var(--muted)" }}>
-                      <Loader2 className="h-3 w-3 animate-spin" style={{ color: "var(--accent)" }} />
-                      {streamPhase || "Working…"}
-                      <span className="ml-1" style={{ color: "var(--soft)" }}>· you can stop anytime, the partial answer is saved</span>
-                    </div>
-                  )}
-
-                  <div className="rounded-3xl border shadow-sm" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
-                    {attachment && (
-                      <div className="mx-3 mt-3 flex items-center gap-3 rounded-2xl border p-2" style={{ borderColor: "var(--border)", background: "var(--secondary)" }}>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={attachment.dataUrl} alt={attachment.name} className="h-12 w-12 rounded-xl object-cover" />
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-xs font-medium">{attachment.name}</div>
-                          <div className="text-[10px]" style={{ color: "var(--muted)" }}>Image attached — ask anything about it</div>
-                        </div>
-                        <Btn variant="icon" size="sm" aria-label="Remove image" onClick={() => setAttachment(null)}>
-                          <XCircle className="h-4 w-4" />
-                        </Btn>
-                      </div>
-                    )}
-                    <textarea
-                      ref={taRef}
-                      value={input}
-                      rows={1}
-                      placeholder={
-                        mode === "auto"
-                          ? "What do you want to do? e.g. “plan my launch”, “build a quiz app”, “make a logo”"
-                          : mode === "code"
-                            ? "Describe what you want to build — BUILDWE handles the code"
-                            : mode === "chat"
-                              ? "Ask anything — plain language works best"
-                              : "Message BUILDWE"
-                      }
-                      onChange={(e) => {
-                        setInput(e.target.value);
-                        grow();
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
-                          e.preventDefault();
-                          send();
-                        }
-                      }}
-                      className="max-h-[96px] min-h-[48px] w-full resize-none bg-transparent px-4 pt-3.5 text-[15px] outline-none placeholder:opacity-45 md:max-h-[128px]"
-                    />
-                    <div className="flex items-center gap-0.5 px-2 pb-2">
-                      <div className="flex min-w-0 flex-1 gap-0.5 overflow-x-auto">
-                        {MODE_META.map((m) => {
-                          const Icon = m.icon;
-                          const on = mode === m.id;
-                          return (
-                            <button key={m.id} type="button" onClick={() => switchMode(m.id)} className="flex shrink-0 items-center gap-1 rounded-xl px-2 py-1.5 text-[11px] font-medium" style={on ? { background: "var(--accent-soft)", color: "var(--accent)" } : { color: "var(--muted)" }}>
-                              <Icon className="h-3.5 w-3.5" />
-                              <span className="hidden sm:inline">{m.label}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <input ref={fileRef} type="file" className="hidden" accept="text/*,.md,.json,.js,.ts,.tsx,.py,.css,.html,.csv" onChange={async (e) => {
-                        const f = e.target.files?.[0];
-                        if (!f) return;
-                        if (f.size > 200 * 1024) {
-                          setError("File too large — keep text files under 200 KB. Tip: attach just the part you need help with.");
-                          e.target.value = "";
-                          return;
-                        }
-                        const t = await f.text();
-                        try {
-                          const a = await analyzeFileApi(f.name, t);
-                          setInput((v) => (v ? v + "\n\n" : "") + `[Attached file: ${f.name}]\n${a.summary}\n\nMy question: `);
-                        } catch {
-                          setInput((v) => (v ? v + "\n\n" : "") + `[File: ${f.name}]\n${t.slice(0, 8000)}`);
-                        }
-                        e.target.value = "";
-                        requestAnimationFrame(grow);
-                      }} />
-                      <input ref={imgAttachRef} type="file" className="hidden" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (!f) return;
-                        if (f.size > 5 * 1024 * 1024) {
-                          setError("Image too large — keep it under 5 MB.");
-                          e.target.value = "";
-                          return;
-                        }
-                        const reader = new FileReader();
-                        reader.onload = () => {
-                          setAttachment({ dataUrl: String(reader.result), name: f.name });
-                          setMode((m) => (m === "image" || m === "audio" ? "chat" : m));
-                        };
-                        reader.readAsDataURL(f);
-                        e.target.value = "";
-                      }} />
-                      {(mode === "chat" || mode === "auto") && (
-                        <div className="relative">
-                          <Btn
-                            variant="icon"
-                            size="sm"
-                            aria-label="Answer style"
-                            title="Answer style — length & language"
-                            onClick={() => setStyleMenu((v) => !v)}
-                            style={depth !== "balanced" || tone !== "standard" ? { background: "var(--accent-soft)", color: "var(--accent)" } : undefined}
-                          >
-                            <SlidersHorizontal className="h-4 w-4" />
-                          </Btn>
-                          {styleMenu && (
-                            <>
-                              <button type="button" className="fixed inset-0 z-40 cursor-default" aria-label="Close style menu" onClick={() => setStyleMenu(false)} />
-                              <div className="anim-rise absolute bottom-10 left-0 z-50 w-60 rounded-2xl border p-3 shadow-lg" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
-                                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Answer length</div>
-                                <div className="mb-3 flex flex-wrap gap-1">
-                                  {(["short", "balanced", "detailed", "deep"] as const).map((d) => (
-                                    <button key={d} type="button" onClick={() => setDepth(d)} className="rounded-full px-2 py-1 text-[11px] font-semibold capitalize" style={depth === d ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}>
-                                      {d}
-                                    </button>
-                                  ))}
-                                </div>
-                                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Language</div>
-                                <div className="flex flex-wrap gap-1">
-                                  {(["simple", "standard", "expert"] as const).map((t) => (
-                                    <button key={t} type="button" onClick={() => setTone(t)} className="rounded-full px-2 py-1 text-[11px] font-semibold capitalize" style={tone === t ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}>
-                                      {t}
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      )}
-                      {(mode === "chat" || mode === "auto") && (
-                        <Btn
-                          variant="icon"
-                          size="sm"
-                          aria-label="Web search"
-                          title="Web search — live sources"
-                          onClick={() => setWebSearchOn((v) => !v)}
-                          style={webSearchOn ? { background: "var(--accent-soft)", color: "var(--accent)" } : undefined}
-                        >
-                          <Globe className="h-4 w-4" />
-                        </Btn>
-                      )}
-                      {(mode === "chat" || mode === "auto") && (
-                        <Btn
-                          variant="icon"
-                          size="sm"
-                          aria-label="Compare models"
-                          title="Compare models — ask 3 AIs the same question"
-                          onClick={openCompare}
-                        >
-                          <Layers className="h-4 w-4" />
-                        </Btn>
-                      )}
-                      <Btn variant="icon" size="sm" aria-label="Attach image" title="Attach image — AI vision" onClick={() => imgAttachRef.current?.click()}><ImagePlus className="h-4 w-4" /></Btn>
-                      <Btn variant="icon" size="sm" aria-label="Upload file" title="Attach text/CSV file" onClick={() => fileRef.current?.click()}><Paperclip className="h-4 w-4" /></Btn>
-                      <Btn
-                        variant="icon"
-                        size="sm"
-                        aria-label="Mic"
-                        onClick={() => {
-                          const w = window as unknown as { SpeechRecognition?: new () => SpeechRecognition; webkitSpeechRecognition?: new () => SpeechRecognition };
-                          const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
-                          if (!SR) return alert("Use Chrome for voice input");
-                          if (listening) {
-                            setListening(false);
-                            return;
-                          }
-                          const rec = new SR();
-                          rec.lang = "en-IN";
-                          rec.onresult = (ev: SpeechRecognitionEvent) => {
-                            let t = "";
-                            for (let i = ev.resultIndex; i < ev.results.length; i++) t += ev.results[i][0].transcript;
-                            setInput((v) => (v ? v + " " : "") + t);
-                            requestAnimationFrame(grow);
-                          };
-                          rec.onend = () => setListening(false);
-                          rec.start();
-                          setListening(true);
-                        }}
-                      >
-                        {listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-                      </Btn>
-                      {streaming || imgLoading || audioBusy || visionBusy ? (
-                        <Btn variant="ink" className="!h-10 !w-10 !p-0" aria-label="Stop" onClick={stop}><Square className="h-3.5 w-3.5 fill-current" /></Btn>
-                      ) : (
-                        <Btn className="!h-10 !w-10 !p-0" aria-label="Send" disabled={!input.trim() && !attachment} onClick={() => send()}>
-                          {streaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                        </Btn>
-                      )}
-                    </div>
-                  </div>
-                  <p className="mt-1.5 text-center text-[10px]" style={{ color: "var(--soft)" }}>
-                    BUILDWE picks the right tool — no commands or code needed, just type naturally
-                    {me?.kind === "guest" ? " · guest mode" : ` · ${me?.user?.email}`}
-                    {plan === "free" ? " · Free plan" : " · PRO"}
-                    {byokActive ? " · Own key ⚡" : ""}
-                  </p>
-                </div>
-              </div>
+              <PromptBar
+                mode={mode}
+                input={input}
+                setInput={setInput}
+                attachment={attachment}
+                setAttachment={setAttachment}
+                error={error}
+                setError={setError}
+                streaming={streaming}
+                streamPhase={streamPhase}
+                depth={depth}
+                setDepth={setDepth}
+                tone={tone}
+                setTone={setTone}
+                webSearchOn={webSearchOn}
+                setWebSearchOn={setWebSearchOn}
+                listening={listening}
+                setListening={setListening}
+                imgLoading={imgLoading}
+                audioBusy={audioBusy}
+                visionBusy={visionBusy}
+                plan={plan}
+                me={me}
+                byokActive={byokActive}
+                lastPromptText={lastPrompt.current}
+        contextPath={chatCtxPath}
+        contextNote={
+          chatCtxPath
+            ? "The next answer reads this file (12 kB budget). Apply can write it back."
+            : undefined
+        }
+        onClearContext={() => setChatCtxPath(null)}
+                taRef={taRef}
+                fileRef={fileRef}
+                imgAttachRef={imgAttachRef}
+                onSend={send}
+                maxMessageChars={wallet.limits?.messageChars}
+                onGrow={grow}
+                onMode={switchMode}
+                setMode={setMode}
+                onCompare={openCompare}
+                onStop={stop}
+                onUpgrade={() => setModal("plans")}
+              />
             </div>
 
             {/* code canvas + live preview */}
@@ -3016,39 +3360,11 @@ function Dashboard() {
                         <span className="rounded bg-white/15 px-1 text-[9px]">{projFiles.length}</span>
                       )}
                     </button>
-                    {canvasVersions.length > 1 && (
-                      <div className="relative ml-1">
-                        <button
-                          type="button"
-                          onClick={() => setVerMenu((v) => !v)}
-                          className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-white/45 hover:bg-white/10"
-                        >
-                          <RotateCcw className="h-3 w-3" /> History · {canvasVersions.length}
-                        </button>
-                        {verMenu && (
-                          <>
-                            <button type="button" className="fixed inset-0 z-40 cursor-default" aria-label="Close history" onClick={() => setVerMenu(false)} />
-                            <div className="absolute left-0 z-50 mt-2 max-h-56 w-56 overflow-y-auto rounded-2xl border border-white/10 bg-[#1e1b18] p-1.5 shadow-lg">
-                              {canvasVersions.map((v, vi) => (
-                                <button
-                                  key={v.ts}
-                                  type="button"
-                                  onClick={() => {
-                                    setCodePanel(v.code);
-                                    setCodeLang(v.lang);
-                                    setVerMenu(false);
-                                  }}
-                                  className="flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-left text-[11px] text-white/80 hover:bg-white/10"
-                                >
-                                  <span>{v.code === codePanel ? "Current" : `Version ${canvasVersions.length - vi}`}</span>
-                                  <span className="text-white/40">{new Date(v.ts).toLocaleTimeString()}</span>
-                                </button>
-                              ))}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    )}
+                    <CanvasHistoryMenu
+                      versions={canvasVersions}
+                      currentCode={codePanel}
+                      onRestore={restoreCanvasVersion}
+                    />
                   </div>
                   <div className="flex items-center gap-1">
                     {/* The agent is the headline action: it plans, writes files,
@@ -3255,10 +3571,13 @@ function Dashboard() {
                         {projFilesBusy && !projFiles.length ? (
                           <p className="text-[12px] text-white/45">Loading files…</p>
                         ) : !projFiles.length ? (
-                          <p className="text-[12px] text-white/45">
-                            No files yet. Write something in the canvas, name it above and hit
-                            <strong className="text-white/70"> Save canvas</strong>.
-                          </p>
+                          /* The shared empty state, told to expect a dark surface: its tokens are the
+                             panel's, not the page's, which is the difference between reading as part
+                             of this panel and reading as a light card dropped on top of one. */
+                          <EmptyState art="files" compact dark marker="project-files-empty" title="No files in this project yet">
+                            Write something in the canvas, name it above and hit
+                            <strong style={{ color: "var(--surface-dark-fg)" }}> Save canvas</strong>.
+                          </EmptyState>
                         ) : (
                           <ul className="flex flex-col gap-1">
                             {projFiles.map((f) => (
@@ -3281,6 +3600,34 @@ function Dashboard() {
                                 <span className="shrink-0 text-[10px] text-white/35">
                                   {f.size < 1024 ? `${f.size} B` : `${Math.round(f.size / 1024)} KB`}
                                 </span>
+                                {/* Opt-in chat context. Always focusable and always
+                                    labelled — a hover-only reveal here would hide the
+                                    whole feature from a keyboard and a tablet. */}
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setChatCtxPath((cur) => (cur === f.path ? null : f.path))
+                                  }
+                                  aria-pressed={chatCtxPath === f.path}
+                                  aria-label={
+                                    chatCtxPath === f.path
+                                      ? `Stop using ${f.path} as chat context`
+                                      : `Use ${f.path} as chat context`
+                                  }
+                                  title={
+                                    chatCtxPath === f.path
+                                      ? "The next chat answer reads this file — click to stop"
+                                      : "The next chat answer reads this file"
+                                  }
+                                  className={clsx(
+                                    "shrink-0 rounded px-1.5 py-0.5 text-[10px] transition",
+                                    chatCtxPath === f.path
+                                      ? "bg-white/20 text-white"
+                                      : "text-white/35 hover:bg-white/10 hover:text-white/70"
+                                  )}
+                                >
+                                  @
+                                </button>
                                 <button
                                   type="button"
                                   onClick={() => void removeProjFile(f.id)}
@@ -3294,8 +3641,10 @@ function Dashboard() {
                           </ul>
                         )}
                         <p className="mt-3 text-[10px] leading-relaxed text-white/35">
-                          Files are private to your account and are sent to the agent as project
-                          context so it can reason across your whole project, not just one snippet.
+                          Files are private to your account. The coding agent sees the whole
+                          project; a chat answer reads only the file you mark with @ above, up to a
+                          12 kB budget — and the answer tells you when a file was truncated or left
+                          out.
                         </p>
                       </>
                     )}
@@ -3397,6 +3746,17 @@ function Dashboard() {
             </div>
             <div className="p-3"><Btn className="w-full" onClick={newChat}><Plus className="h-4 w-4" /> New chat</Btn></div>
             <div className="min-h-0 flex-1 overflow-y-auto px-2">
+              {emptyChats && (
+                <EmptyState
+                  art="chats"
+                  compact
+                  marker="drawer-empty"
+                  title={emptyChats.title}
+                  action={emptyChats.action}
+                >
+                  {emptyChats.body}
+                </EmptyState>
+              )}
               {filteredHistory.map((h) => (
                 <button key={h.id} type="button" onClick={() => openHist(h.id)} className="mb-0.5 flex w-full rounded-xl px-3 py-2.5 text-left text-sm" style={h.id === convId ? { background: "var(--secondary)" } : undefined}>
                   <span className="truncate font-medium">{h.title}</span>
@@ -3405,6 +3765,7 @@ function Dashboard() {
             </div>
             <div className="space-y-1 border-t p-3" style={{ borderColor: "var(--border)", paddingBottom: "calc(12px + var(--safe-b))" }}>
               <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm" style={{ color: "var(--muted)" }} onClick={() => { setDrawer(false); setModal("settings"); }}><Settings className="h-4 w-4" /> Settings</button>
+              <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm" style={{ color: "var(--muted)" }} onClick={() => { setDrawer(false); setModal("creations"); }}><Layers className="h-4 w-4" /> Creations</button>
               <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium" style={{ background: "var(--accent-soft)", color: "var(--accent)" }} onClick={() => { setDrawer(false); setModal("plans"); }}><Zap className="h-4 w-4" /> Plans</button>
             </div>
           </div>
@@ -3430,28 +3791,50 @@ function Dashboard() {
       )}
 
       {modal === "plans" && (
-        <PlansSheet
-          plan={plan}
-          onClose={() => setModal(null)}
-          onPro={() => {
-            if (!loggedIn) {
-              setAuthTab("register");
-              setModal("auth");
-            } else {
-              setModal(null);
-              // Billing hooks live under /api/checkout — wire keys when ready
-              window.location.href = "/pricing";
-            }
+        <PlansSheet plan={plan} onClose={() => setModal(null)} onPro={goProFromPlans} />
+      )}
+
+      {paletteOpen && (
+        <CommandPalette
+          open
+          onClose={() => setPaletteOpen(false)}
+          source={{
+            modes: MODE_META.map((m) => ({ id: m.id, label: m.label, blurb: m.sub })),
+            history,
+            activeMode: mode,
+            running: agentBusy ? "agent" : streaming ? "answer" : null,
+            signedIn: Boolean(me),
           }}
+          onPick={pickPaletteRow}
         />
       )}
 
+      {modal === "creations" && (
+        <Sheet onClose={() => setModal(null)} title="Your creations" wide>
+          <p className="mb-3 text-[12px]" style={{ color: "var(--muted)" }}>
+            Every image, voice clip and code answer you have made. Name the ones worth
+            keeping, pin them to the top, or send a link that shows exactly one of them.
+          </p>
+          <CreationsPanel
+            onOpenCode={openArtifactCode}
+            onShowStudio={openArtifactStudio}
+            onOpenChat={(conversationId) => {
+              // Back to where the answer was written: close the panel first, or the chat opens
+              // underneath a sheet that is still covering it.
+              setModal(null);
+              void openHist(conversationId);
+            }}
+          />
+        </Sheet>
+      )}
+
       {modal === "compare" && (
-        <Sheet onClose={() => setModal(null)} title="Compare models">
+        <Sheet onClose={() => setModal(null)} title="Compare models" wide>
           <div className="space-y-3">
             <p className="text-[12px]" style={{ color: "var(--muted)" }}>
-              Ask the same question to 3 different AI models at once — then read the combined
-              synthesis. Same prompt, three perspectives, one answer.
+              Ask the same question to 2–6 models at once, then read one combined answer — or check
+              the two you liked and fold just those into a new one. A lane that cannot answer is
+              refunded, and model agreement is never treated as proof.
             </p>
             <textarea
               value={comparePrompt}
@@ -3461,10 +3844,75 @@ function Dashboard() {
               className="w-full resize-none rounded-2xl border px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
               style={{ borderColor: "var(--border)", background: "var(--secondary)", color: "inherit" }}
             />
+
+            {/* The lane picker. Its rows are `selectable.chat` from /api/ai/models — the same
+                projection the Models sheet reads — and its prices come from /api/ai/compare, so the
+                number next to the button is the number the hold will take. Nothing here is guessed. */}
+            {laneErr ? (
+              <div className="flex items-center gap-2 rounded-2xl border px-3 py-2 text-[12px]" style={{ borderColor: "var(--err)", color: "var(--err)" }} role="alert" data-compare-error>
+                <span className="min-w-0 flex-1">{laneErr}</span>
+                <Btn size="sm" variant="soft" onClick={() => void loadLanes()}>
+                  Retry
+                </Btn>
+              </div>
+            ) : !laneContract ? (
+              <p className="flex items-center gap-2 text-[12px]" style={{ color: "var(--muted)" }}>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Reading which models this run can ask…
+              </p>
+            ) : (
+              <>
+                <CompareLanes
+                  rows={modelsInfo?.selectable?.chat || []}
+                  selected={chosenLanes}
+                  minLanes={laneContract.minLanes}
+                  maxLanes={laneContract.maxLanes}
+                  perLane={laneContract.perLane}
+                  busy={compareBusy}
+                  onToggle={toggleLane}
+                  onConnectKeys={() => setModal("byok")}
+                />
+                <p className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-2xl border px-3 py-2 text-[11px]" style={{ borderColor: "var(--border)", background: "var(--secondary)", color: "var(--muted)" }} data-compare-cost>
+                  <span>
+                    {chosenLanes.length} lanes × {laneContract.perLane} credit{laneContract.perLane === 1 ? "" : "s"} ={" "}
+                    <b style={{ color: "var(--ink)" }}>{compareCost}</b> credit{compareCost === 1 ? "" : "s"}, held before
+                    the run and given back for any lane that doesn’t answer.
+                  </span>
+                  {compareShort && (
+                    <>
+                      <span style={{ color: "var(--err)" }}>Your balance is {wallet.balance} — {compareShort} short.</span>
+                      <Btn size="sm" variant="soft" onClick={openCredits}>
+                        <CreditCard className="h-3.5 w-3.5" /> Top up
+                      </Btn>
+                    </>
+                  )}
+                </p>
+                {!modelsInfo && (
+                  <p className="flex flex-wrap items-center gap-2 text-[11px]" style={{ color: "var(--muted)" }}>
+                    {modelsErr
+                      ? "The model list could not be read, so the lanes below are this deployment's defaults."
+                      : "The model list is still loading — this run uses the default lanes."}
+                    {!!modelsErr && (
+                      <Btn size="sm" variant="soft" onClick={() => void loadModels()}>
+                        Retry
+                      </Btn>
+                    )}
+                  </p>
+                )}
+              </>
+            )}
+
             <div className="flex items-center gap-2">
-              <Btn size="sm" onClick={doCompare} disabled={!comparePrompt.trim() || compareBusy}>
+              <Btn
+                size="sm"
+                onClick={doCompare}
+                disabled={!comparePrompt.trim() || compareBusy || Boolean(compareShort)}
+              >
                 {compareBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Layers className="h-3.5 w-3.5" />}
-                {compareBusy ? "Asking 3 models…" : "Run comparison"}
+                {compareBusy
+                  ? `Asking ${chosenLanes.length} models…`
+                  : laneContract
+                    ? `Run comparison · ${compareCost} credit${compareCost === 1 ? "" : "s"}`
+                    : "Run comparison"}
               </Btn>
               {compareResult && (
                 <Btn
@@ -3482,53 +3930,53 @@ function Dashboard() {
               )}
             </div>
 
-            {compareResult && !compareResult.available && (
-              <div className="rounded-2xl border px-3 py-3 text-[12px]" style={{ borderColor: "var(--border)", background: "var(--secondary)", color: "var(--muted)" }}>
-                {compareResult.synthesis}
+            {compareErr && (
+              <div className="rounded-2xl border px-3 py-2 text-[12px]" style={{ borderColor: "var(--err)", color: "var(--err)" }} role="alert" data-compare-run-error>
+                {compareErr}
               </div>
             )}
 
-            {compareResult?.available && (
-              <>
-                <div className="grid gap-2">
-                  {compareResult.lanes.map((l) => (
-                    <div key={l.label} className="rounded-2xl border p-3" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
-                      <div className="mb-1.5 flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-bold uppercase tracking-wide" style={{ color: "var(--accent)" }}>
-                          {l.label}
-                        </span>
-                        <span className="flex items-center gap-1.5">
-                          <span className="text-[10px]" style={{ color: "var(--soft)" }}>{l.model}</span>
-                          <Btn variant="icon" size="sm" aria-label={`Copy ${l.label}`} onClick={() => copy(l.reply, `cmp-${l.label}`)}>
-                            {copied === `cmp-${l.label}` ? <Check className="h-3.5 w-3.5" style={{ color: "var(--ok)" }} /> : <Copy className="h-3.5 w-3.5" />}
-                          </Btn>
-                        </span>
-                      </div>
-                      <p className="max-h-44 overflow-y-auto whitespace-pre-wrap text-[12px] leading-relaxed" style={{ color: "var(--muted)" }}>
-                        {l.reply.trim() ? l.reply : "— offline (no live provider for this seat) —"}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-                <div className="rounded-2xl border p-3" style={{ borderColor: "var(--accent)", background: "var(--accent-soft)" }}>
-                  <div className="mb-1 text-[11px] font-bold uppercase tracking-wide" style={{ color: "var(--accent)" }}>
-                    Best combined answer
-                  </div>
-                  <p className="max-h-60 overflow-y-auto whitespace-pre-wrap text-[13px] leading-relaxed">
-                    {compareResult.synthesis}
-                  </p>
-                </div>
-                <p className="text-center text-[10px]" style={{ color: "var(--soft)" }}>
-                  Model agreement is not proof — verify important facts with the ✓ Verify button.
-                </p>
-              </>
+            {/* The results are an input, not just a read-out (W3.2): each answer can be folded into
+                a fresh combined one, and every answer stays on screen whether it is in the mix or
+                not. The offline case comes through here too — same lanes, each saying why it is
+                empty — because "no results" is not a useful screen. */}
+            {!!compareResult && (
+              <CompareResults
+                lanes={compareResult.lanes}
+                mixes={mixes}
+                view={mixView}
+                include={mixLanes}
+                busy={compareBusy}
+                mixBusy={mixBusy}
+                mixCost={mixCost}
+                mixShort={mixShort}
+                offlineMessage={compareResult.available ? "" : compareResult.message || compareResult.synthesis}
+                onToggleInclude={toggleMixLane}
+                onMix={() => void doMix()}
+                onView={(dir) =>
+                  setMixView((v) => Math.min(mixes.length - 1, Math.max(0, v + dir)))
+                }
+                onCopy={(text, key) => copy(text, key)}
+                onTopUp={openCredits}
+                copied={copied}
+              />
             )}
           </div>
         </Sheet>
       )}
 
       {modal === "settings" && (
-        <Sheet onClose={() => setModal(null)} title="Settings">
+        <Sheet
+          onClose={() => {
+            setModal(null);
+            // Armed state is deliberately not kept: coming back to the sheet should not
+            // leave a half-typed password sitting in a destructive form.
+            setDeleteArmed(false);
+            setDeleteSecret("");
+            setDeleteErr("");
+          }}
+          title="Settings"
+        >
           <div className="space-y-1">
             <button type="button" onClick={() => setModal(loggedIn ? "profile" : "auth")} className="mb-2 flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left" style={{ borderColor: "var(--border)", background: "var(--secondary)" }}>
               <span className="flex h-10 w-10 items-center justify-center rounded-full text-xs font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{(me?.name || "G")[0]}</span>
@@ -3539,19 +3987,15 @@ function Dashboard() {
               <ChevronRight className="h-4 w-4" style={{ color: "var(--soft)" }} />
             </button>
             <div className="px-1 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Theme</div>
-            <div className="grid grid-cols-3 gap-1.5">
-              {([
-                ["system", Monitor, "System"],
-                ["light", Sun, "Light"],
-                ["dark", Moon, "Dark"],
-              ] as const).map(([id, Icon, label]) => (
-                <button key={id} type="button" onClick={() => setThemePref(id)} className="flex items-center justify-center gap-1 rounded-xl border py-2.5 text-[11px] font-medium" style={themePref === id ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" } : { borderColor: "var(--border)", color: "var(--muted)" }}>
-                  <Icon className="h-3.5 w-3.5" /> {label}
-                </button>
-              ))}
-            </div>
+            {/* Same THEME_ITEMS the flyout submenu lists, in the shared control: these three
+                buttons marked the active one with colour alone, which a screen reader cannot
+                read, and left the sheet and the menu free to drift apart. */}
+            <SegmentedControl items={THEME_ITEMS} value={themePref} onChange={setThemePref} ariaLabel="Theme" full dark={false} />
             <div className="pt-3">
-              <button type="button" onClick={() => setModal("models")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Layers className="h-4 w-4 opacity-70" /> Models <span className="ml-auto text-[10px]" style={{ color: "var(--soft)" }}>Live + Soon</span></button>
+              <button type="button" onClick={() => setModal("models")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Layers className="h-4 w-4 opacity-70" /> Models{" "}
+                <span className="ml-auto text-[10px]" style={{ color: "var(--soft)" }}>
+                  {modelsInfo ? `${readyCount(modelsInfo)} ready here` : "This deployment"}
+                </span></button>
               <button type="button" onClick={async () => { try { const s = await fetchSkills(); setSkillList(s.skills || []); } catch {} setModal("skills"); }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Sparkles className="h-4 w-4 opacity-70" /> Skills &amp; Mind</button>
               <button type="button" onClick={() => {
                 const md = messages.map(m => `## ${m.role}\n\n${m.content}`).join('\n\n');
@@ -3584,9 +4028,79 @@ function Dashboard() {
               {loggedIn ? (
                 <>
                   <button type="button" onClick={doLogout} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-red-600"><LogOut className="h-4 w-4" /> Log out</button>
-                  <button type="button" onClick={doDeleteAccount} disabled={authBusy} className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-[12px] font-medium" style={{ color: "var(--err)" }}>
-                    <AlertTriangle className="h-3.5 w-3.5" /> {authBusy ? "Deleting…" : "Delete account (permanent)"}
-                  </button>
+                  {deleteArmed ? (
+                    <div
+                      className="mt-1 rounded-2xl border p-3"
+                      style={{ borderColor: "var(--err)", background: "var(--secondary)" }}
+                      role="group"
+                      aria-label="Confirm account deletion"
+                    >
+                      <p className="text-[12px]" style={{ color: "var(--ink)" }}>
+                        This deletes your account, chats, projects, teams and keys. There is
+                        no undo and no grace period.
+                      </p>
+                      <input
+                        autoFocus
+                        type={oauthOnly ? "text" : "password"}
+                        value={deleteSecret}
+                        onChange={(e) => setDeleteSecret(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            setDeleteArmed(false);
+                            setDeleteSecret("");
+                            setDeleteErr("");
+                          }
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void doDeleteAccount(deleteSecret);
+                          }
+                        }}
+                        autoComplete={oauthOnly ? "off" : "current-password"}
+                        {...(oauthOnly ? { maxLength: 8 } : {})}
+                        aria-label={oauthOnly ? "Type DELETE to confirm" : "Your password to confirm"}
+                        placeholder={oauthOnly ? "Type DELETE" : "Your password"}
+                        className="mt-2 h-10 w-full rounded-xl border px-3 text-sm outline-none"
+                        style={{ borderColor: "var(--border)", background: "var(--bg)", color: "var(--ink)" }}
+                      />
+                      {!!deleteErr && (
+                        <p className="mt-1.5 text-[11px]" style={{ color: "var(--err)" }} role="alert">
+                          {deleteErr}
+                        </p>
+                      )}
+                      <div className="mt-2 flex gap-2">
+                        <Btn
+                          size="sm"
+                          disabled={!deleteSecret.trim() || authBusy}
+                          onClick={() => void doDeleteAccount(deleteSecret)}
+                          style={{ background: "var(--err)", color: "#fff" }}
+                        >
+                          {authBusy ? "Deleting…" : "Yes, delete my account"}
+                        </Btn>
+                        <Btn
+                          size="sm"
+                          variant="ghost"
+                          disabled={authBusy}
+                          onClick={() => {
+                            setDeleteArmed(false);
+                            setDeleteSecret("");
+                            setDeleteErr("");
+                          }}
+                        >
+                          Cancel
+                        </Btn>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setDeleteArmed(true)}
+                      className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-[12px] font-medium"
+                      style={{ color: "var(--err)" }}
+                    >
+                      <AlertTriangle className="h-3.5 w-3.5" /> Delete account (permanent)
+                    </button>
+                  )}
                 </>
               ) : (
                 <button type="button" onClick={() => setModal("auth")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><LogIn className="h-4 w-4 opacity-70" /> Log in</button>
@@ -3599,24 +4113,88 @@ function Dashboard() {
 
       {modal === "models" && (
         <Sheet onClose={() => setModal(null)} title="Models" wide>
-          <p className="mb-4 text-sm" style={{ color: "var(--muted)" }}>
-            Free models are live. Premium seats are reserved — Coming soon when enabled.
+          {/* Every word here is read from /api/ai/models, which builds it from MODEL_CATALOG and the
+              live provider set. Nothing about which model answers you is written in this file, so a
+              row added to the catalog shows up here without a second edit — and cannot lie here while
+              the catalog says otherwise. */}
+          <p className="mb-3 text-sm" style={{ color: "var(--muted)" }}>
+            {modelsInfo
+              ? readyTotal(modelsInfo) === 0
+                ? "No model on this deployment can be called right now — a provider key changes that."
+                : `${readyCount(modelsInfo)} of ${readyTotal(modelsInfo)} models here can be called right now. The rest are registered, and light up when their provider key is set.`
+              : modelsErr
+              ? "The model list could not be read."
+              : "Reading what this deployment can call…"}
           </p>
-          <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
-            {(modelsCatalog.length ? modelsCatalog : [
-              { id: '1', name: 'BUILDWE AI', blurb: 'Everyday chat', status: 'live', badge: 'Free', family: 'chat' },
-              { id: '2', name: 'GPT-class seat', blurb: 'Premium chat seat', status: 'coming_soon', badge: 'Soon', family: 'chat' },
-            ]).map((m) => (
-              <div key={m.id} className="rounded-2xl border px-3 py-3" style={{ borderColor: "var(--border)", background: m.status === 'live' ? 'var(--card)' : 'var(--secondary)' }}>
-                <div className="flex items-center gap-2">
-                  <div className="text-sm font-semibold">{m.name}</div>
-                  <span className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase" style={{ background: m.status === 'live' ? 'var(--accent-soft)' : 'var(--border)', color: m.status === 'live' ? 'var(--accent)' : 'var(--muted)' }}>{m.badge || m.status}</span>
+          {modelsErr && (
+            <div className="mb-3 flex items-center gap-2 rounded-2xl border px-3 py-2 text-xs" style={{ borderColor: "var(--err)", color: "var(--err)" }} role="alert" data-models-error>
+              <span className="min-w-0 flex-1">{modelsErr}</span>
+              <Btn size="sm" variant="soft" onClick={() => void loadModels()}>
+                Retry
+              </Btn>
+            </div>
+          )}
+          {!modelsInfo && !modelsErr && (
+            <p className="flex items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Models
+            </p>
+          )}
+          {modelsInfo && (
+            <div className="max-h-[52vh] space-y-4 overflow-y-auto pr-1">
+              {(Object.keys(modelsInfo.selectable) as string[]).map((cap) => {
+                const rows = modelsInfo.selectable[cap] || [];
+                if (!rows.length) return null;
+                return (
+                  <div key={cap}>
+                    <div className="mb-1.5 flex items-baseline gap-2">
+                      <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>
+                        {MODEL_CAPTION[cap] || cap}
+                      </span>
+                      <span className="text-[10px]" style={{ color: "var(--soft)" }}>
+                        {modelsInfo.ready[cap] ? `${modelsInfo.ready[cap].ready}/${modelsInfo.ready[cap].total} ready` : ""}
+                      </span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {rows.map((m) => (
+                        <div
+                          key={`${cap}-${m.id}`}
+                          className="rounded-2xl border px-3 py-2.5"
+                          style={{ borderColor: "var(--border)", background: m.available ? "var(--card)" : "var(--secondary)" }}
+                        >
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className="text-sm font-semibold">{m.label}</span>
+                            <span className="rounded-full px-2 py-0.5 text-[10px] font-bold" style={{ background: m.available ? "var(--accent-soft)" : "var(--border)", color: m.available ? "var(--accent)" : "var(--muted)" }}>
+                              {m.available ? m.brand : m.whyNot || "Not callable here"}
+                            </span>
+                            <span className="ml-auto text-[10px] uppercase tracking-wide" style={{ color: "var(--soft)" }}>
+                              {m.provider} · {m.latency} · {m.quality}/5
+                            </span>
+                          </div>
+                          {!!m.strengths.length && (
+                            <p className="mt-1 text-[11px]" style={{ color: "var(--muted)" }}>
+                              {m.strengths.join(" · ")}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+              {!modelsInfo.llmLive && (
+                <div className="rounded-2xl border p-3" style={{ borderColor: "var(--border)", background: "var(--secondary)" }}>
+                  <p className="text-xs" style={{ color: "var(--muted)" }}>
+                    No chat provider is reachable from this deployment, so answers come from the offline
+                    fallback. A key of your own turns every row above that says &ldquo;No … key&rdquo; into a
+                    live one.
+                  </p>
+                  <Btn size="sm" variant="soft" className="mt-2" onClick={() => setModal("byok")}>
+                    Connect an API key
+                  </Btn>
                 </div>
-                <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>{m.blurb}</p>
-                <div className="mt-1 text-[10px] uppercase tracking-wide" style={{ color: "var(--soft)" }}>{m.family} · {m.status === 'live' ? 'Available now' : 'Coming soon'}</div>
-              </div>
-            ))}
-          </div>
+              )}
+            </div>
+          )}
         </Sheet>
       )}
 
@@ -3714,8 +4292,28 @@ function Dashboard() {
 
           {teamNote && <p className="mt-2 text-xs" style={{ color: "var(--accent)" }}>{teamNote}</p>}
 
-          <div className="mt-4 flex gap-2">
-            <Btn size="sm" disabled={!loggedIn} onClick={doNewTeam}><Plus className="h-3.5 w-3.5" /> Create team</Btn>
+          <div className="mt-4 border-t pt-3" style={{ borderColor: "var(--border)" }}>
+            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Create a team</div>
+            <div className="flex gap-2">
+              <input
+                value={newTeamName}
+                onChange={(e) => setNewTeamName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void doNewTeam(newTeamName);
+                  }
+                }}
+                aria-label="New team name"
+                placeholder="Studio crew, College project…"
+                className="h-10 flex-1 rounded-2xl border px-3 text-sm outline-none"
+                style={{ borderColor: "var(--border)", background: "var(--bg)" }}
+              />
+              <Btn size="sm" disabled={!loggedIn || !newTeamName.trim()} onClick={() => void doNewTeam(newTeamName)}>
+                <Plus className="h-3.5 w-3.5" /> Create
+              </Btn>
+            </div>
+            {!loggedIn && <p className="mt-1.5 text-[11px]" style={{ color: "var(--soft)" }}>Sign in first — a team is a place your chats live, so it needs an account.</p>}
           </div>
 
           <div className="mt-3 border-t pt-3" style={{ borderColor: "var(--border)" }}>
@@ -3843,10 +4441,22 @@ function AuthSheet(props: {
             <span className="h-px flex-1" style={{ background: "var(--border)" }} /> or use email <span className="h-px flex-1" style={{ background: "var(--border)" }} />
           </div>
 
-          <div className="mb-4 flex rounded-2xl border p-1" style={{ borderColor: "var(--border)" }}>
-            {(["login", "register"] as const).map((t) => (
-              <button key={t} type="button" onClick={() => props.setTab(t)} className="flex-1 rounded-xl py-2 text-sm font-medium capitalize" style={props.tab === t ? { background: "var(--ink)", color: "var(--bg)" } : { color: "var(--muted)" }}>{t === "login" ? "log in" : "sign up"}</button>
-            ))}
+          <div className="mb-4">
+            {/* Same control as the settings sheet's theme picker and /pricing's audience
+                toggle: it marks the choice with aria-selected, moves the sliding pill on
+                font load and resize, and takes ArrowLeft/Right. The hand-rolled pair it
+                replaced said "log in"/"sign up" in lowercase text and nothing else. */}
+            <SegmentedControl
+              ariaLabel="Log in or create an account"
+              size="md"
+              full
+              value={props.tab}
+              onChange={props.setTab}
+              items={[
+                { value: "login", label: "Log in" },
+                { value: "register", label: "Sign up" },
+              ]}
+            />
           </div>
           <form onSubmit={props.onSubmit} className="space-y-3">
             {props.tab === "register" && (
@@ -3877,6 +4487,14 @@ function AuthSheet(props: {
 }
 
 function PlansSheet({ plan, onClose, onPro }: { plan: string; onClose: () => void; onPro: () => void }) {
+  // Price comes from the server's checkout config — the same number the order
+  // endpoint charges. It used to be hand-written here as "$5" while /pricing
+  // said "₹500" and Razorpay was configured for 50000 paise (audit A6).
+  // And while that request is in flight the price is `···`, because the hook no
+  // longer carries a made-up default for a page to flash.
+  const proPrice = useProPrice();
+  // Credit numbers come from the wallet endpoint for the same reason.
+  const wallet = useWallet();
   return (
     <Sheet onClose={onClose} title="Plans" wide>
       <p className="mb-4 text-sm" style={{ color: "var(--muted)" }}>
@@ -3890,20 +4508,49 @@ function PlansSheet({ plan, onClose, onPro }: { plan: string; onClose: () => voi
             <li>✓ Full platform access</li>
             <li>✓ Chat, Code, Image, Audio</li>
             <li>✓ Fair daily creative limits</li>
+            <li>✓ {wallet.welcome} credits free at signup</li>
             <li>✓ Ad-supported experience</li>
           </ul>
         </div>
         <div className="rounded-2xl border-2 p-4" style={{ borderColor: "var(--accent)", background: "var(--card)" }}>
-          <div className="text-xs font-semibold" style={{ color: "var(--accent)" }}>PRO</div>
-          <div className="mt-1 text-2xl font-semibold">$5<span className="text-sm font-normal" style={{ color: "var(--muted)" }}>/mo</span></div>
+          <div className="text-xs font-semibold" style={{ color: "var(--accent)" }}>
+            PRO {plan === "pro" && "· CURRENT"}
+            {/* A Business account pays per seat, so the sheet says which it holds rather
+                than showing a bare PRO next to a credit number it cannot explain. */}
+            {wallet.loaded && wallet.proSeats > 1 ? ` · ${wallet.proSeats} seats` : ""}
+          </div>
+          <div className="mt-1 text-2xl font-semibold">{proPrice.loaded ? proPrice.label : "···"}<span className="text-sm font-normal" style={{ color: "var(--muted)" }}>/mo</span></div>
           <ul className="mt-3 space-y-1.5 text-xs">
             <li>✓ Higher creative limits</li>
             <li>✓ Priority generation</li>
             <li>✓ Calmer, fewer ads</li>
+            <li>✓ {wallet.proMonthly.toLocaleString()} credits every month</li>
             <li>✓ Built for daily heavy use</li>
           </ul>
           <Btn className="mt-4 w-full" size="sm" onClick={onPro}>Upgrade to PRO</Btn>
         </div>
+      </div>
+      {/* The other way to buy: a credit pack, no subscription. People who only
+          need 50 more generations this month should not have to commit. */}
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl border p-3 text-xs" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
+        <span style={{ color: "var(--muted)" }}>
+          Just need more credits? Balance:{" "}
+          <b style={{ color: "var(--ink)" }}>{wallet.loaded ? wallet.balance : "···"}</b>{" "}
+          {wallet.packs.length > 0
+            ? ` · ${wallet.packs.map((p) => `${p.displayAmount} = ${p.credits} credits`).join(", ")}`
+            : ""}
+        </span>
+        <button
+          type="button"
+          className="font-semibold"
+          style={{ color: "var(--accent)" }}
+          onClick={() => {
+            onClose();
+            openCredits();
+          }}
+        >
+          Top up credits →
+        </button>
       </div>
       <div className="mt-4 flex flex-wrap gap-3 text-xs" style={{ color: "var(--soft)" }}>
         <Link href="/pricing" onClick={onClose} className="underline">Pricing page</Link>
@@ -3920,15 +4567,4 @@ export default function Page() {
       <Dashboard />
     </Suspense>
   );
-}
-
-interface SpeechRecognition extends EventTarget {
-  lang: string;
-  start(): void;
-  onresult: ((ev: SpeechRecognitionEvent) => void) | null;
-  onend: (() => void) | null;
-}
-interface SpeechRecognitionEvent extends Event {
-  resultIndex: number;
-  results: SpeechRecognitionResultList;
 }

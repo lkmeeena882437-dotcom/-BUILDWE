@@ -1,6 +1,8 @@
 /**
  * BUILDWE config — all secrets via env. Replace values in .env.local only.
- * TEST MODE: when keys missing, adapters return safe demo responses.
+ * When a provider key is missing, image and voice fall back to keyless public
+ * endpoints (real HTTP calls to real services), and everything else says it is
+ * unconfigured. There is no mode that answers with invented results.
  */
 
 function env(key: string, fallback = ""): string {
@@ -16,8 +18,30 @@ function envInt(key: string, fallback: number): number {
 export const APP = {
   name: env("NEXT_PUBLIC_APP_NAME", "BUILDWE.ONLINE"),
   url: env("NEXT_PUBLIC_APP_URL", "http://localhost:3000"),
-  demoMode: env("NEXT_PUBLIC_DEMO_MODE", "true") === "true",
 } as const;
+
+/**
+ * How many reverse proxies sit in front of us. `x-forwarded-for` is
+ * attacker-controlled unless the chain is ours, so with no trusted proxy we
+ * must NOT take the client IP from it (audit C3: rotating that header reset
+ * every rate-limit bucket). Vercel/Cloudflare set it for us → 1 hop.
+ */
+export const TRUST_PROXY_HOPS = (() => {
+  const explicit = Number(env("TRUST_PROXY_HOPS", ""));
+  if (Number.isFinite(explicit) && explicit >= 0) return Math.min(explicit, 4);
+  if (process.env.VERCEL === "1" || process.env.CF || process.env.FC_REQUEST_ID) return 1;
+  // Off production, reading the header is what makes a local demo usable
+  // (otherwise every visitor of `localhost:3000` shares one signup bucket).
+  // In production the default is 0: unproven headers grant no trust.
+  if (process.env.NODE_ENV !== "production") return 1;
+  return 0;
+})();
+
+/** Ops-only endpoints are closed unless a token is configured. */
+export const OPS_TOKEN = env("BW_OPS_TOKEN");
+export const ALLOW_DEV_AUTH_LINKS =
+  process.env.NODE_ENV !== "production" &&
+  env("SHOW_DEV_LINKS", "false") === "true";
 
 export const LIMITS = {
   free: {
@@ -78,13 +102,84 @@ export const RAZORPAY = {
   currency: env("RAZORPAY_PRO_CURRENCY", "INR"),
   planName: env("RAZORPAY_PRO_PLAN_NAME", "BUILDWE PRO"),
   planId: env("RAZORPAY_PRO_PLAN_ID"),
+  /**
+   * How many seats one Business order may buy. The multiplier itself is applied
+   * server-side (lib/payments/razorpay.ts owns the arithmetic) so a browser can
+   * neither pick its price nor its entitlement; this exists only to bound it, and
+   * it is served to the UI rather than copied there, so the stepper can never
+   * offer a number the order endpoint would refuse.
+   */
+  seatsMax: envInt("RAZORPAY_PRO_SEATS_MAX", 10),
 } as const;
+
+/**
+ * Credit economy — the real gate, per the boss's rule of 2026-08-31:
+ * **1 normal generation = 1 credit**, heavy tools cost more, signup grants
+ * **10 free credits** so anyone can judge the quality, and top-ups are
+ * **₹99 = 100** / **₹399 = 500**. Deliberately simple: no expiry, no
+ * per-model exchange-rate table, no daily hunt for bonus points. A credit is
+ * "one unit of paid work", and the only place it is minted is a real payment,
+ * the welcome grant, or the PRO monthly grant.
+ *
+ * Chat is NOT metered by credits (it keeps its daily fair-use cap) — metering
+ * the free hook would make the product worse for the smallest money. Generators
+ * are metered, because those are what a bill pays for.
+ */
+export const CREDITS = {
+  welcome: envInt("CREDITS_WELCOME", 10),
+  proMonthly: envInt("CREDITS_PRO_MONTHLY", 1000),
+  /** what each kind of work costs — the table is here so it is auditable */
+  cost: {
+    chat: envInt("CREDIT_COST_CHAT", 0),
+    image: envInt("CREDIT_COST_IMAGE", 2),
+    audio: envInt("CREDIT_COST_AUDIO", 1),
+    transcribe: envInt("CREDIT_COST_TRANSCRIBE", 1),
+    /** one image read by a model — a model call, priced like a tool */
+    vision: envInt("CREDIT_COST_VISION", 1),
+    agent: envInt("CREDIT_COST_AGENT", 3),
+    /** per live model lane in a side-by-side comparison */
+    compareLane: envInt("CREDIT_COST_COMPARE_LANE", 1),
+    /** default for a tool whose spec doesn't declare its own cost */
+    tool: envInt("CREDIT_COST_TOOL", 1),
+  },
+  packs: [
+    {
+      id: "starter",
+      label: "Starter pack",
+      paise: envInt("CREDIT_PACK_STARTER_PAISE", 9900),
+      credits: envInt("CREDIT_PACK_STARTER_CREDITS", 100),
+    },
+    {
+      id: "value",
+      label: "Value pack",
+      paise: envInt("CREDIT_PACK_VALUE_PAISE", 39900),
+      credits: envInt("CREDIT_PACK_VALUE_CREDITS", 500),
+    },
+  ] as const,
+} as const;
+
+export function creditPack(id: string) {
+  return CREDITS.packs.find((p) => p.id === String(id || "").trim().toLowerCase());
+}
 
 export function hasProviderKey(
   provider: keyof typeof AI_KEYS
 ): boolean {
   const v = AI_KEYS[provider];
   return Boolean(v && !v.startsWith("your_") && v !== "change_me_long_random_string");
+}
+
+/**
+ * Whether saved user API keys are encrypted with a secret this deployment
+ * owns. `lib/crypto.ts` refuses to fall back in production, so the status page
+ * can say "down" instead of implying encryption is always on.
+ */
+export function byokEncryptionConfigured(): boolean {
+  // Exactly the two names lib/crypto.ts will actually use, with no fallback string
+  // inside the test: `Boolean(env(K, "some literal"))` is always true, so the old
+  // version reported "encrypted with a secret we own" while encrypting with a key
+  // that is printed in the public repo.
+  return Boolean(AI_KEYS.byokSecret) || Boolean(env("SESSION_SECRET"));
 }
 
 export function razorpayConfigured(): boolean {

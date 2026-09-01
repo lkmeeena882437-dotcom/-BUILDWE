@@ -31,7 +31,18 @@ function loadRazorpayScript(): Promise<boolean> {
   });
 }
 
-export function UpgradeButton({ className }: { className?: string }) {
+export function UpgradeButton({
+  className,
+  /** Business multiplier. 1 keeps the old single-seat behaviour exactly. */
+  seats = 1,
+  description,
+  label,
+}: {
+  className?: string;
+  seats?: number;
+  description?: string;
+  label?: string;
+}) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -46,7 +57,7 @@ export function UpgradeButton({ className }: { className?: string }) {
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok || !j.ok) throw new Error(j.error || "Verification failed");
-    return j as { demo?: boolean };
+    return j as { ok: boolean };
   };
 
   const start = async () => {
@@ -72,35 +83,29 @@ export function UpgradeButton({ className }: { className?: string }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({}),
+        // The seat count is a request, nothing more: the server validates it, multiplies
+        // the amount itself, and reads the number back off its own ledger row before it
+        // grants anything. Sending it here is what the stepper chose, not what we'll honour.
+        body: JSON.stringify({ seats }),
       });
       const orderJ = await orderR.json().catch(() => ({}));
-      if (!orderR.ok) throw new Error(orderJ.error || "Couldn't start checkout");
-
-      const { order, keyId, demo } = orderJ as {
-        order: { id: string; amount: number; currency: string };
-        keyId: string;
-        demo: boolean;
-      };
-
-      // 3a. DEMO mode — instant test upgrade (no keys configured)
-      if (demo) {
-        const v = await verify({
-          razorpay_order_id: order.id,
-          razorpay_payment_id: `pay_demo_${Date.now()}`,
-          razorpay_signature: "demo",
-        });
-        setDone(true);
-        setNote(
-          v.demo
-            ? "Demo checkout — PRO activated on this account. Add Razorpay keys for real payments."
-            : "PRO activated ⚡"
+      if (!orderR.ok) {
+        throw new Error(
+          orderJ.code === "CHECKOUT_UNAVAILABLE"
+            ? "Payments aren't enabled on this server yet, so PRO can't be bought right now."
+            : orderJ.error || "Couldn't start checkout"
         );
-        router.refresh();
-        return;
       }
 
-      // 3b. LIVE Razorpay checkout
+      const { order, keyId } = orderJ as {
+        order: { id: string; amount: number; currency: string };
+        keyId: string;
+      };
+
+      // The only checkout this app has: a real order from a real gateway. The
+      // branch that used to walk the UI with a locally minted order id is gone
+      // along with the path that minted it, so "not configured" is a 503 here
+      // rather than a message that says it worked-but-didnt.
       const ok = await loadRazorpayScript();
       if (!ok || !window.Razorpay) throw new Error("Couldn't load Razorpay");
 
@@ -109,7 +114,7 @@ export function UpgradeButton({ className }: { className?: string }) {
         amount: order.amount,
         currency: order.currency,
         name: "BUILDWE.ONLINE",
-        description: "BUILDWE PRO — monthly",
+        description: description || "BUILDWE PRO — monthly",
         order_id: order.id,
         theme: { color: "#C45C26" },
         handler: async (response: RazorpayResponse) => {
@@ -146,7 +151,7 @@ export function UpgradeButton({ className }: { className?: string }) {
         }
       >
         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : done ? <Check className="h-4 w-4" /> : null}
-        {busy ? "Opening checkout…" : done ? "PRO active" : "Upgrade to PRO →"}
+        {busy ? "Opening checkout…" : done ? "PRO active" : label || "Upgrade to PRO →"}
       </button>
       {note && <p className="mt-2 text-center text-[11px] text-[#9C958C]">{note}</p>}
     </div>

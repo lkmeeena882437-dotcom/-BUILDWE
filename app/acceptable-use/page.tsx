@@ -27,7 +27,7 @@ export default function AcceptableUsePage() {
           <li>Build malware, phishing pages, or anything designed to deceive or damage.</li>
           <li>Impersonate others or generate non-consensual depictions of real people.</li>
           <li>Scrape, spam, or deliberately abuse free limits (automated mass generation, key farming, reselling free capacity).</li>
-          <li>Circumvent rate limits, security controls, or other users' privacy.</li>
+          <li>Circumvent rate limits, security controls, or other users&apos; privacy.</li>
         </ul>
       </Section>
 
@@ -41,7 +41,7 @@ export default function AcceptableUsePage() {
 
       <Section title="Generated content">
         <p>
-          You own your prompts and outputs, and you're responsible for how you use them. AI output can be
+          You own your prompts and outputs, and you&apos;re responsible for how you use them. AI output can be
           wrong — verify before relying on it for anything important. See our{" "}
           <a href="/terms" className="font-medium text-[#C45C26] underline">Terms</a> and{" "}
           <a href="/privacy" className="font-medium text-[#C45C26] underline">Privacy Policy</a>.

@@ -9,28 +9,38 @@ import {
   signSession,
 } from "@/lib/auth/session";
 import { verifyGuestCookie } from "@/lib/auth/guest";
-import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
-import { rateLimitDurable } from "@/lib/rate-limit/durable";
+import { limitSignup } from "@/lib/rate-limit/guard";
 
 const schema = z.object({
   email: z.string().email(),
-  password: z.string().min(6).max(128),
+  password: z.string().min(8).max(128),
   name: z.string().min(1).max(80).optional(),
 });
 
 export async function POST(req: NextRequest) {
   try {
-    const ip = clientIp(req);
-    const rl = await rateLimitDurable(`reg:${ip}`, 10, 60_000);
-    if (!rl.ok) {
-      return NextResponse.json({ error: "Too many attempts. Wait a minute." }, { status: 429 });
+    // Body first, then BOTH limits: per-IP and per-email. Keying on the email
+    // too means rotating X-Forwarded-For no longer buys fresh quota (audit C3).
+    const parsed = schema.safeParse(await req.json().catch(() => null));
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "Enter a valid email and password (min 8 characters)." },
+        { status: 422 }
+      );
+    }
+    const gate = await limitSignup(req, parsed.data.email);
+    if (!gate.ok) {
+      return NextResponse.json(
+        { error: gate.error, hint: gate.hint },
+        { status: 429 }
+      );
     }
 
     // Capture the (verified) guest identity BEFORE the account exists, so the
     // work done in guest mode can follow the user into their new account.
     const guestId = verifyGuestCookie(req.cookies.get("bw_guest")?.value);
 
-    const body = schema.parse(await req.json());
+    const body = parsed.data;
     const user = createUser({
       email: body.email,
       password: body.password,
@@ -62,14 +72,18 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     const msg = (e as Error).message || "Couldn’t create account.";
     // Never leak raw ENOENT paths to UI
-    const safe = /ENOENT|EACCES|mkdir|EPERM|read-only/i.test(msg)
+    // STORE_BUSY is the store saying "somebody else is writing". That is a wait-a-moment, not a
+    // "fix what you typed", so it gets 503 — the client shows the message either way, but a status
+    // of 400 on a transient server condition teaches the wrong lesson to whoever reads the logs.
+    const busy = /STORE_BUSY|is busy/i.test(msg);
+    const safe = /ENOENT|EACCES|mkdir|EPERM|read-only/i.test(msg) || busy
       ? "Couldn’t save account right now. Please try again."
       : msg.includes("already")
         ? "Email already registered. Try logging in."
         : msg.includes("Invalid") || msg.includes("email")
           ? "Enter a valid email and password (min 6 characters)."
           : "Couldn’t create account. Please try again.";
-    const status = msg.includes("already") ? 409 : 400;
+    const status = msg.includes("already") ? 409 : busy ? 503 : 400;
     console.error("[bw] register", e);
     return NextResponse.json({ error: safe }, { status });
   }

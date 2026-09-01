@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
-import { clientIp, rateLimit } from "@/lib/rate-limit/memory";
-import { rateLimitDurable } from "@/lib/rate-limit/durable";
+import { limitAi } from "@/lib/rate-limit/guard";
+
 import { streamChatOrCode } from "@/lib/ai/providers";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { understandPrompt } from "@/lib/ai/understanding";
@@ -9,11 +9,12 @@ import { qualityGate } from "@/lib/ai/quality";
 import {
   addGeneration,
   appendMessages,
-  buildProjectContext,
   createConversation,
   findUserById,
+  listProjectFiles,
   uid,
 } from "@/lib/db/store";
+import { formatProjectContext, parseContextInput } from "@/lib/ai/workspace-context";
 import { decryptSecret } from "@/lib/crypto";
 import { INPUT_LIMITS, toUserFacingError } from "@/lib/ai/gateway";
 
@@ -23,8 +24,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
-    const ip = clientIp(req);
-    const rl = await rateLimitDurable(`ai:code:${session.userId}:${ip}`, 30, 60_000);
+    const rl = await limitAi("code", session.userId, 30, 60_000);
     if (!rl.ok) {
       return NextResponse.json(
         { error: "Too many requests — wait a moment.", code: "RATE_LIMIT", hint: "Thoda ruk ke Try again dabao — 1 minute me limit reset ho jaati hai." },
@@ -112,14 +112,28 @@ export async function POST(req: NextRequest) {
     const understood = understandPrompt(String(userText));
 
     // Coding-agent project context (Update #1 §3.1): when the request belongs
-    // to a project, the model sees that project's real files instead of
-    // guessing at structure from the chat alone. buildProjectContext is
-    // owner-scoped and budget-capped, so this can't leak or blow up cost.
+    // to a project, the model sees that project's real files instead of guessing at
+    // structure from the chat alone. The formatter lives in
+    // lib/ai/workspace-context.ts — one owner for the shape of the block, the byte
+    // budget and the statistics, shared with the chat route. Code mode keeps its own
+    // apply path (the canvas + Save canvas), so it is NOT given the buildwe-file
+    // instruction: telling it to answer in a fence the canvas does not read would
+    // quietly break the flow it already has.
+    const ctxIn = parseContextInput(body.context);
+    if (!ctxIn.ok) {
+      return NextResponse.json({ error: ctxIn.error, code: ctxIn.code }, { status: 400 });
+    }
     let projectContext = "";
+    let contextStats: ReturnType<typeof formatProjectContext>["stats"] | null = null;
     const projectId = body.projectId ? String(body.projectId) : "";
     if (projectId) {
       try {
-        projectContext = buildProjectContext(projectId, session.userId);
+        const out = formatProjectContext(listProjectFiles(projectId, session.userId), {
+          purpose: "code",
+          ...(ctxIn.value ? { openPath: ctxIn.value.path } : {}),
+        });
+        projectContext = out.text;
+        contextStats = out.stats;
       } catch (e) {
         console.error("[bw] project context", e);
       }
@@ -160,7 +174,15 @@ export async function POST(req: NextRequest) {
         try {
           controller.enqueue(
             encoder.encode(
-              `data: ${JSON.stringify({ meta: { conversationId, model, live, ...(fallbackNote ? { fallbackNote } : {}) } })}\n\n`
+              `data: ${JSON.stringify({
+                meta: {
+                  conversationId,
+                  model,
+                  live,
+                  ...(fallbackNote ? { fallbackNote } : {}),
+                  ...(contextStats ? { context: { attached: true, ...contextStats } } : {}),
+                },
+              })}\n\n`
             )
           );
           while (true) {
@@ -186,7 +208,11 @@ export async function POST(req: NextRequest) {
                   role: "assistant",
                   content: full,
                   createdAt: new Date().toISOString(),
-                  meta: { model, live },
+                  meta: {
+                    model,
+                    live,
+                    ...(contextStats ? { context: { attached: true, ...contextStats } } : {}),
+                  },
                 },
               ]);
               addGeneration({

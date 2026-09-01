@@ -3,8 +3,15 @@
  */
 
 import { AI_KEYS, AI_MODELS, APP } from "@/lib/config";
-import { SYSTEM_PROMPTS, publicModelLabel, type Plan } from "@/lib/ai/rules";
-import { pickModel, estimateComplexity, modelChain, routeModelFor, MODEL_CATALOG } from "@/lib/ai/models-catalog";
+import { SYSTEM_PROMPTS, type Plan } from "@/lib/ai/rules";
+import {
+  pickModel,
+  estimateComplexity,
+  modelChain,
+  routeModelFor,
+  MODEL_CATALOG,
+  publicModelLabel,
+} from "@/lib/ai/models-catalog";
 import {
   streamVia,
   completeVia,
@@ -181,6 +188,8 @@ export async function streamChatOrCode(opts: {
 }): Promise<{
   stream: ReadableStream<Uint8Array>;
   model: string;
+  /** catalog id the answer came from — the only id a retry may be sent to */
+  modelId?: string;
   live: boolean;
   mind: MindProfile;
   fallbackNote?: string;
@@ -342,6 +351,11 @@ export async function streamChatOrCode(opts: {
       return {
         stream: anyStreamToTextSSE(hit.body, hit.wire),
         model: publicModelLabel(model, opts.mode),
+        // The public label is what the UI shows; `modelId` is what a follow-up
+        // call has to be made with. They are NOT interchangeable — sending
+        // "BUILDWE AI" to a vendor was the bug that made every tool correction
+        // pass die silently (found by tests/tools.mjs).
+        modelId: model,
         live: true,
         mind,
         ...(fallbackNote ? { fallbackNote } : {}),
@@ -362,6 +376,7 @@ export async function streamChatOrCode(opts: {
       return {
         stream: textToSSE(text),
         model: publicModelLabel(model, opts.mode),
+        modelId: model,
         live: true,
         mind,
         fallbackNote:
@@ -379,6 +394,7 @@ export async function streamChatOrCode(opts: {
   return {
     stream: textToSSE(opts.offlineOverrideText || offline),
     model: publicModelLabel(undefined, opts.mode),
+    modelId: undefined,
     live: false,
     mind,
     fallbackNote: opts.offlineOverrideText
