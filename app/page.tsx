@@ -107,7 +107,7 @@ import {
   type ProjectFileMeta,
   type TeamView,
   type MeResponse,
-} from "@/lib/client/api";
+      type ModelsInfo } from "@/lib/client/api";
 import { ImageStudio, type StudioImage } from "@/components/workspace/ImageStudio";
 import { AudioStudio } from "@/components/workspace/AudioStudio";
 import { CanvasHistoryMenu, type CanvasVersion } from "@/components/workspace/CanvasHistoryMenu";
@@ -337,6 +337,22 @@ function extractCode(text: string) {
   return blocks;
 }
 
+/* The Models sheet's captions, and the arithmetic its two summaries share. Presentation lives here;
+   which models exist, and whether they can be called, comes only from /api/ai/models. */
+const MODEL_CAPTION: Record<string, string> = {
+  chat: "Chat & reasoning",
+  code: "Code",
+  image: "Image",
+  audio: "Voice",
+  stt: "Transcription",
+  vision: "Image reading",
+};
+
+const readyCount = (info: ModelsInfo) =>
+  Object.values(info.ready).reduce((n, r) => n + r.ready, 0);
+const readyTotal = (info: ModelsInfo) =>
+  Object.values(info.ready).reduce((n, r) => n + r.total, 0);
+
 function Dashboard() {
   const [view, setView] = useState<"home" | "app">("home");
   const [mode, setMode] = useState<Mode>("chat");
@@ -412,9 +428,13 @@ function Dashboard() {
   const [authBusy, setAuthBusy] = useState(false);
   const [skillDraft, setSkillDraft] = useState("");
   const [skillList, setSkillList] = useState<string[]>([]);
-  const [modelsCatalog, setModelsCatalog] = useState<
-    { id: string; name: string; blurb: string; status: string; badge?: string; family: string }[]
-  >([]);
+  /* What this deployment can call, from `/api/ai/models`. The sheet used to render the marketing
+     ladder (`all`), which lists "coming soon" seats nobody can pick — and when the fetch failed it
+     fell back to a hardcoded list containing an invented model. A read-out about *which model
+     answers you* is the one place a made-up row is unacceptable, so there is no fallback: the sheet
+     says it failed and offers to try again. `null` while loading, and the two are told apart. */
+  const [modelsInfo, setModelsInfo] = useState<ModelsInfo | null>(null);
+  const [modelsErr, setModelsErr] = useState("");
 
   // web search + vision attachment
   const [webSearchOn, setWebSearchOn] = useState(false);
@@ -690,6 +710,19 @@ function Dashboard() {
     }
   }, []);
 
+  /** Kept separate from the mount effect so the sheet's Retry refetches instead of apologising. */
+  const loadModels = useCallback(() => {
+    setModelsErr("");
+    return fetchModels()
+      .then((m) => setModelsInfo(m))
+      .catch((e) => {
+        // A keyless deployment answers 200 with everything marked unavailable; a 500 or a dead
+        // server must not be shown as "you have no models".
+        setModelsInfo(null);
+        setModelsErr((e as Error).message || "The model list could not be read.");
+      });
+  }, []);
+
   useEffect(() => {
     refreshMe();
     refreshHistory();
@@ -704,10 +737,9 @@ function Dashboard() {
         }
       })
       .catch(() => {});
-    fetchModels()
-      .then((m) => setModelsCatalog(m.all || []))
-      .catch(() => {});
-  }, [refreshMe, refreshHistory, refreshGenerations, refreshProjects, refreshTeams]);
+    void loadModels();
+  }, [refreshMe, refreshHistory, refreshGenerations, refreshProjects, refreshTeams, loadModels]);
+
 
   const doSaveByok = async (which: "groq" | "openrouter", clear?: boolean) => {
     setByokBusy(true);
@@ -3745,7 +3777,10 @@ function Dashboard() {
                 read, and left the sheet and the menu free to drift apart. */}
             <SegmentedControl items={THEME_ITEMS} value={themePref} onChange={setThemePref} ariaLabel="Theme" full dark={false} />
             <div className="pt-3">
-              <button type="button" onClick={() => setModal("models")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Layers className="h-4 w-4 opacity-70" /> Models <span className="ml-auto text-[10px]" style={{ color: "var(--soft)" }}>Live + Soon</span></button>
+              <button type="button" onClick={() => setModal("models")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Layers className="h-4 w-4 opacity-70" /> Models{" "}
+                <span className="ml-auto text-[10px]" style={{ color: "var(--soft)" }}>
+                  {modelsInfo ? `${readyCount(modelsInfo)} ready here` : "This deployment"}
+                </span></button>
               <button type="button" onClick={async () => { try { const s = await fetchSkills(); setSkillList(s.skills || []); } catch {} setModal("skills"); }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><Sparkles className="h-4 w-4 opacity-70" /> Skills &amp; Mind</button>
               <button type="button" onClick={() => {
                 const md = messages.map(m => `## ${m.role}\n\n${m.content}`).join('\n\n');
@@ -3863,24 +3898,88 @@ function Dashboard() {
 
       {modal === "models" && (
         <Sheet onClose={() => setModal(null)} title="Models" wide>
-          <p className="mb-4 text-sm" style={{ color: "var(--muted)" }}>
-            Free models are live. Premium seats are reserved — Coming soon when enabled.
+          {/* Every word here is read from /api/ai/models, which builds it from MODEL_CATALOG and the
+              live provider set. Nothing about which model answers you is written in this file, so a
+              row added to the catalog shows up here without a second edit — and cannot lie here while
+              the catalog says otherwise. */}
+          <p className="mb-3 text-sm" style={{ color: "var(--muted)" }}>
+            {modelsInfo
+              ? readyTotal(modelsInfo) === 0
+                ? "No model on this deployment can be called right now — a provider key changes that."
+                : `${readyCount(modelsInfo)} of ${readyTotal(modelsInfo)} models here can be called right now. The rest are registered, and light up when their provider key is set.`
+              : modelsErr
+              ? "The model list could not be read."
+              : "Reading what this deployment can call…"}
           </p>
-          <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
-            {(modelsCatalog.length ? modelsCatalog : [
-              { id: '1', name: 'BUILDWE AI', blurb: 'Everyday chat', status: 'live', badge: 'Free', family: 'chat' },
-              { id: '2', name: 'GPT-class seat', blurb: 'Premium chat seat', status: 'coming_soon', badge: 'Soon', family: 'chat' },
-            ]).map((m) => (
-              <div key={m.id} className="rounded-2xl border px-3 py-3" style={{ borderColor: "var(--border)", background: m.status === 'live' ? 'var(--card)' : 'var(--secondary)' }}>
-                <div className="flex items-center gap-2">
-                  <div className="text-sm font-semibold">{m.name}</div>
-                  <span className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase" style={{ background: m.status === 'live' ? 'var(--accent-soft)' : 'var(--border)', color: m.status === 'live' ? 'var(--accent)' : 'var(--muted)' }}>{m.badge || m.status}</span>
+          {modelsErr && (
+            <div className="mb-3 flex items-center gap-2 rounded-2xl border px-3 py-2 text-xs" style={{ borderColor: "var(--err)", color: "var(--err)" }} role="alert" data-models-error>
+              <span className="min-w-0 flex-1">{modelsErr}</span>
+              <Btn size="sm" variant="soft" onClick={() => void loadModels()}>
+                Retry
+              </Btn>
+            </div>
+          )}
+          {!modelsInfo && !modelsErr && (
+            <p className="flex items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Models
+            </p>
+          )}
+          {modelsInfo && (
+            <div className="max-h-[52vh] space-y-4 overflow-y-auto pr-1">
+              {(Object.keys(modelsInfo.selectable) as string[]).map((cap) => {
+                const rows = modelsInfo.selectable[cap] || [];
+                if (!rows.length) return null;
+                return (
+                  <div key={cap}>
+                    <div className="mb-1.5 flex items-baseline gap-2">
+                      <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>
+                        {MODEL_CAPTION[cap] || cap}
+                      </span>
+                      <span className="text-[10px]" style={{ color: "var(--soft)" }}>
+                        {modelsInfo.ready[cap] ? `${modelsInfo.ready[cap].ready}/${modelsInfo.ready[cap].total} ready` : ""}
+                      </span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {rows.map((m) => (
+                        <div
+                          key={`${cap}-${m.id}`}
+                          className="rounded-2xl border px-3 py-2.5"
+                          style={{ borderColor: "var(--border)", background: m.available ? "var(--card)" : "var(--secondary)" }}
+                        >
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className="text-sm font-semibold">{m.label}</span>
+                            <span className="rounded-full px-2 py-0.5 text-[10px] font-bold" style={{ background: m.available ? "var(--accent-soft)" : "var(--border)", color: m.available ? "var(--accent)" : "var(--muted)" }}>
+                              {m.available ? m.brand : m.whyNot || "Not callable here"}
+                            </span>
+                            <span className="ml-auto text-[10px] uppercase tracking-wide" style={{ color: "var(--soft)" }}>
+                              {m.provider} · {m.latency} · {m.quality}/5
+                            </span>
+                          </div>
+                          {!!m.strengths.length && (
+                            <p className="mt-1 text-[11px]" style={{ color: "var(--muted)" }}>
+                              {m.strengths.join(" · ")}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+              {!modelsInfo.llmLive && (
+                <div className="rounded-2xl border p-3" style={{ borderColor: "var(--border)", background: "var(--secondary)" }}>
+                  <p className="text-xs" style={{ color: "var(--muted)" }}>
+                    No chat provider is reachable from this deployment, so answers come from the offline
+                    fallback. A key of your own turns every row above that says &ldquo;No … key&rdquo; into a
+                    live one.
+                  </p>
+                  <Btn size="sm" variant="soft" className="mt-2" onClick={() => setModal("byok")}>
+                    Connect an API key
+                  </Btn>
                 </div>
-                <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>{m.blurb}</p>
-                <div className="mt-1 text-[10px] uppercase tracking-wide" style={{ color: "var(--soft)" }}>{m.family} · {m.status === 'live' ? 'Available now' : 'Coming soon'}</div>
-              </div>
-            ))}
-          </div>
+              )}
+            </div>
+          )}
         </Sheet>
       )}
 

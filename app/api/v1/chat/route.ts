@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { limitAi } from "@/lib/rate-limit/guard";
 
 import { streamChatOrCode } from "@/lib/ai/providers";
+import { modelDetailLabel } from "@/lib/ai/models-catalog";
 import { findApiKeyByHash, findUserById, touchApiKey } from "@/lib/db/store";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { sha256Hex, decryptSecret } from "@/lib/crypto";
@@ -14,7 +15,8 @@ export const dynamic = "force-dynamic";
  *
  * Headers: Authorization: Bearer bw_sk_…
  * Body:    { "prompt": "..." }  or  { "messages": [{role, content}, …], "mode": "chat"|"code" }
- * Returns: { ok, model, live, reply }
+ * Returns: { ok, model, modelBrand, live, reply } — `model` names the row that answered, so a
+ * caller can budget by model; `modelBrand` is what the product shows an end user.
  */
 
 async function resolveKey(req: NextRequest) {
@@ -94,7 +96,7 @@ export async function POST(req: NextRequest) {
       openrouter: byok.openrouter ? decryptSecret(byok.openrouter) : undefined,
     };
 
-    const { stream, model, live } = await streamChatOrCode({
+    const { stream, model, modelId, live } = await streamChatOrCode({
       mode,
       messages,
       plan: user.plan,
@@ -130,7 +132,12 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      model,
+      // A developer integrating against this API budgets by model, so `model` is the row that
+      // actually answered, not the brand. `modelBrand` stays for anything that shows the label to
+      // an end user, so the white-labelling contract did not move — it just stopped being the only
+      // answer available.
+      model: modelDetailLabel(modelId, mode === "code" ? "code" : "chat"),
+      modelBrand: model,
       live,
       reply,
       usage: { characters: reply.length, counted: live },

@@ -71,18 +71,6 @@ export function isComplexCodePrompt(text: string): boolean {
   return words >= 8 || signals.some((s) => t.includes(s));
 }
 
-export function publicModelLabel(internal?: string, mode?: string): string {
-  if (!internal) {
-    if (mode === "code") return "BUILDWE Code";
-    if (mode === "image") return "BUILDWE Vision";
-    if (mode === "audio") return "BUILDWE Voice";
-    return "BUILDWE AI";
-  }
-  const s = internal.toLowerCase();
-  if (s.includes("code") || s.includes("coder")) return "BUILDWE Code";
-  if (s.includes("image") || s.includes("flux") || s.includes("vision"))
-    return "BUILDWE Vision";
-  if (s.includes("audio") || s.includes("tts") || s.includes("voice"))
-    return "BUILDWE Voice";
-  return "BUILDWE AI";
-}
+/* `publicModelLabel` used to live here, guessing a capability out of the model id's substrings.
+   It is in `lib/ai/models-catalog.ts` now, next to the rows it has to be looked up in — one
+   naming rule, one owner. See audit A9 / W3.8. */

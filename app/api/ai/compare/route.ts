@@ -3,7 +3,7 @@ import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { limitAi } from "@/lib/rate-limit/guard";
 
 import { streamChatOrCode } from "@/lib/ai/providers";
-import { estimateComplexity } from "@/lib/ai/models-catalog";
+import { estimateComplexity, modelDetailLabel } from "@/lib/ai/models-catalog";
 import { bump } from "@/lib/metrics/metrics";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { uid } from "@/lib/db/store";
@@ -128,7 +128,11 @@ export async function POST(req: NextRequest) {
         const reply = await collect(stream);
         return {
           label: seat.label,
-          model,
+          // The lane has to say *which model* answered. `model` from the provider is the public
+          // brand — identical in every lane, which is what made comparison look broken (audit A9);
+          // `seat.id` is the truth, and the catalog turns it into a name a reader can act on.
+          model: modelDetailLabel(seat.id, "chat"),
+          brand: model,
           live,
           reply: live ? reply.slice(0, 2400) : "",
         };

@@ -3,8 +3,15 @@
  */
 
 import { AI_KEYS, AI_MODELS, APP } from "@/lib/config";
-import { SYSTEM_PROMPTS, publicModelLabel, type Plan } from "@/lib/ai/rules";
-import { pickModel, estimateComplexity, modelChain, routeModelFor, MODEL_CATALOG } from "@/lib/ai/models-catalog";
+import { SYSTEM_PROMPTS, type Plan } from "@/lib/ai/rules";
+import {
+  pickModel,
+  estimateComplexity,
+  modelChain,
+  routeModelFor,
+  MODEL_CATALOG,
+  publicModelLabel,
+} from "@/lib/ai/models-catalog";
 import {
   streamVia,
   completeVia,

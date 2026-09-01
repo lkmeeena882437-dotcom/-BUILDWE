@@ -86,7 +86,7 @@ GROQ_API_KEY=gsk_...
 | `POST /api/ai/compare` | One prompt across every live model, one credit per lane that answers |
 | `POST /api/ai/verify` | Score a draft for factual risk (claims, hedging, sources) |
 | `POST /api/ai/feedback` | Thumbs up/down on an answer, stored with the generation |
-| `GET /api/ai/models` | The model catalogue the UI reads (never a second list in the client) |
+| `GET /api/ai/models` | The model catalogue the UI reads: `selectable` rows per capability with `available`/`whyNot`, `ready` counts, and the `all` marketing ladder — never a second list in the client |
 | `GET /api/credits` | Balance, price list, and the limits the UI must not copy (`messageChars` …) |
 | `GET/POST/DELETE /api/projects` | Project folders |
 | `GET/POST /api/teams` | Team workspaces (create/join/invite/leave/assign) |

@@ -183,14 +183,18 @@ export default function DevelopersPage() {
           <pre className="mt-1 overflow-x-auto rounded-2xl p-4 text-[12px]" style={{ background: "var(--code-bg)", color: "var(--code-fg)" }}>
             <code>{`{
   "ok": true,
-  "model": "BUILDWE AI",
-  "live": false,
+  "model": "Llama 3.3 70B",
+  "modelBrand": "BUILDWE AI",
+  "live": true,
   "reply": "…",
-  "usage": { "characters": 123 }
+  "usage": { "characters": 123, "counted": true }
 }`}</code>
           </pre>
           <p className="mt-3 text-[11px]" style={{ color: "var(--soft)" }}>
             Limits: 30 req/min per key · 10 keys per account · keys are hashed (SHA-256) at rest — copy when created.
+            <code>live</code> says a provider actually answered; when it is <code>false</code> the answer came from
+            the offline fallback and <code>usage.counted</code> is false too — no quota is spent on a call that
+            never left the box, and <code>model</code> then names the fallback, not a vendor row.
           </p>
         </section>
       </main>

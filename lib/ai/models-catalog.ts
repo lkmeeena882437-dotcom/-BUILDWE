@@ -95,6 +95,18 @@ export const MODEL_CATALOG: CatalogModel[] = [
     notes: "Free default — strong all-rounder on the fastest inference we have",
   },
   {
+    id: "llama-3.2-3b-instruct",
+    label: "Llama 3.2 3B",
+    provider: "groq",
+    capability: "chat",
+    tiers: ["free"],
+    quality: 2,
+    cost: 1,
+    latency: "fast",
+    strengths: ["short-form", "cheapest"],
+    notes: "Third compare seat: fast and cheap, so the lane is not a third copy of the 70B answer",
+  },
+  {
     id: "llama-3.1-8b-instant",
     label: "Llama 3.1 8B Instant",
     provider: "groq",
@@ -885,4 +897,68 @@ export function modelsByCapability() {
       (m) => m.capability === c && m.tiers.includes("pro")
     ),
   }));
+}
+
+/* ── What the product calls a model ───────────────────────────────────── */
+
+/**
+ * The public brand for a capability. Deliberately not the vendor's product name: the chat chip, the
+ * tool cards and /status all say "BUILDWE X", because a person using this app is not buying a Groq
+ * subscription from us — they are buying a workspace.
+ */
+export const MODEL_BRANDS: Record<Capability, string> = {
+  chat: "BUILDWE AI",
+  router: "BUILDWE AI",
+  code: "BUILDWE Code",
+  image: "BUILDWE Vision",
+  vision: "BUILDWE Vision",
+  audio: "BUILDWE Voice",
+  stt: "BUILDWE Voice",
+};
+
+/**
+ * The row for a model id. Capability-aware on purpose: the same Groq id is registered twice (once
+ * as a chat model, once as a code model), so a plain `find` would answer a *code* run with the chat
+ * row and label it "BUILDWE AI". With no hint there is nothing better to do than take the first row
+ * — and a test pins the weaker guarantee that no capability ever lists an id twice.
+ */
+export function catalogRow(id?: string | null, capability?: Capability): CatalogModel | null {
+  if (!id) return null;
+  const rows = MODEL_CATALOG.filter((m) => m.id === id);
+  if (!rows.length) return null;
+  return rows.find((r) => !capability || r.capability === capability) || rows[0];
+}
+
+const MODE_CAPABILITY: Record<string, Capability> = {
+  chat: "chat",
+  code: "code",
+  image: "image",
+  audio: "audio",
+  vision: "vision",
+  stt: "stt",
+};
+
+/**
+ * The brand for whoever answered. Audit A9: this used to read the id's *substrings*, so a chat model
+ * configured as `AI_CHAT_MODEL=gpt-4o-vision-preview` announced itself as "BUILDWE Vision", and a
+ * comparison of three models labelled all three lanes "BUILDWE AI" — a feature whose whole job is
+ * telling models apart, printing one word in every lane. Now the catalog row decides. An id the
+ * catalog does not know (an env override, a BYOK model) gets the brand for the surface that ran,
+ * which is the most that is true about it.
+ */
+export function publicModelLabel(internal?: string | null, mode?: string): string {
+  const hint = mode ? MODE_CAPABILITY[mode] : undefined;
+  const row = catalogRow(internal, hint);
+  if (row) return MODEL_BRANDS[row.capability];
+  return MODEL_BRANDS[hint || "chat"];
+}
+
+/**
+ * The real model name, for the surfaces whose job is to distinguish models: the comparison lanes and
+ * the developer API. Falls back to the brand, never to a guess, so an unknown id stays honest about
+ * being unknown.
+ */
+export function modelDetailLabel(internal?: string | null, mode?: string): string {
+  const hint = mode ? MODE_CAPABILITY[mode] : undefined;
+  return catalogRow(internal, hint)?.label || publicModelLabel(internal, mode);
 }

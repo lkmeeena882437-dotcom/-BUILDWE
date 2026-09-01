@@ -742,13 +742,51 @@ export async function sendFeedback(kind: "up" | "down", note?: string) {
   return readJson(r);
 }
 
-export async function fetchModels() {
-  const r = await fetch("/api/ai/models");
-  return readJson(r) as Promise<{
-    live: { id: string; name: string; blurb: string; status: string; badge?: string; family: string }[];
-    all: { id: string; name: string; blurb: string; status: string; badge?: string; family: string }[];
-    llmLive: boolean;
-  }>;
+/** The marketing ladder (`live` / `all`): branded seats, some of them not yet available. */
+export type ModelLadderRow = {
+  id: string;
+  name: string;
+  blurb: string;
+  status: string;
+  badge?: string;
+  family: string;
+};
+
+/**
+ * A real model row from `selectable`, mirroring `SelectableRow` in the route. This is what a picker
+ * must render, because it is the only list that knows whether *this deployment* can call the thing:
+ * `available: false` with a `whyNot` is a key that is not set, not a broken feature.
+ */
+export type SelectableModel = {
+  id: string;
+  label: string;
+  brand: string;
+  provider: string;
+  tiers: string[];
+  quality: number;
+  latency: string;
+  strengths: string[];
+  available: boolean;
+  whyNot?: string;
+};
+
+export type ModelsInfo = {
+  live: ModelLadderRow[];
+  all: ModelLadderRow[];
+  selectable: Record<string, SelectableModel[]>;
+  ready: Record<string, { total: number; ready: number }>;
+  /** Capabilities the catalog routes but the picker must not offer (the router itself). */
+  internal?: string[];
+  llmLive: boolean;
+  catalogSize: number;
+  note?: string;
+};
+
+export async function fetchModels(): Promise<ModelsInfo> {
+  const r = await fetch("/api/ai/models", { cache: "no-store" });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "The model list could not be read.");
+  return j as ModelsInfo;
 }
 
 export async function fetchSkills() {

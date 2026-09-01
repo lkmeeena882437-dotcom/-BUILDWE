@@ -16,7 +16,12 @@
  * Run: npm run test:tools
  */
 
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import http from "node:http";
+import { createRequire } from "node:module";
+import path from "node:path";
 import { newJar, req, report, run, startServer } from "./harness.mjs";
 
 const PORT_TRUSTED = 3321; // has the (faked) provider key
@@ -434,6 +439,152 @@ await run("the same tool can't be hammered — per-tool window caps it", async (
   if (blocked === 0) throw new Error("24 parallel runs of one tool, none rate limited");
 });
 
+
+/* ── W3.a: which model answered, and which ones this deployment can call ── */
+
+const ROOT = path.resolve(import.meta.dirname, "..");
+const srcFile = (f) => fs.readFileSync(path.join(ROOT, f), "utf8");
+
+/**
+ * `lib/ai/models-catalog.ts` imports nothing, so it compiles standalone — the trick
+ * tests/artifacts.mjs uses for the store. Naming a model is a pure lookup, and a pure lookup is
+ * worth driving directly rather than inferring from what a page happens to render.
+ */
+const labelDir = path.join(ROOT, "node_modules", ".cache", "bw-model-labels");
+fs.mkdirSync(labelDir, { recursive: true });
+try {
+  execFileSync(
+    "npx",
+    [
+      "tsc",
+      path.join(ROOT, "lib", "ai", "models-catalog.ts"),
+      "--outDir", labelDir,
+      "--target", "es2022",
+      "--module", "commonjs",
+      "--moduleResolution", "node",
+      "--esModuleInterop",
+      "--strict",
+      "--skipLibCheck",
+    ],
+    { cwd: ROOT, stdio: "pipe" }
+  );
+} catch (e) {
+  console.error("could not compile lib/ai/models-catalog.ts\n", e.stdout?.toString(), e.stderr?.toString());
+  process.exit(1);
+}
+const CAT = createRequire(path.join(ROOT, "noop.cjs"))(path.join(labelDir, "models-catalog.js"));
+
+await run("a model's label comes from its catalog row, never from its id's substrings", () => {
+  assert.ok(CAT && typeof CAT.publicModelLabel === "function", "the compiled module exports the lookup");
+  // The bug (audit A9): a *chat* model configured as an id containing "vision" announced itself as
+  // the image product. Capability decides now, and an unknown id says only what is true.
+  assert.equal(CAT.publicModelLabel("llama-3.3-70b-versatile", "chat"), "BUILDWE AI", "a chat row is the chat brand");
+  assert.equal(CAT.publicModelLabel("gpt-4o-vision-preview", "chat"), "BUILDWE AI", "a substring in an unknown id is not a capability");
+  assert.equal(CAT.publicModelLabel("anything-with-code-in-it", "chat"), "BUILDWE AI", "and neither is 'code'");
+  assert.equal(CAT.publicModelLabel(undefined, "code"), "BUILDWE Code", "no id at all still means the mode that ran");
+  assert.equal(CAT.publicModelLabel("fal-ai/flux/schnell"), "BUILDWE Vision", "with no mode, the row still answers");
+  assert.equal(CAT.modelDetailLabel("fal-ai/flux/schnell"), "FLUX Schnell", "and the detail name comes from the same row");
+  assert.equal(CAT.publicModelLabel("totally-unknown-audio"), "BUILDWE AI", "unknown with no mode falls back to chat, not to a guess");
+
+  // The same id registered under two capabilities must answer with the row for *this* run, or a
+  // code run is branded as chat by whichever match comes first.
+  const both = CAT.MODEL_CATALOG.filter((m) => m.id === "llama-3.3-70b-versatile").map((m) => m.capability);
+  assert.ok(both.includes("chat") && both.includes("code"), `the fixture id should span two capabilities (saw ${both.join(",")})`);
+  assert.equal(CAT.publicModelLabel("llama-3.3-70b-versatile", "code"), "BUILDWE Code", "the hint picks the right row");
+
+  // The lanes and the developer API get the real name; an unknown id degrades to the brand instead
+  // of inventing a vendor.
+  assert.equal(CAT.modelDetailLabel("llama-3.1-8b-instant", "chat"), "Llama 3.1 8B Instant", "a known id names itself");
+  assert.equal(CAT.modelDetailLabel("gpt-4o-vision-preview", "chat"), "BUILDWE AI", "an unknown one says who answered, not what it might be");
+});
+
+await run("the catalog and the seats it feeds are consistent", () => {
+  const rows = CAT.MODEL_CATALOG;
+  const seen = new Set();
+  for (const m of rows) {
+    const key = `${m.capability}:${m.id}`;
+    assert.ok(!seen.has(key), `${key} is listed twice under one capability, so a lookup cannot know which was meant`);
+    seen.add(key);
+    assert.ok(m.label, `row ${m.id} has no public label`);
+  }
+  // Every capability the catalog routes is either offered by the picker or declared internal — a
+  // third option would be rows nobody can ever reach.
+  const route = srcFile("app/api/ai/models/route.ts");
+  const published = (route.match(/const CAPS = \[([^\]]+)\]/) || ["", ""])[1];
+  const internal = (route.match(/const INTERNAL_CAPS = \[([^\]]+)\]/) || ["", ""])[1];
+  assert.ok(internal.includes('"router"'), "the router row stays internal on purpose");
+  for (const cap of new Set(rows.map((m) => m.capability))) {
+    assert.ok(
+      published.includes(`"${cap}"`) || internal.includes(`"${cap}"`),
+      `the catalog routes ${cap}, and /api/ai/models neither publishes it nor declares it internal`
+    );
+  }
+  // And every default compare seat has to be a catalog row, or that lane prints a brand where a
+  // name belongs — the exact failure this step removed.
+  const compare = srcFile("app/api/ai/compare/route.ts");
+  const seats = [...compare.matchAll(/\{ id: "([^"]+)", label: "/g)].map((m) => m[1]);
+  assert.ok(seats.length >= 2, `parsed ${seats.length} default seats`);
+  for (const id of seats) {
+    assert.ok(CAT.catalogRow(id, "chat"), `the compare seat ${id} is not in the catalog, so it cannot name itself`);
+  }
+});
+
+await run("GET /api/ai/models reports what THIS deployment can call", async () => {
+  const live = await req(BASE, "/api/ai/models");
+  assert.equal(live.status, 200);
+  const j = live.json;
+  assert.ok(j.selectable && Array.isArray(j.selectable.chat) && j.selectable.chat.length, "chat rows are published");
+  assert.equal(j.llmLive, true, "this server has a chat provider key, and says so");
+  const chat = j.selectable.chat[0];
+  for (const field of ["id", "label", "brand", "provider", "quality", "latency", "strengths", "available"]) {
+    assert.ok(field in chat, `a selectable row lost ${field}`);
+  }
+  // `available` is per provider, not a global flag: this server was given a Groq key and nothing
+  // else, so exactly the Groq rows are callable and every other vendor says why it is not.
+  assert.ok(
+    j.selectable.chat.every((m) => (m.provider === "groq" || m.provider === "pollinations") === m.available),
+    "a row is callable iff its provider has a key here"
+  );
+  assert.ok(j.selectable.chat.some((m) => m.provider === "openai" && !m.available), "another vendor's row is present and honest about not working");
+  assert.ok(j.selectable.image.some((m) => m.available), "pollinations images are keyless, so they are always callable");
+  assert.ok(
+    j.ready.chat && j.ready.chat.ready === j.selectable.chat.filter((m) => m.available).length,
+    "the per-capability count is derived from the rows, not a second list"
+  );
+  assert.equal(j.catalogSize, CAT.MODEL_CATALOG.length, "the size the route quotes is the catalog the gateway routes from");
+  assert.ok(j.all.some((m) => m.status === "coming_soon"), "the marketing ladder still carries its reserved seats");
+  assert.equal(JSON.stringify(j.selectable).includes("coming_soon"), false, "and none of them leaked into the callable list");
+
+  const dry = await req(OFF, "/api/ai/models");
+  assert.equal(dry.json.llmLive, false, "a keyless deployment admits it");
+  assert.ok(dry.json.selectable.chat.length > 0, "it still publishes the rows it has");
+  assert.ok(dry.json.selectable.chat.every((m) => !m.available && /key/.test(m.whyNot || "")), "each says it needs a key, instead of failing on click");
+  assert.equal(dry.json.ready.chat.ready, 0, "and the count says none");
+  assert.ok(dry.json.selectable.image.some((m) => m.available), "even with no keys at all, the keyless image provider is honest about working");
+});
+
+await run("the Models sheet reads that route and never invents a row", () => {
+  const page = srcFile("app/page.tsx");
+  assert.equal(page.includes("GPT-class seat"), false, "the hardcoded fake model is gone");
+  assert.equal(page.includes("setModelsCatalog(m.all"), false, "the sheet no longer renders the marketing ladder");
+  assert.ok(page.includes("modelsInfo.selectable"), "it renders the deployment's own rows");
+  assert.ok(page.includes("data-models-error") && page.includes("loadModels()"), "a failed read says so, with a retry that refetches");
+  assert.ok(page.includes("Connect an API key") && page.includes('setModal("byok")'), "and the fix it offers is a route that exists");
+  const caps = ((srcFile("app/api/ai/models/route.ts").match(/const CAPS = \[([^\]]+)\]/) || ["", ""])[1]
+    .match(/"[a-z]+"/g) || []).map((x) => x.replace(/"/g, ""));
+  assert.ok(caps.length >= 6, `parsed ${caps.length} capabilities out of the route`);
+  const captions = (page.match(/const MODEL_CAPTION: Record<string, string> = \{([\s\S]*?)\n\};/) || ["", ""])[1];
+  for (const cap of caps) {
+    assert.ok(captions.includes(`${cap}:`), `the sheet has no caption for ${cap}, so its header would print the raw key`);
+  }
+  const api = srcFile("lib/client/api.ts");
+  const at = api.indexOf("export async function fetchModels(");
+  const fn = api.slice(at, api.indexOf("\n}", at));
+  assert.ok(fn.includes("failWith"), "the client throws on a bad read instead of handing back an empty list");
+  assert.ok(fn.includes('cache: "no-store"'), "and never serves a stale view of which keys are set");
+});
+
+fs.rmSync(labelDir, { recursive: true, force: true });
 
 /* ── teardown ────────────────────────────────────────────── */
 
