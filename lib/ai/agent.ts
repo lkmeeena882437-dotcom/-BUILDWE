@@ -10,7 +10,7 @@
  * The agent runs a real loop instead:
  *
  *   PLAN  → read the request + existing project files, decide the steps
- *   ACT   → call tools (read_file, write_file, list_files, run_check, finish)
+ *   ACT   → call tools (read_file, write_file/create_file, list_files, run_check, finish)
  *   CHECK → validate what it wrote (syntax, structure, obvious runtime traps)
  *   FIX   → feed failures back in and iterate, up to a hard step budget
  *   DONE  → report what it built, which files changed, what it verified
@@ -43,6 +43,13 @@ import {
 import { completeVia, type ProviderKeys } from "@/lib/ai/provider-registry";
 import { modelChain } from "@/lib/ai/models-catalog";
 import { availableProviders } from "@/lib/ai/provider-registry";
+import {
+  parseToolCall,
+  type AgentToolCall,
+  type AgentToolName,
+} from "@/lib/ai/agent-parse";
+
+export { parseToolCall, type AgentToolCall, type AgentToolName } from "@/lib/ai/agent-parse";
 
 /* ── Budgets ──────────────────────────────────────────────── */
 
@@ -64,22 +71,6 @@ export const AGENT_LIMITS = {
 } as const;
 
 /* ── Tool surface ─────────────────────────────────────────── */
-
-export type AgentToolName =
-  | "list_files"
-  | "read_file"
-  | "write_file"
-  | "delete_file"
-  | "run_check"
-  | "finish";
-
-export type AgentToolCall = {
-  tool: AgentToolName;
-  path?: string;
-  content?: string;
-  lang?: string;
-  summary?: string;
-};
 
 export type AgentEvent =
   | { type: "plan"; text: string }
@@ -297,13 +288,16 @@ async function execTool(
         return { ok: false, detail: `refused unsafe path "${call.path}"` };
       }
 
-      saveProjectFile({
+      const saved = saveProjectFile({
         userId: ctx.userId,
         projectId: ctx.projectId,
         path,
         content,
         lang: call.lang || langFromPath(path),
       });
+      if ("error" in saved) {
+        return { ok: false, detail: saved.error };
+      }
       ctx.writtenChars += content.length;
       ctx.filesChanged.add(path);
       return { ok: true, detail: `wrote ${content.length} chars to ${path}` };
@@ -366,6 +360,7 @@ Available tools:
   Read a file before you modify it. Never rewrite a file you have not read.
 {"tool":"write_file","path":"index.html","content":"<full file content>","lang":"html"}
   Create or replace a file. Write the COMPLETE file, never a diff, never a fragment, never "…rest unchanged".
+  create_file is the same tool — use either name. Prefer write_file.
 {"tool":"delete_file","path":"old.js"}
   Remove a file that is no longer needed.
 {"tool":"run_check","path":"index.html"}
@@ -404,46 +399,6 @@ function buildContextBlock(files: ProjectFile[], canvasCode?: string, canvasLang
     );
   }
   return parts.join("\n\n");
-}
-
-/** Extract the first JSON object from a model reply, tolerating stray prose. */
-export function parseToolCall(raw: string): AgentToolCall | null {
-  if (!raw) return null;
-  let text = raw.trim();
-
-  // strip fences the model added despite instructions
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fence) text = fence[1].trim();
-
-  const start = text.indexOf("{");
-  if (start === -1) return null;
-
-  // walk to the matching close brace, respecting strings
-  let depth = 0;
-  let inStr = false;
-  let esc = false;
-  let end = -1;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (esc) { esc = false; continue; }
-    if (ch === "\\") { esc = true; continue; }
-    if (ch === '"') { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) { end = i; break; }
-    }
-  }
-  if (end === -1) return null;
-
-  try {
-    const obj = JSON.parse(text.slice(start, end + 1)) as AgentToolCall;
-    if (!obj || typeof obj.tool !== "string") return null;
-    return obj;
-  } catch {
-    return null;
-  }
 }
 
 /* ── The loop ─────────────────────────────────────────────── */
