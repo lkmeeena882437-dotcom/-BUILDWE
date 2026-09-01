@@ -547,6 +547,9 @@ export function PromptBar(props: PromptBarProps) {
             ref={taRef}
             value={input}
             rows={1}
+            // The page's `/` shortcut finds the composer through this, rather than querying a
+            // translation of its label and breaking the first time the placeholder is reworded.
+            data-composer
             aria-label="Message BUILDWE"
             onPaste={(e) => {
               // Only intercept a clipboard that actually carries an image; plain text

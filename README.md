@@ -103,7 +103,7 @@ GROQ_API_KEY=gsk_...
 | `GET/POST /api/user/keys` | BYOK — save/mask own Groq/OpenRouter keys |
 | `GET/POST /api/user/skills` | Saved instructions a prompt may carry |
 | `GET/POST/DELETE /api/projects/files` | Files inside a project folder (read, write, delete) |
-| `GET /api/tools` · `GET/POST /api/tools/[id]` | The tool catalogue, and one tool |
+| `GET /api/tools` · `GET/POST /api/tools/[id]` | The tool catalogue (`?brief=1` = the 31 names and costs ⌘K needs, no field schemas), and one tool |
 | `GET /api/preview` | Link preview metadata (SSRF-guarded, cached, `NO_METADATA` when a page has none) |
 | `GET/POST /api/metrics` | Prometheus text for `/metrics`, and the ingest the routes report into |
 | `GET/POST/DELETE /api/dev/keys` | Developer API key management |
@@ -125,6 +125,14 @@ Prompt → auth → rate limit → auto intent → pickModel → provider → sa
 - **Code** — Idea → working files.  
 - **Image** — Text becomes visual.  
 - **Audio** — Words become voice.  
+
+## Keyboard
+
+In the workspace only (the landing page is a document, not a console):
+
+- `⌘K` / `Ctrl+K` — Quick find: recent chats, the five modes, every sheet, all 31 tools and the studios. One search field, ranked by title prefix first; it fetches the tool list once, on first open, and says so if that fetch failed.
+- `/` — put the caret in the composer (ignored while you are already typing somewhere).
+- `Esc` — closes the topmost layer if one is open; otherwise stops the answer or the agent run that is in flight. Popovers, sheets and this shortcut each mark the key handled, so one press never does two things.
 
 ## Scripts
 

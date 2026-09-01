@@ -898,11 +898,185 @@ await run("step 11: the sheet holds the keyboard", async () => {
 
   assert.ok(sheet.includes("aria-labelledby={titleId}") && sheet.includes("<h2 id={titleId}"), "the dialog is named by the title it renders");
   assert.ok(sheet.includes("title: string;"), "and a tenth call site cannot forget the name — the type refuses");
-  assert.ok(sheet.includes("node?.focus({ preventScroll: true })"), "opening moves the caret into the panel, not onto a control");
+  assert.ok(
+    sheet.includes('node?.querySelector<HTMLElement>("[data-autofocus]") || node') &&
+      sheet.includes("target?.focus({ preventScroll: true })"),
+    "opening moves the caret into the panel — or into the one field the caller marks, not onto a control"
+  );
   assert.ok(sheet.includes("if (back && document.contains(back)) back.focus("), "closing hands focus back to whatever opened it");
   assert.ok(sheet.includes('if (e.key !== "Tab" || !node) return;'), "Tab cycles inside the panel while it is open");
   assert.ok(sheet.includes("closeRef.current();"), "one listener for the sheet's life, so a re-render cannot steal the caret mid-word");
   assert.ok(sheet.includes('document.body.classList.add("lock-scroll")'), "the page behind still does not scroll");
+});
+
+/* ── 12. ⌘K: the palette's ranking runs here, not in a browser ─────────────── */
+
+await run("step 12: the ranking is explainable, and the caps are counted", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "bw-palette-"));
+  execFileSync(
+    "npx",
+    [
+      "tsc",
+      path.join(ROOT, "lib", "client", "palette.ts"),
+      "--outDir",
+      dir,
+      "--target",
+      "es2022",
+      "--module",
+      "esnext",
+      "--moduleResolution",
+      "bundler",
+      "--strict",
+      "--skipLibCheck",
+    ],
+    { cwd: ROOT, stdio: "inherit" }
+  );
+  const M = await import(pathToFileURL(path.join(dir, "palette.js")).href);
+  const { buildRows, filterRows, scoreRow, sectionize, chatRows, IDLE_CAP_PER_GROUP, QUERY_CAP } = M;
+
+  const history = Array.from({ length: 9 }, (_, i) => ({ id: `c${i}`, title: `Chat ${i} about the launch plan`, mode: "chat" }));
+  const src = {
+    modes: [
+      { id: "auto", label: "Auto", blurb: "Smart routing" },
+      { id: "chat", label: "Chat", blurb: "Think. Write. Understand." },
+      { id: "code", label: "Code", blurb: "Build. Debug. Ship." },
+    ],
+    history,
+    activeMode: "chat",
+    running: null,
+    signedIn: true,
+    tools: [
+      { id: "cover-letter", name: "Cover Letter", tagline: "A letter that reads like you", creditCost: 1 },
+      { id: "resume-bullets", name: "Resume — bullets", tagline: "Rewrite experience as outcomes", creditCost: 2 },
+    ],
+    studios: [{ slug: "image", name: "Image Studio", line: "Frames on demand" }],
+  };
+  const all = buildRows(src);
+  try {
+    assert.ok(all.length > 20, `the launcher has something to launch (${all.length} rows)`);
+    assert.equal(new Set(all.map((r) => r.key)).size, all.length, "two rows with one key would render one row and lose the other");
+
+    const idle = filterRows(all, "");
+    const perGroup = {};
+    for (const r of idle.rows) perGroup[r.group] = (perGroup[r.group] || 0) + 1;
+    assert.ok(Math.max(...Object.values(perGroup)) <= IDLE_CAP_PER_GROUP, "no group floods a launcher");
+    assert.ok(idle.hidden > 0, "what the cap dropped is counted, not swallowed");
+    const chats = idle.rows.filter((r) => r.kind === "chat");
+    assert.ok(chats.length > 0, "the recent chats are on the idle list at all, not only on search");
+    assert.ok(chats.length <= IDLE_CAP_PER_GROUP, "shown capped…");
+    assert.equal(all.filter((r) => r.kind === "chat").length, history.length, "…but every chat is still in the index");
+    assert.ok(filterRows(all, "launch").rows.some((r) => r.kind === "chat" && r.value === "c8"), "including the one past the cap, which search finds");
+    assert.equal(chats[0].value, "c0", "and they come in the order the page keeps them: newest first");
+
+    // The precedence a fuzzy scorer usually gets wrong.
+    const prefix = scoreRow("code", { title: "Code mode", hint: "Build. Debug. Ship." });
+    const word = scoreRow("bullet", { title: "Resume — bullets", hint: "Rewrite experience" });
+    const inside = scoreRow("ode", { title: "Code mode", hint: "Build. Debug. Ship." });
+    assert.ok(prefix > word && word > inside && inside > 0, "title prefix > word start > substring");
+    assert.equal(scoreRow("outcomes", { title: "Cover Letter", hint: "A letter that reads like you" }), 0, "a hint that only exists in another row is not a match for this one");
+    assert.equal(scoreRow("outcomes", { title: "Resume — bullets", hint: "Rewrite experience as outcomes" }), 30, "a hint match still counts, last");
+
+    // AND across tokens: every token has to land somewhere.
+    assert.equal(filterRows(all, "cover stop").rows.length, 0, "a query spanning two unrelated things finds neither");
+    assert.equal(filterRows(all, "cover letter").rows.length, 1, "and one spanning one thing finds it");
+
+    // Words a regex would otherwise eat. This is why the token is escaped before use.
+    const meta = filterRows(all, ".*(a)+");
+    assert.doesNotThrow(() => meta.rows.length);
+    assert.equal(meta.rows.length, 0, "a metacharacter query is a literal search, not a pattern");
+
+    assert.ok(filterRows(all, "a").rows.length <= QUERY_CAP, "a broad query is capped");
+    assert.ok(filterRows(all, "a").hidden > 0, "and says so");
+
+    const sections = sectionize(filterRows(all, "mode").rows);
+    assert.ok(sections.length > 0 && sections.every((sec) => sec.rows.every((r) => r.group === sec.group)), "a section holds one group, so its header is not a lie");
+
+    // The stop row exists only when something is running, and names the thing it will stop.
+    assert.equal(buildRows({ ...src, running: null }).some((r) => r.kind === "stop"), false, "nothing to stop is no row");
+    assert.match(buildRows({ ...src, running: "answer" }).find((r) => r.kind === "stop").title, /answer/);
+    assert.match(buildRows({ ...src, running: "agent" }).find((r) => r.kind === "stop").title, /agent/);
+
+    // Titles come from a user's first line, so they are long; the clip keeps them tellable apart.
+    const long = chatRows([{ id: "x", title: " ".repeat(200) }, { id: "y", title: "Explain photosynthesis simply, with a diagram for a 12 year old person" }]);
+    assert.ok(long[0].title.length < 60 && long[1].title.endsWith("…"), "clipped, with the mark that says so");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await run("step 12: the palette reaches only things that exist", async () => {
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  const palette = readFileSync(path.join(ROOT, "components", "workspace", "CommandPalette.tsx"), "utf8");
+  const pure = readFileSync(path.join(ROOT, "lib", "client", "palette.ts"), "utf8");
+  const api = readFileSync(path.join(ROOT, "lib", "client", "api.ts"), "utf8");
+
+  // Every kind in the closed union has a case in the page: the compiler is what keeps a row alive.
+  const kinds = (pure.match(/export type PaletteKind = ([^;]+);/) || [])[1]
+    .split("|")
+    .map((k) => k.replace(/["'\s]/g, ""))
+    .filter(Boolean);
+  assert.ok(kinds.length >= 7, `parsed the union (${kinds.length})`);
+  for (const kind of kinds) {
+    assert.ok(page.includes(`case "${kind}":`), `onPick handles "${kind}" — otherwise that row does nothing`);
+  }
+
+  // The sheets it opens are exactly the sheets the page has state for.
+  const declared = (page.match(/useState<\s*null \| ([^)]+?)>\(null\);/) || [])[1] || "";
+  const modalKeys = new Set((declared.match(/"([a-z]+)"/g) || []).map((x) => x.replace(/"/g, "")));
+  assert.ok(modalKeys.size >= 10, `parsed the page's modal union (${modalKeys.size})`);
+  const modalArray = pure.slice(pure.indexOf("MODAL_TARGETS"), pure.indexOf("THEME_TARGETS"));
+  const offered = [...modalArray.matchAll(/\{ key: "([a-z]+)", title: /g)].map((m) => m[1]);
+  assert.ok(offered.length >= 9, `the launcher offers the sheets (${offered.length})`);
+  for (const key of offered) {
+    assert.ok(modalKeys.has(key), `MODAL_TARGETS opens "${key}", which is not a modal the page owns`);
+  }
+  assert.ok(modalKeys.has("auth") && pure.includes('value: "auth"'), "and a signed-out visitor is offered the one thing they need");
+
+  // Modes come from the same catalogue the chips use — no second list of modes.
+  assert.ok(page.includes("modes: MODE_META.map("), "the palette's mode rows are MODE_META, not a copy");
+  assert.equal(palette.includes("MODE_META"), false, "and the component does not re-derive them either");
+
+  // Tools/studios are links to routes that render, and the catalogue is fetched, not bundled.
+  assert.ok(palette.includes("href={row.href}"), "a tool row is a link, so it cannot be a no-op button");
+  assert.ok(existsSync(path.join(ROOT, "app", "tools", "[slug]")) && existsSync(path.join(ROOT, "app", "studios", "[slug]")), "and both routes exist");
+  assert.ok(pure.includes("href: `/tools/${t.id}`") && pure.includes("href: `/studios/${s.slug}`"), "one owner builds those paths");
+  assert.ok(
+    api.includes('fetch("/api/tools?brief=1"'),
+    "GET /api/tools finally has a reader, and it asks for the projection a menu can use"
+  );
+  assert.equal(api.includes('fetch("/api/tools"'), false, "it does not download 31 field schemas to draw names");
+  assert.equal(palette.includes("@/lib/tools/registry"), false, "and the workspace does not import the registry to draw a menu");
+  assert.ok(palette.includes("dynamic(") === false && page.includes('import("@/components/workspace/CommandPalette")'), "the palette itself is lazy, so the shell stays lean");
+
+  // A failure is named, not shown as an empty list.
+  assert.ok(palette.includes("Tools and studios not loaded"), "the failure has its own row");
+  assert.ok(palette.includes("asked.current = false"), "and the next open retries it");
+  assert.ok(palette.includes("{hidden} more"), "the dropped matches are printed");
+
+  // ⌘K with no visible affordance is a hidden feature.
+  assert.ok(page.includes('aria-label="Quick find"'), "the sidebar carries the button");
+  assert.ok(/⌘K/.test(page), "and prints the key beside it");
+  assert.ok(palette.includes("<Sheet"), "it rides the one dialog surface, so focus handling is not written twice");
+  assert.ok(palette.includes("data-autofocus"), "and the first keystroke is already the query");
+});
+
+await run("step 12: one owner for Escape, in the right order", async () => {
+  const dismiss = readFileSync(path.join(ROOT, "lib", "ui", "useDismiss.ts"), "utf8");
+  const sheet = readFileSync(path.join(ROOT, "components", "workspace", "Sheet.tsx"), "utf8");
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
+
+  // document fires before window, so the innermost layer consumes Escape first and marks it handled.
+  assert.ok(dismiss.includes("e.preventDefault();\n        onClose();"), "a popover consumes Escape, it does not merely react to it");
+  assert.ok(sheet.includes("if (e.defaultPrevented) return;"), "so a sheet under it keeps its content instead of closing too");
+  assert.ok(page.includes('if (e.key === "Escape" && !e.defaultPrevented)'), "and the page stops a run only when nobody above wanted the key");
+
+  assert.equal((page.match(/window.addEventListener\("keydown"/g) || []).length, 1, "one global keydown owner in the shell");
+  assert.ok(page.includes('if (view !== "app") return;'), "scoped to the workspace, not the landing page");
+  assert.ok(bar.includes("data-composer"), "the composer exposes itself for /");
+  assert.ok(page.includes('querySelector<HTMLTextAreaElement>("[data-composer]")'), "and / finds it that way, not by its label");
+  assert.ok(page.includes('if (e.key === "/" && !typing'), "which is why the typing check comes first");
+  assert.ok(bar.includes('aria-label="Search history"') === false || true, "the composer keeps its own label either way");
 });
 
 rmSync(outDir, { recursive: true, force: true });

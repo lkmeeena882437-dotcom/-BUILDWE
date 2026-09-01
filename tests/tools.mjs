@@ -213,6 +213,36 @@ await run("GET /api/tools returns every registered tool, fully specified", async
   }
 });
 
+
+await run("?brief=1 answers the palette's question and nothing else", async () => {
+  const fullR = await fetch(`${BASE}/api/tools`);
+  const full = await fullR.json();
+  const r = await fetch(`${BASE}/api/tools?brief=1`);
+  const j = await r.json();
+  const flat = j.groups.flatMap((g) => g.tools);
+  const fullFlat = full.groups.flatMap((g) => g.tools);
+  if (!j.brief) throw new Error("the answer does not say which projection it is");
+  if (flat.length !== fullFlat.length) throw new Error(`brief lists ${flat.length} tools, full lists ${fullFlat.length} — a menu must not be able to drop one`);
+  for (const t of flat) {
+    if (!t.id || !t.name || !t.tagline) throw new Error(`${t.id}: a launcher row needs an id, a name and a line`);
+    for (const k of ["fields", "example", "description", "feature", "checks", "afterRun"]) {
+      if (k in t) throw new Error(`${t.id} still carries ${k}, which is exactly what a menu cannot use`);
+    }
+    if (typeof t.creditCost !== "number") throw new Error(`${t.id} lost its cost — the row would have to lie about credits`);
+  }
+  for (const s of j.studios) {
+    if (!s.slug || !s.name) throw new Error("a studio row without a link target");
+    if ("tools" in s) throw new Error("brief studios still ship their tool arrays");
+  }
+  const bytes = JSON.stringify(j).length;
+  const fullBytes = JSON.stringify(full).length;
+  if (bytes > fullBytes / 3) throw new Error(`brief is ${bytes} B against ${fullBytes} B — barely a saving`);
+  const cc = r.headers.get("cache-control") || "";
+  if (!/max-age=300/.test(cc)) throw new Error(`brief is served "${cc}"; a per-user-free catalogue should survive a second ⌘K`);
+  const fullCc = fullR.headers.get("cache-control") || "";
+  if (!/max-age=60/.test(fullCc)) throw new Error(`the full answer is served "${fullCc}" — it holds field schemas, so it is not cached as long`);
+});
+
 await run("the public spec never leaks the prompt builders", async () => {
   const j = await (await fetch(`${BASE}/api/tools/blog-post`)).json();
   const t = j.tool;

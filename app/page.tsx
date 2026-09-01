@@ -112,12 +112,22 @@ import { ImageStudio, type StudioImage } from "@/components/workspace/ImageStudi
 import { AudioStudio } from "@/components/workspace/AudioStudio";
 import { CanvasHistoryMenu, type CanvasVersion } from "@/components/workspace/CanvasHistoryMenu";
 import { ProjectMoveMenu } from "@/components/workspace/ProjectMoveMenu";
+import type { PaletteRow } from "@/lib/client/palette";
 import { Sheet } from "@/components/workspace/Sheet";
 import dynamic from "next/dynamic";
 
 /* The creations list is opened by a click, not by a page load: ~3 kB of First Load JS for
    every session that never opens it is the wrong trade, so the panel (and its row menu,
    which is the only thing that pulls in Popover/MenuRow here) arrives as its own chunk. */
+/* ⌘K, lazy for the same reason as the panel above: the shortcut is for the person who wants it,
+   and a workspace that ships a 31-tool jump list to every first visit pays for it on every load.
+   No `loading` shell here — the sheet that arrives IS the loading state, and a skeleton that
+   flashes for one frame in a dialog is noise. */
+const CommandPalette = dynamic(
+  () => import("@/components/workspace/CommandPalette").then((m) => m.CommandPalette),
+  { ssr: false }
+);
+
 const CreationsPanel = dynamic(
   () => import("@/components/workspace/CreationsPanel").then((m) => m.CreationsPanel),
   {
@@ -340,6 +350,10 @@ function Dashboard() {
     null | "auth" | "settings" | "plans" | "profile" | "models" | "skills" | "byok" | "teams" | "compare" | "creations"
   >(null);
   const [authTab, setAuthTab] = useState<"login" | "register">("login");
+  /* Not a `modal` value: the palette is orthogonal to which sheet is open (it is how you get to
+     one), it closes on its own terms, and folding it into the union would make every sheet's
+     `onClose={() => setModal(null)}` a second way to dismiss it by accident. */
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [themePref, setThemePref] = useState<ThemePref>("system");
   const [dark, setDark] = useState(false);
 
@@ -801,11 +815,14 @@ function Dashboard() {
     }
   };
 
-  const stop = () => {
+  /* Both aborts are useCallback with no dependencies — refs and setters only — because the global
+     Escape handler below lists them, and a function recreated on every render would tear that
+     listener down and rebuild it on every keystroke. */
+  const stop = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
     setStreaming(false);
-  };
+  }, []);
 
   const streamPhaseRef = useRef("");
 
@@ -1512,12 +1529,88 @@ function Dashboard() {
     }
   };
 
-  const stopAgent = () => {
+  const stopAgent = useCallback(() => {
     agentAbort.current?.abort();
     agentAbort.current = null;
     setAgentBusy(false);
     setAgentLog((l) => [...l, { kind: "msg", label: "Stopped by you." }]);
+  }, []);
+
+  /**
+   * Every palette row lands here. The switch is exhaustive over `PaletteKind` on purpose: a new
+   * kind in lib/client/palette.ts does not compile until the page says what it does, which is the
+   * only guarantee that a rendered row is never a dead one.
+   */
+  const pickPaletteRow = (row: PaletteRow) => {
+    switch (row.kind) {
+      case "new":
+        newChat();
+        break;
+      case "stop":
+        if (agentBusy) stopAgent();
+        else stop();
+        break;
+      case "mode":
+        switchMode(row.value as Mode);
+        break;
+      case "modal":
+        setModal(row.value as "auth" | "settings" | "plans" | "profile" | "models" | "skills" | "byok" | "teams" | "compare" | "creations");
+        break;
+      case "theme":
+        setThemePref(row.value as ThemePref);
+        break;
+      case "chat":
+        void openHist(row.value);
+        break;
+      case "tool":
+      case "studio":
+        // MenuRow renders those as links (`/tools/[slug]`, `/studios/[slug]`), the same plain <a>
+        // the sidebar uses for the two index pages. Nothing to do here, and nothing to fake.
+        break;
+    }
   };
+
+  /**
+   * The workspace's three shortcuts. Registered once, on the app view only — the landing page is a
+   * document about the product, not a place to run ⌘K.
+   *
+   * Escape is the one that needed a rule rather than a check: popovers consume it on `document` and
+   * `Sheet` consumes it on `window`, both marking the event handled, and `document` fires before
+   * `window`. So `e.defaultPrevented` IS the precedence — this listener stops a run only when
+   * nothing nearer the keyboard wanted the key. No layer tracks any other layer's open state.
+   */
+  useEffect(() => {
+    if (view !== "app") return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      const typing =
+        !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        // Chrome/Safari give ⌘K to the address bar's search; taking it is the point of the shortcut.
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+        return;
+      }
+      if (e.key === "/" && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const composer = document.querySelector<HTMLTextAreaElement>("[data-composer]");
+        if (!composer) return;
+        e.preventDefault();
+        composer.focus({ preventScroll: true });
+        return;
+      }
+      if (e.key === "Escape" && !e.defaultPrevented) {
+        if (agentBusy) {
+          e.preventDefault();
+          stopAgent();
+        } else if (streaming) {
+          e.preventDefault();
+          stop();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [view, agentBusy, streaming, stop, stopAgent]);
 
   const send = async (
     override?: string,
@@ -2122,15 +2215,33 @@ function Dashboard() {
           )}
         </div>
 
-        <div className="p-2.5">
+        <div className="flex items-center gap-1.5 p-2.5">
           <button
             type="button"
             onClick={newChat}
-            className={clsx("flex w-full items-center gap-2 rounded-2xl border py-2.5 text-sm font-medium", sidebarOpen ? "px-3" : "justify-center")}
+            className={clsx("flex min-w-0 flex-1 items-center gap-2 rounded-2xl border py-2.5 text-sm font-medium", sidebarOpen ? "px-3" : "justify-center")}
             style={{ borderColor: "var(--border)", background: "var(--card)" }}
           >
             <Plus className="h-4 w-4" style={{ color: "var(--accent)" }} />
             {sidebarOpen && "New chat"}
+          </button>
+          {/* A shortcut nobody can find is a hidden feature, so the key is printed where the
+              action lives. Icon-only in the collapsed rail, same 40px target as its neighbour. */}
+          <button
+            type="button"
+            onClick={() => setPaletteOpen(true)}
+            aria-label="Quick find"
+            title="Quick find — chats, modes, sheets, tools (⌘K)"
+            className={clsx("flex h-10 shrink-0 items-center gap-1.5 rounded-2xl border px-2 text-[10px] font-semibold", !sidebarOpen && "w-10 justify-center px-0")}
+            style={{ borderColor: "var(--border)", color: "var(--muted)", background: "var(--card)" }}
+          >
+            <Search className="h-4 w-4 shrink-0" style={{ color: "var(--accent)" }} />
+            {sidebarOpen && (
+              <>
+                Quick find
+                <span className="font-mono text-[9px]" style={{ color: "var(--soft)" }}>⌘K</span>
+              </>
+            )}
           </button>
         </div>
 
@@ -3442,6 +3553,21 @@ function Dashboard() {
 
       {modal === "plans" && (
         <PlansSheet plan={plan} onClose={() => setModal(null)} onPro={goProFromPlans} />
+      )}
+
+      {paletteOpen && (
+        <CommandPalette
+          open
+          onClose={() => setPaletteOpen(false)}
+          source={{
+            modes: MODE_META.map((m) => ({ id: m.id, label: m.label, blurb: m.sub })),
+            history,
+            activeMode: mode,
+            running: agentBusy ? "agent" : streaming ? "answer" : null,
+            signedIn: Boolean(me),
+          }}
+          onPick={pickPaletteRow}
+        />
       )}
 
       {modal === "creations" && (

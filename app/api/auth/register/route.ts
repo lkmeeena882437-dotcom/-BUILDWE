@@ -72,14 +72,18 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     const msg = (e as Error).message || "Couldn’t create account.";
     // Never leak raw ENOENT paths to UI
-    const safe = /ENOENT|EACCES|mkdir|EPERM|read-only/i.test(msg)
+    // STORE_BUSY is the store saying "somebody else is writing". That is a wait-a-moment, not a
+    // "fix what you typed", so it gets 503 — the client shows the message either way, but a status
+    // of 400 on a transient server condition teaches the wrong lesson to whoever reads the logs.
+    const busy = /STORE_BUSY|is busy/i.test(msg);
+    const safe = /ENOENT|EACCES|mkdir|EPERM|read-only/i.test(msg) || busy
       ? "Couldn’t save account right now. Please try again."
       : msg.includes("already")
         ? "Email already registered. Try logging in."
         : msg.includes("Invalid") || msg.includes("email")
           ? "Enter a valid email and password (min 6 characters)."
           : "Couldn’t create account. Please try again.";
-    const status = msg.includes("already") ? 409 : 400;
+    const status = msg.includes("already") ? 409 : busy ? 503 : 400;
     console.error("[bw] register", e);
     return NextResponse.json({ error: safe }, { status });
   }

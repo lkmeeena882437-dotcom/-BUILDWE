@@ -124,6 +124,10 @@ export function useDismiss(opts: UseDismissOptions): UseDismissResult {
         // (it means "a child owns the keyboard right now"), and `defaultPrevented` covers
         // a child that handled the key in its own panel without the parent knowing yet.
         if (e.defaultPrevented) return;
+        // Marked handled so whatever sits under this panel can defer: the sheet's own Escape is on
+        // `window` and this one on `document`, and that order is what makes "Escape closes the
+        // topmost layer only" true without either of them tracking the other.
+        e.preventDefault();
         onClose();
       }
     };

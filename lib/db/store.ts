@@ -395,6 +395,20 @@ function read(): DB {
 let lastReadRaw: string | null = null;
 export let dbLockingAvailable = true;
 
+/**
+ * Another writer holds the store, or the file could not be read while we held the lock, so the
+ * only safe answer is "not now". Thrown instead of writing anyway: an unlocked write whose merge
+ * base is stale erases the other process's records, and a signup that vanishes is not something a
+ * retry can undo. `tests/store-concurrency.mjs` holds the lock on purpose to prove this path.
+ */
+export class StoreBusyError extends Error {
+  readonly code = "STORE_BUSY";
+  constructor(what: string) {
+    super(`The workspace is busy (${what}) — nothing was saved. Try that again in a moment.`);
+    this.name = "StoreBusyError";
+  }
+}
+
 function sleepSync(ms: number) {
   try {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -409,7 +423,10 @@ function sleepSync(ms: number) {
 
 function acquireLock(file: string): string | null {
   const lock = `${file}.lock`;
-  const deadline = Date.now() + 2_000;
+  // Long enough that a healthy writer (one file, a few ms) is always waited out, short enough that
+  // a wedged one is not a hung request. A crashed holder is taken over after 3 000 ms by the check
+  // below, so this ceiling is only reached by writers that are alive and slow.
+  const deadline = Date.now() + 8_000;
   for (;;) {
     try {
       const fd = fs.openSync(lock, "wx");
@@ -435,8 +452,12 @@ function acquireLock(file: string): string | null {
         continue;
       }
       if (Date.now() > deadline) {
-        dbLockingAvailable = false;
-        return null;
+        // Was `dbLockingAvailable = false; return null;` — i.e. carry on without the lock. Under a
+        // 12-account burst on a loaded machine that is exactly how one signup disappeared: the
+        // merge then runs against a base read outside any lock, so the last writer wins and the
+        // other's rows are gone. EEXIST at deadline means "somebody is in there", not
+        // "locking is impossible here" — those two cases must not share an outcome.
+        throw new StoreBusyError("another write is in flight");
       }
       sleepSync(20);
     }
@@ -521,14 +542,19 @@ function write(db: DB) {
     try {
       // If another process wrote since our read, merge instead of overwrite.
       let current = db;
+      let blind = false;
       try {
         const onDisk = fs.readFileSync(file, "utf8");
         if (lastReadRaw !== null && onDisk !== lastReadRaw) {
           current = mergeOnto(parseDb(onDisk), parseDb(lastReadRaw), db);
         }
       } catch {
-        /* unreadable file: fall back to writing what we hold */
+        // "Unreadable, so write what we hold" is only ever right when there is no lock to have —
+        // with the lock in our hands, an unreadable file means a rename mid-flight or an ill
+        // volume, and overwriting it with a stale snapshot destroys records we never saw.
+        if (lock) blind = true;
       }
+      if (blind) throw new StoreBusyError("the store could not be read before writing");
       const out = JSON.stringify(current, null, 2);
       // atomic: never leave a half-written store behind
       const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
@@ -537,7 +563,10 @@ function write(db: DB) {
       memoryDb = current;
       lastReadRaw = out;
       db = current;
-    } catch {
+    } catch (e) {
+      // A busy store is a real answer to give the caller; disabling writes for the rest of the
+      // process because one write was refused is not.
+      if (e instanceof StoreBusyError) throw e;
       writable = false;
     } finally {
       if (lock) releaseLock(lock);

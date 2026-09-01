@@ -63,6 +63,11 @@ export function Sheet({
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // Something nearer the target already took this Escape — a popover open on top of this
+        // sheet (the projects menu inside a sheet is a real state). Its listener is on
+        // `document` and marks the event handled; `document` fires before `window`, so the check
+        // below IS the ordering rule and no layer has to know about any other layer.
+        if (e.defaultPrevented) return;
         e.preventDefault();
         closeRef.current();
         return;
@@ -91,7 +96,11 @@ export function Sheet({
 
     window.addEventListener("keydown", onKeyDown);
     document.body.classList.add("lock-scroll");
-    node?.focus({ preventScroll: true });
+    // A dialog whose only job is one field should land in that field; a dialog that is a list of
+    // choices should land on the panel, where Tab reaches the first row without a stray Enter
+    // firing whatever happens to be first. `data-autofocus` is how the caller says which it is.
+    const target = node?.querySelector<HTMLElement>("[data-autofocus]") || node;
+    target?.focus({ preventScroll: true });
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       document.body.classList.remove("lock-scroll");

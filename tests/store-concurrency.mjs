@@ -15,7 +15,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { req, run, startServer, results, report } from "./harness.mjs";
@@ -186,6 +186,71 @@ try {
     reads.forEach((n) => assert.ok(n >= N, `user count went backwards: ${n}`));
     await Promise.all(writes);
   });
+  await run("a writer that cannot take the lock fails instead of overwriting", async () => {
+    // The lock is held here on purpose, and its mtime is refreshed, because that is the difference
+    // between the two cases the store must tell apart: a *crashed* holder (stale mtime, take it
+    // over) and a *working* one (wait, and when waiting runs out, refuse). The store used to answer
+    // both the same way — carry on and write unlocked — which is how a signup disappeared in a
+    // 12-account burst on a loaded machine: the merge path only protects writes that were
+    // serialised, so an unlocked write merges onto a base nobody can vouch for.
+    const store = path.join(dataDir, "buildwe.json");
+    const lock = `${store}.lock`;
+    const before = readFileSync(store, "utf8");
+    const email = `busy-${stamp()}@example.test`;
+    const body = { email, password: "correct-horse-9", name: "contended" };
+
+    writeFileSync(lock, String(process.pid), "utf8");
+    const beat = setInterval(() => {
+      const now = new Date();
+      try {
+        utimesSync(lock, now, now);
+      } catch {
+        /* released between the tick and the call */
+      }
+    }, 1_000);
+    let refused;
+    const at = Date.now();
+    try {
+      refused = await req(a.base, "/api/auth/register", { method: "POST", body });
+    } finally {
+      clearInterval(beat);
+      rmSync(lock, { force: true });
+    }
+    const waited = Date.now() - at;
+    assert.ok(waited > 2_000, `it answered in ${waited} ms — a live holder should be waited out, not waved off`);
+    assert.equal(
+      refused.status,
+      503,
+      `a busy store answered ${refused.status} — 400 would tell the person their typing is wrong`
+    );
+    assert.match(String(refused.json?.error || ""), /try again/i, "and it says to come back");
+    assert.equal(readFileSync(store, "utf8"), before, "the store is byte-for-byte untouched: refusing is the safe answer");
+    assert.ok(
+      !JSON.parse(before).users.some((u) => u.email === email),
+      "and the account really was not created — no half-written state to discover later"
+    );
+
+    // The same request once the lock is gone. This is the part a unit test of the throw would miss:
+    // the refused write must not leave the email reserved in this process's memory, because then the
+    // retry would answer "already registered" about an account that exists nowhere.
+    const retry = await req(a.base, "/api/auth/register", { method: "POST", body });
+    assert.equal(retry.status, 200, `the retry got ${retry.status} — something was left behind`);
+    const db = JSON.parse(readFileSync(store, "utf8"));
+    assert.equal(
+      db.users.filter((u) => u.email === email).length,
+      1,
+      "the account is on disk exactly once"
+    );
+    assert.ok(!existsSync(lock), "and the lock we held is gone");
+
+    const health = await req(a.base, "/api/health");
+    assert.equal(
+      health.json.services.writeLocking.state,
+      "live",
+      "one contended write must not report locking as degraded for the rest of the process"
+    );
+  });
+
 } catch (e) {
   results.push(`  FAIL  harness: ${e.message}`);
 } finally {

@@ -1,6 +1,7 @@
 /** Browser helpers for BUILDWE APIs */
 
 import type { PreviewDto } from "@/lib/net/urls";
+import type { PaletteStudio, PaletteTool } from "./palette";
 
 export type MeResponse = {
   userId: string;
@@ -930,4 +931,33 @@ export async function deleteProjectFileApi(id: string) {
     credentials: "include",
   });
   return r.ok;
+}
+/**
+ * GET /api/tools — the registry's own public projection, flattened.
+ *
+ * The palette asks for this the first time it opens rather than importing
+ * `lib/tools/registry`: the registry holds 31 tool specs with their input schemas,
+ * prompts and examples, which is tens of kilobytes of the workspace bundle spent to
+ * fill a menu. The response is already grouped by category; the palette is a flat
+ * ranked list, so the flattening happens here, once, and nothing else has to know.
+ *
+ * It throws on a bad read. The caller shows "Tool list unavailable" and keeps every
+ * other row — a catalogue that failed to load must not be presented as "there are no
+ * tools", which is the same lie `GET /api/projects` used to tell with `{projects: []}`.
+ */
+export async function fetchToolCatalogue(): Promise<{
+  tools: PaletteTool[];
+  studios: PaletteStudio[];
+  count: number;
+}> {
+  // brief=1: labels and routes only. See the projection in app/api/tools/route.ts.
+  const r = await fetch("/api/tools?brief=1", { credentials: "include" });
+  const j = await readJson(r);
+  if (!r.ok) throw new Error(String(j.error || "Could not load the tool list."));
+  const groups = (j.groups || []) as { tools?: PaletteTool[] }[];
+  return {
+    tools: groups.flatMap((g) => g.tools || []),
+    studios: (j.studios || []) as PaletteStudio[],
+    count: Number(j.count) || 0,
+  };
 }
