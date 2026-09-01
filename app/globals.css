@@ -501,6 +501,20 @@ button:active:not(:disabled) {
   opacity: 0.5;
 }
 
+/* Not every popover is a list of menu rows. `padding: 6px` suits rows; a panel holding
+   blocks (the answer-style control) needs its own rhythm, and that belongs here rather
+   than in a chain of Tailwind utilities at the call site. */
+.bw-pop__stack {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0 3px 4px;
+}
+
+.bw-pop__stack .bw-menu-label {
+  padding: 8px 7px 3px;
+}
+
 /* ── Segmented control (lib/ui/SegmentedControl.tsx) ──────────
    The indicator animates transform + width only, so the slide stays composited
    instead of relayouting the row on every frame. */
@@ -728,6 +742,32 @@ button:active:not(:disabled) {
 
 .bw-pill__voicebtn:hover {
   background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+/* Step 5: the mode trigger. Two things Tailwind cannot say here:
+   • min-width, so the pill does not reflow when the label changes (Auto → Vision is two
+     characters wider, and a control that slides sideways under the cursor is a mis-tap);
+     the wider floor only applies where the label is actually shown (sm+).
+   • the chevron's turn, keyed off aria-expanded rather than a class duplicated from
+     state — the attribute is the truth the popover already keeps. */
+.bw-mode__btn {
+  --bw-focus-r: 14px;
+  min-width: 52px;
+  justify-content: flex-start;
+}
+
+@media (min-width: 640px) {
+  .bw-mode__btn {
+    min-width: 92px;
+  }
+}
+
+.bw-mode__chev {
+  transition: transform var(--dur, 180ms) ease;
+}
+
+.bw-mode__btn[aria-expanded="true"] .bw-mode__chev {
+  transform: rotate(180deg);
 }
 
 /* ── Focus radius + touch targets for the shared controls ──

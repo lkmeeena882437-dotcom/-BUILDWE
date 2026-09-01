@@ -1,5 +1,5 @@
-import type { ElementType } from "react";
 import { Bot, Code2, Image as ImageIcon, MessageSquare, Mic2 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 /**
  * The five workspace modes, in one place.
@@ -14,7 +14,12 @@ export type Mode = "auto" | "chat" | "code" | "image" | "audio";
 export interface ModeMeta {
   id: Mode;
   label: string;
-  icon: ElementType;
+  /**
+   * LucideIcon, not ElementType: `MenuRow` and every other icon slot in lib/ui take this
+   * type, and ElementType also accepts a raw string — so the catalogue could name an
+   * element that exists in no JSX registry and still type-check.
+   */
+  icon: LucideIcon;
   headline: string;
   sub: string;
   power: string;

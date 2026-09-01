@@ -39,16 +39,37 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { Btn } from "@/lib/ui/Btn";
-import { MenuDivider, MenuRow, Popover, menuTriggerProps } from "@/lib/ui";
+import { ModeMenu } from "./ModeMenu";
+import {
+  MenuDivider,
+  MenuLabel,
+  MenuRow,
+  Popover,
+  SegmentedControl,
+  menuTriggerProps,
+} from "@/lib/ui";
+import type { SegmentedItem } from "@/lib/ui";
 import { analyzeFileApi, transcribeAudio, type MeResponse } from "@/lib/client/api";
-import { MODE_META, type Mode } from "@/lib/client/modes";
+import { type Mode } from "@/lib/client/modes";
 import {
   speechRecognitionCtor,
   type SpeechRecognitionResultEvent,
 } from "@/lib/client/speech";
 
 export type AnswerDepth = "short" | "balanced" | "detailed" | "deep";
+/** The two style axes, as data: the labels below and `AnswerDepth` must not drift. */
+export const DEPTH_ITEMS: SegmentedItem<AnswerDepth>[] = [
+  { value: "short", label: "Short" },
+  { value: "balanced", label: "Balanced" },
+  { value: "detailed", label: "Detailed" },
+  { value: "deep", label: "Deep" },
+];
 export type AnswerTone = "simple" | "standard" | "expert";
+export const TONE_ITEMS: SegmentedItem<AnswerTone>[] = [
+  { value: "simple", label: "Simple" },
+  { value: "standard", label: "Standard" },
+  { value: "expert", label: "Expert" },
+];
 export type Attachment = { dataUrl: string; name: string } | null;
 
 /** Kept in sync with the server's limits: the UI must refuse before a 413, not after. */
@@ -57,6 +78,8 @@ const MAX_TEXT_FILE = 200 * 1024;
  *  a microphone left open and a Blob nobody asked for. */
 const MAX_VOICE_SECONDS = 300;
 const MAX_IMAGE_FILE = 5 * 1024 * 1024;
+/** Trigger + panel share one id so `aria-controls` cannot drift from it. */
+const STYLE_MENU_ID = "bw-style-menu";
 
 export interface PromptBarProps {
   mode: Mode;
@@ -152,6 +175,7 @@ export function PromptBar(props: PromptBarProps) {
 
   const [attachOpen, setAttachOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const styleTrigger = useRef<HTMLDivElement | null>(null);
   // The dictation mic (the button on the right) is the browser's own recogniser and
   // never leaves the machine. This is the other thing a chat composer is expected to
   // do: record, send it to the server's transcription, and put the words in the box.
@@ -621,26 +645,10 @@ export function PromptBar(props: PromptBarProps) {
               </Popover>
             </div>
 
-            <div className="flex min-w-0 flex-1 gap-0.5 overflow-x-auto">
-              {MODE_META.map((m) => {
-                const Icon = m.icon;
-                const on = mode === m.id;
-                return (
-                  <button
-                    key={m.id}
-                    type="button"
-                    aria-pressed={on}
-                    title={`${m.label} — ${m.sub}`}
-                    onClick={() => onMode(m.id)}
-                    className="flex shrink-0 items-center gap-1 rounded-xl px-2 py-1.5 text-[11px] font-medium"
-                    style={on ? { background: "var(--accent-soft)", color: "var(--accent)" } : { color: "var(--muted)" }}
-                  >
-                    <Icon className="h-3.5 w-3.5" />
-                    <span className="hidden sm:inline">{m.label}</span>
-                  </button>
-                );
-              })}
-            </div>
+            {/* One control for five modes: components/workspace/ModeMenu.tsx owns the
+                list, the popover, and the rule that re-picking the current mode must not
+                abort the answer that is streaming. */}
+            <ModeMenu mode={mode} onPick={onMode} className="mr-1" />
 
             {/* hidden, but rendered: the menu above drives exactly these two inputs */}
             <input
@@ -660,64 +668,65 @@ export function PromptBar(props: PromptBarProps) {
 
             <div className="flex shrink-0 items-center gap-0.5">
             {chatLike && (
-              <div className="relative">
+              <div ref={styleTrigger} className="relative">
                 <Btn
                   variant="icon"
                   size="sm"
                   aria-label="Answer style"
                   title="Answer style — length & language"
                   onClick={() => setStyleMenu((v) => !v)}
-                  style={depth !== "balanced" || tone !== "standard" ? { background: "var(--accent-soft)", color: "var(--accent)" } : undefined}
+                  {...menuTriggerProps(styleMenu, STYLE_MENU_ID)}
+                  style={
+                    depth === "balanced" && tone === "standard"
+                      ? undefined
+                      : { background: "var(--accent-soft)", color: "var(--accent)" }
+                  }
                 >
                   <SlidersHorizontal className="h-4 w-4" />
                 </Btn>
-                {styleMenu && (
-                  <>
-                    <button
-                      type="button"
-                      className="fixed inset-0 z-40 cursor-default"
-                      aria-label="Close style menu"
-                      onClick={() => setStyleMenu(false)}
+                {/* The trigger sits at the right end of the pill, so the panel has to grow
+                    leftwards or a 300px popover runs off a phone: `align="end"` is the
+                    anchor's job, not a magic negative offset at the call site. */}
+                <Popover
+                  id={STYLE_MENU_ID}
+                  open={styleMenu}
+                  onClose={() => setStyleMenu(false)}
+                  anchorRef={styleTrigger}
+                  mode="absolute"
+                  placement="above"
+                  align="end"
+                  width={300}
+                  role="group"
+                  label="Answer style"
+                >
+                  {/* Two segmented controls, not two rows of unlabelled chips. The chips
+                      this replaces had no accessible selected state at all — a screen
+                      reader heard seven identical buttons — and the panel was a
+                      full-screen invisible <button> plus a hand-placed div, which meant the
+                      first tap on any neighbour was eaten by the overlay. */}
+                  <div className="bw-pop__stack">
+                    <MenuLabel>Answer length</MenuLabel>
+                    <SegmentedControl
+                      size="sm"
+                      full
+                      dark
+                      ariaLabel="Answer length"
+                      value={depth}
+                      onChange={setDepth}
+                      items={DEPTH_ITEMS}
                     />
-                    <div
-                      className="anim-rise absolute bottom-10 left-0 z-50 w-60 rounded-2xl border p-3 shadow-lg"
-                      style={{ borderColor: "var(--border)", background: "var(--card)" }}
-                    >
-                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>
-                        Answer length
-                      </div>
-                      <div className="mb-3 flex flex-wrap gap-1">
-                        {(["short", "balanced", "detailed", "deep"] as const).map((d) => (
-                          <button
-                            key={d}
-                            type="button"
-                            onClick={() => setDepth(d)}
-                            className="rounded-full px-2 py-1 text-[11px] font-semibold capitalize"
-                            style={depth === d ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
-                          >
-                            {d}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>
-                        Language
-                      </div>
-                      <div className="flex flex-wrap gap-1">
-                        {(["simple", "standard", "expert"] as const).map((t) => (
-                          <button
-                            key={t}
-                            type="button"
-                            onClick={() => setTone(t)}
-                            className="rounded-full px-2 py-1 text-[11px] font-semibold capitalize"
-                            style={tone === t ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
-                          >
-                            {t}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )}
+                    <MenuLabel>Language</MenuLabel>
+                    <SegmentedControl
+                      size="sm"
+                      full
+                      dark
+                      ariaLabel="Language level"
+                      value={tone}
+                      onChange={setTone}
+                      items={TONE_ITEMS}
+                    />
+                  </div>
+                </Popover>
               </div>
             )}
             {chatLike && (

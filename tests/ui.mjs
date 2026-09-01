@@ -299,7 +299,11 @@ try {
     assert.ok(labHtml.includes("What do you want to do?"), "the auto-mode placeholder must survive");
     assert.ok(labHtml.includes('aria-label="Send"'), "the send button must be reachable by name");
     assert.ok(labHtml.includes('aria-haspopup="menu"'), "the + is a menu trigger");
-    assert.ok(labHtml.includes("Auto") && labHtml.includes("Vision") && labHtml.includes("Voice"), "all five mode chips from the shared catalogue");
+    // The picker renders closed, so only the trigger is in the markup — which is the
+    // point of the closed-popover rule below, and why "all five labels visible" was the
+    // wrong thing to assert in the first place.
+    assert.ok(labHtml.includes("Mode: Auto"), "the trigger names the active mode from the shared catalogue");
+    assert.equal((labHtml.match(/data-action="mode-/g) || []).length, 0, "a closed picker has no rows in the DOM");
     assert.ok(!labHtml.includes("· undefined"), "the account line must not print undefined while me is loading");
     // rows behind the closed + menu are not in the DOM
     assert.ok(!labHtml.includes("Summarised, not pasted whole"), "a closed menu renders no rows");
@@ -330,20 +334,18 @@ try {
       assert.ok(!html.includes("bw-pop"), `${name} must not use the popover yet`);
       assert.ok(!html.includes("data-bw-seg"), `${name} must not use the segmented control yet`);
     }
-    // app/page.tsx owns three hand-rolled menus (project, style, history) that each
-    // fake dismissal with a full-screen invisible button. Step 1 sweeps NONE of them;
-    // Step 11 moves all three onto useDismiss. Counting them here is what makes
-    // "I only added primitives" a checked claim instead of a promise.
     const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
     const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
-    // Three menus hand-roll their dismissal with a full-screen invisible button: project,
-    // style, history. Step 1 moved none of them; Step 2 moved the style one along with the
-    // composer it belonged to. Counting both files keeps "nothing was refactored away" true
-    // without freezing it at a number that was only ever about Step 1.
+    // Hand-rolled menus that fake dismissal with a full-screen invisible <button>:
+    // page.tsx had three (project, style, history). The style one came into the composer
+    // in Step 2, and Step 5 replaced it with <Popover> — so 2 remain, both in page.tsx,
+    // and Step 11 owns them. The count is deliberately a number and not a `<=`, because
+    // "additive" means this can only ever go down by a step that says so here.
     const overlays =
       (page.match(/fixed inset-0 z-40 cursor-default/g) || []).length +
       (bar.match(/fixed inset-0 z-40 cursor-default/g) || []).length;
-    assert.equal(overlays, 3, "the three existing menus must still be wired the way they were");
+    assert.equal(overlays, 2, "only page.tsx's two remaining menus may still hand-roll an overlay");
+    assert.equal((bar.match(/fixed inset-0/g) || []).length, 0, "the composer owns no overlay of any kind");
     // page.tsx may reach into lib/ui for exactly one thing (Btn, which it now shares
     // with the pill). The popover/menu/segmented primitives stay out of the page until
     // the step that actually needs them — that is what keeps a "refactor" from becoming
@@ -410,7 +412,13 @@ await run("reading a file may fail, and must say so", async () => {
     assert.ok(bar.includes(`const ${fn} =`), `the ${fn} pipeline is missing`);
   }
   assert.strictEqual((bar.match(/e\.target\.value = "";/g) || []).length, 2, "both pickers clear their input so re-picking the same file fires again, and nothing else does");
-  assert.ok(bar.includes('aria-pressed={on}'), "the mode chips must say which mode is active");
+  // Step 5 replaced the chip strip with a picker, so "says which mode is active" moved
+  // from five aria-pressed buttons to one labelled trigger. The invariant, not the old
+  // markup: the control must name the current mode, and the old strip must not still be
+  // there as a second control saying it.
+  const mode = readFileSync(path.join(ROOT, "components", "workspace", "ModeMenu.tsx"), "utf8");
+  assert.ok(mode.includes("aria-label={`Mode: ${active.label}`}"), "the trigger states which mode is active");
+  assert.ok(!bar.includes("aria-pressed={on}"), "the five-chip strip is gone, not left behind under the new control");
   assert.ok(bar.includes('className="flex shrink-0 items-center gap-0.5"'), "trailing actions must not be squeezed by a long chip row");
 });
 
@@ -535,6 +543,55 @@ await run("no signing key in the auth path is a published constant", async () =>
   }
   const guest = rd(path.join(ROOT, "lib", "auth", "guest.ts"), "utf8");
   assert.ok(guest.includes("SESSION_SECRET is unset"), "and it must say so out loud when it has to");
+});
+
+await run("Step 5: one popover over the shared catalogue, and no way to abort by accident", () => {
+  const mode = readFileSync(path.join(ROOT, "components", "workspace", "ModeMenu.tsx"), "utf8");
+  const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  const css = readFileSync(path.join(ROOT, "app", "globals.css"), "utf8");
+
+  assert.ok(mode.includes("MODE_META.map"), "rows come from the one catalogue, not a local list");
+  assert.ok(!/"auto"|"chat"|"code"|"image"|"audio"/.test(codeOnly(mode)), "no mode id is hard-coded in the component");
+  assert.ok(mode.includes("menuTriggerProps(open, MODE_MENU_ID)") && mode.includes("id={MODE_MENU_ID}"), "trigger and panel share one id constant, so aria-controls cannot drift");
+  // codeOnly: this file's own header comment *names* the keys Popover owns, and an
+  // assertion that reads prose as code is a test that fails for the wrong reason.
+  assert.ok(!/ArrowUp|ArrowDown|case "Home"/.test(codeOnly(mode)), "menu keys belong to Popover, not to a copy here");
+  assert.ok(!mode.includes("setMode("), "a pick must go through the page's switchMode (which aborts a stream), never the plain setter");
+  assert.ok(bar.includes("<ModeMenu mode={mode} onPick={onMode}"), "and the bar wires exactly that");
+
+  // The current mode: inert, explained, and inert again as a second gate. switchMode
+  // aborts whenever streaming, including for the mode you already occupy.
+  assert.ok(mode.includes("disabled={on}") && mode.includes('note="Already selected"'), "the current row is disabled with the reason on it");
+  assert.ok(mode.includes("if (on) return;"), "and even a forced click cannot cancel a running answer");
+  assert.ok(mode.includes("selected={on}"), "while the check marks it");
+
+  assert.ok(!bar.includes("overflow-x-auto"), "no scrolling chip strip left behind");
+  assert.ok(!page.includes("bw-mode-menu"), "the page does not hand-roll a second copy of the menu id");
+  assert.ok(css.includes('.bw-mode__btn[aria-expanded="true"] .bw-mode__chev'), "the chevron turns off the ARIA state, not a duplicated class");
+  assert.ok(css.includes("min-width: 92px"), "the trigger keeps its width when a longer label appears");
+  assert.ok(css.indexOf(".bw-mode__chev") < css.lastIndexOf("@media (prefers-reduced-motion"), "and reduced motion still wins over the turn");
+});
+
+await run("Step 5: the answer-style panel is a popover over primitives, not a fork of one", () => {
+  const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
+  const css = readFileSync(path.join(ROOT, "app", "globals.css"), "utf8");
+  assert.ok(bar.includes("<Popover") && bar.includes("id={STYLE_MENU_ID}"), "the style panel is a Popover with a stable id");
+  assert.ok(bar.includes("menuTriggerProps(styleMenu, STYLE_MENU_ID)"), "its trigger exposes aria-controls/expanded like every other menu");
+  assert.ok(bar.includes('role="group"') && bar.includes('label="Answer style"'), "named as the group it is, not as a menu");
+  assert.ok(!bar.includes("anim-rise absolute bottom-10 left-0"), "no hand-placed panel left behind");
+  assert.ok(bar.includes("<SegmentedControl") && (bar.match(/<SegmentedControl/g) || []).length === 2, "both axes are the shared control");
+  assert.ok(bar.includes('align="end"') && bar.includes("width={300}"), "a right-end trigger grows the panel leftwards, not off the phone");
+  const depthBlock = bar.slice(bar.indexOf("export const DEPTH_ITEMS"));
+  assert.ok(/value: "deep"/.test(depthBlock.slice(0, 420)), "all four lengths are in the data, not in JSX");
+  assert.equal((bar.match(/value: "(short|balanced|detailed|deep)"/g) || []).length, 4, "Answer length has exactly its four values");
+  assert.equal((bar.match(/value: "(simple|standard|expert)"/g) || []).length, 3, "Language level has exactly its three");
+  assert.ok(css.includes(".bw-pop__stack"), "and the panel's block rhythm lives in CSS, not in a utility chain");
+  // the point of the whole exercise: a screen reader must be able to tell which is on
+  // The point of the whole exercise: a screen reader can tell which is on,
+  // because the unlabelled chip that set depth directly is gone.
+  assert.ok(!bar.includes("onClick={() => setDepth(d)}"), "no unlabelled depth chips left");
+  assert.ok(!bar.includes("onClick={() => setTone(t)}"), "no unlabelled tone chips left");
 });
 
 rmSync(outDir, { recursive: true, force: true });
