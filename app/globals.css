@@ -845,6 +845,75 @@ button:active:not(:disabled) {
   }
 }
 
+/* ── Step 6b: grouped history in the sidebar ─────────────── */
+.bw-side-group__head {
+  --bw-focus-r: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--soft);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.bw-side-group__head:hover {
+  background: var(--secondary);
+  color: var(--muted);
+}
+
+.bw-side-group__chev {
+  opacity: 0.7;
+  transition: transform var(--dur) var(--ease);
+}
+
+/* The chevron answers the ARIA state, not a class a caller has to remember to toggle. */
+.bw-side-group__head[aria-expanded="true"] .bw-side-group__chev {
+  transform: rotate(90deg);
+}
+
+.bw-side-group__count {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+/* A folded group can hide the conversation you are reading, and a list long enough to fold is
+   a list long enough to scroll it out of sight - so the count of the group holding it is tinted. */
+.bw-side-group__count.is-now {
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* A control that is `display: none` until you hover is not a keyboard control at all, and the
+   per-chat delete used to be exactly that (it also never appeared on a tablet, which has no
+   hover to wait for). These reveal by opacity - on hover, on focus, and always where there is
+   no pointer to hover with. */
+.bw-side-hover {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.bw-side-item:hover .bw-side-hover,
+.bw-side-hover:focus-visible {
+  opacity: 1;
+}
+
+@media (pointer: coarse) {
+  .bw-side-hover {
+    opacity: 1;
+  }
+
+  .bw-side-group__head {
+    min-height: 40px;
+  }
+}
+
 /* ── Reduced motion: respect the user ───────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *,

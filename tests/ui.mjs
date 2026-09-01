@@ -699,5 +699,93 @@ await run("Step 6: the flyout is an address book for surfaces that already exist
   }
 });
 
+await run("Step 6b: the grouping function places every chat and loses none", async () => {
+  // Same treatment placement.ts gets: compile the real module and call it, so the one rule
+  // that matters - a conversation cannot fall out of the sidebar - is proven by running it.
+  const dir = mkdtempSync(path.join(tmpdir(), "bw-group-"));
+  try {
+    execFileSync(
+      "npx",
+      ["tsc", path.join(ROOT, "lib", "client", "groupHistory.ts"), "--outDir", dir, "--target", "es2022", "--module", "esnext", "--moduleResolution", "bundler", "--strict", "--skipLibCheck"],
+      { cwd: ROOT, stdio: "pipe" }
+    );
+    const { groupHistory } = await import(pathToFileURL(path.join(dir, "groupHistory.js")).href);
+    const projects = [{ id: "p1", name: "Launch" }, { id: "p2", name: "Docs" }];
+    const teams = [{ id: "t1", name: "Design" }];
+    const items = [
+      { id: "a", projectId: "p1" },
+      { id: "b", projectId: "p1", teamId: "t1" },
+      { id: "c", teamId: "t1" },
+      { id: "d" },
+      { id: "e", projectId: "gone" },
+      { id: "f", projectId: "p2" },
+      { id: "g", teamId: "ghost" },
+    ];
+    const groups = groupHistory(items, { projects, teams });
+
+    assert.deepEqual(
+      groups.flatMap((g) => g.items.map((i) => i.id)).sort(),
+      ["a", "b", "c", "d", "e", "f", "g"],
+      "every chat is in exactly one group"
+    );
+    assert.deepEqual(
+      groups.map((g) => [g.kind, g.label]),
+      [["project", "Launch"], ["project", "Docs"], ["team", "Design"], ["chat", "Chats"]],
+      "projects, then teams, then the loose bucket last - and no empty or ghost headers"
+    );
+    assert.deepEqual(groups[0].items.map((i) => i.id), ["a", "b"], "a project beats a team, and the order inside a group stays the server's");
+    assert.deepEqual(groups[3].items.map((i) => i.id), ["d", "e", "g"], "a chat whose project or team no longer exists lands in Chats instead of vanishing");
+    assert.equal(groupHistory([], { projects, teams }).length, 0, "nothing in, nothing rendered");
+    assert.equal(new Set(groups.map((g) => g.key)).size, groups.length, "one collapse key per group");
+    const renamed = groupHistory(items, { projects: [{ id: "p1", name: "Launch '26" }, projects[1]], teams });
+    assert.equal(renamed[0].key, groups[0].key, "a folded group stays folded when the project is renamed - the key is the id, not the label");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await run("Step 6b: headers organise the list, the chips still decide what is in it", () => {
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  const code = codeOnly(page);
+  const css = readFileSync(path.join(ROOT, "app", "globals.css"), "utf8");
+
+  assert.ok(page.includes("groupHistory(filteredHistory, { projects, teams })"), "groups are built over the already-filtered list");
+  assert.ok(!/groupHistory\(\s*history\b/.test(code), "never over the raw list, or a header would become a second filter");
+  assert.equal((page.match(/filteredHistory\.map/g) || []).length, 1, "the mobile drawer keeps its flat list - a sheet is not a rail");
+  assert.ok(page.includes("{!filteredHistory.length && ("), "and 'No history yet' still means empty, not 'everything is folded'");
+
+  assert.ok(page.includes("useState<string[]>([])"), "which groups are folded is component state, not a hidden store");
+  assert.ok(!/localStorage|sessionStorage/.test(page.slice(page.indexOf("foldedGroups"), page.indexOf("foldedGroups") + 400)), "and it is deliberately not persisted across reloads");
+  // Window from the head-id line, which sits above every attribute the assertions read.
+  const head = page.slice(page.indexOf("const headId ="), page.indexOf("const headId =") + 1300);
+  assert.ok(head.includes("aria-expanded={!folded}") && head.includes("aria-controls={`${headId}-list`}"), "a folded group says it is folded and points at what it hides");
+  assert.ok(head.includes("title={folded ?"), "and a name, since a bare chevron plus a label is thin going");
+  assert.ok(page.includes('role={plain ? undefined : "group"} aria-labelledby={plain ? undefined : headId}'), "the list is labelled by its header, and only asks for a name when there is one to read");
+  assert.ok(page.includes("{g.items.length}"), "a folded group still shows how much it is holding");
+
+  // The three per-row/per-chip actions used to be `display: none` until hover: invisible to a
+  // keyboard (a display:none button is not tabbable) and permanently absent on touch.
+  assert.ok(!page.includes('className="mr-1 hidden h-7 w-7'), "no hover-only delete left in the list");
+  assert.equal((page.match(/bw-side-hover/g) || []).length, 3, "all three reveal controls share one mechanism");
+  assert.ok(/@media \(pointer: coarse\) \{\s*\.bw-side-hover \{\s*opacity: 1;/.test(css), "on a touch device they are simply visible");
+  assert.ok(css.includes(".bw-side-hover:focus-visible"), "and a focused one is never invisible");
+
+  // Selection state on the chips was colour-only, like the theme buttons were.
+  assert.equal((page.match(/aria-pressed=/g) || []).length, 4, "All / project / Personal / team each report which is on");
+  assert.ok(page.includes('aria-label="Search history"'), "the search field keeps a name after its placeholder is typed over");
+
+  // One list of one group needs no header, and the row markup must not be duplicated to get that.
+  assert.ok(page.includes('historyGroups.length === 1 && historyGroups[0].kind === "chat"'), "a lone Chats bucket renders without a header");
+  assert.ok(page.includes("{plain || (") && page.includes("role={plain ? undefined : \"group\"}"), "the header and the group semantics are suppressed together, from one flag");
+  assert.equal((page.match(/openHist\(h\.id\)/g) || []).length, 2, "one row implementation for the rail, one for the drawer - no third copy");
+
+  // Folding must not be able to hide which conversation you are looking at.
+  assert.ok(page.includes("const holdsOpen = g.items.some((h) => h.id === convId)"), "the group holding the open chat knows it");
+  assert.ok(page.includes('clsx("bw-side-group__count", holdsOpen && "is-now")') && css.includes(".bw-side-group__count.is-now"), "and says so on the count, in the same accent as the row");
+
+  assert.ok(css.includes('.bw-side-group__head[aria-expanded="true"] .bw-side-group__chev'), "the chevron turns off the ARIA state, not a second class");
+  assert.ok(css.indexOf(".bw-side-group__head") < css.lastIndexOf("@media (prefers-reduced-motion"), "and reduced motion still wins over the turn");
+});
+
 rmSync(outDir, { recursive: true, force: true });
 process.exit(report("UI primitives (lib/ui) + Step 1 additive-only + Step 2 composer pill") ? 1 : 0);

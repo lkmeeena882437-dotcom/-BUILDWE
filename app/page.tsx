@@ -122,6 +122,7 @@ import { MODE_META, type Mode } from "@/lib/client/modes";
 import { ProfileFlyout } from "@/components/workspace/ProfileFlyout";
 import { SegmentedControl } from "@/lib/ui/SegmentedControl";
 import { THEME_ITEMS, type ThemePref } from "@/lib/client/theme";
+import { groupHistory } from "@/lib/client/groupHistory";
 
 type Msg = {
   id: string;
@@ -306,6 +307,12 @@ function Dashboard() {
   const [view, setView] = useState<"home" | "app">("home");
   const [mode, setMode] = useState<Mode>("chat");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  /* Which history groups the person folded up. Deliberately not persisted: the sidebar renders
+     on the client after the session loads, so a preference read from storage at first render
+     would either flash the unfolded list or hydrate into a different tree than the server sent.
+     The one place a fold is worth keeping across a reload - the rail width - is the same
+     trade-off and is left alone for the same reason. */
+  const [foldedGroups, setFoldedGroups] = useState<string[]>([]);
   const [drawer, setDrawer] = useState(false);
   const [modal, setModal] = useState<
     null | "auth" | "settings" | "plans" | "profile" | "models" | "skills" | "byok" | "teams" | "compare"
@@ -465,6 +472,16 @@ function Dashboard() {
         (!q || h.title.toLowerCase().includes(q) || h.preview.toLowerCase().includes(q))
     );
   }, [history, search, activeProject, activeTeam]);
+
+  /* Two mechanisms, two jobs, by design: the chips above narrow the list (a *filter*), the
+     headers below organise what is left (a *presentation*). Grouping never removes a chat -
+     `groupHistory` places every item by an `else`, and the chips keep working on top of it, so
+     "Projects: Launch" still shows only that group. The rules live in lib/client/groupHistory.ts
+     where a test can run them. */
+  const historyGroups = useMemo(
+    () => groupHistory(filteredHistory, { projects, teams }),
+    [filteredHistory, projects, teams]
+  );
 
   /* theme */
   useEffect(() => {
@@ -1991,22 +2008,24 @@ function Dashboard() {
               <div className="px-2.5 pb-2">
                 <div className="relative">
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2" style={{ color: "var(--soft)" }} />
-                  <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search" className="h-9 w-full rounded-xl pl-8 pr-2 text-xs outline-none" style={{ background: "var(--secondary)" }} />
+                  <input value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Search history" placeholder="Search" className="h-9 w-full rounded-xl pl-8 pr-2 text-xs outline-none" style={{ background: "var(--secondary)" }} />
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1">
                   <button
                     type="button"
                     onClick={() => setActiveProject(null)}
+                    aria-pressed={!activeProject}
                     className="rounded-full px-2 py-1 text-[10px] font-semibold"
                     style={!activeProject ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
                   >
                     All
                   </button>
                   {projects.map((p) => (
-                    <span key={p.id} className="group inline-flex items-center">
+                    <span key={p.id} className="bw-side-item group inline-flex items-center">
                       <button
                         type="button"
                         onClick={() => setActiveProject(p.id)}
+                        aria-pressed={activeProject === p.id}
                         className="rounded-l-full px-2 py-1 text-[10px] font-semibold"
                         style={activeProject === p.id ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
                       >
@@ -2015,7 +2034,7 @@ function Dashboard() {
                       <button
                         type="button"
                         aria-label={`Delete ${p.name}`}
-                        className="rounded-r-full px-1 py-1 opacity-0 transition group-hover:opacity-100"
+                        className="bw-side-hover rounded-r-full px-1 py-1"
                         style={{ color: "var(--soft)" }}
                         onClick={async () => {
                           await deleteProjectApi(p.id);
@@ -2043,16 +2062,18 @@ function Dashboard() {
                   <button
                     type="button"
                     onClick={() => { setActiveTeam(null); setActiveProject(null); }}
+                    aria-pressed={!activeTeam && !activeProject}
                     className="rounded-full px-2 py-1 text-[10px] font-semibold"
                     style={!activeTeam ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
                   >
                     Personal
                   </button>
                   {teams.map((t) => (
-                    <span key={t.id} className="group inline-flex items-center">
+                    <span key={t.id} className="bw-side-item group inline-flex items-center">
                       <button
                         type="button"
                         onClick={() => { setActiveTeam(t.id); setActiveProject(null); }}
+                        aria-pressed={activeTeam === t.id}
                         className="rounded-l-full px-2 py-1 text-[10px] font-semibold"
                         style={activeTeam === t.id ? { background: "var(--accent-soft)", color: "var(--accent)" } : { background: "var(--secondary)", color: "var(--muted)" }}
                       >
@@ -2061,7 +2082,7 @@ function Dashboard() {
                       <button
                         type="button"
                         aria-label={`Leave ${t.name}`}
-                        className="rounded-r-full px-1 py-1 opacity-0 transition group-hover:opacity-100"
+                        className="bw-side-hover rounded-r-full px-1 py-1"
                         style={{ color: "var(--soft)" }}
                         onClick={() => doLeaveTeam(t.id, t.name)}
                       >
@@ -2096,28 +2117,67 @@ function Dashboard() {
                   </button>
                 </div>
               )}
-              <div className="bw-side-list min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
-                {filteredHistory.map((h) => (
-                  <div key={h.id} className="group flex items-center rounded-xl" style={h.id === convId ? { background: "var(--secondary)" } : undefined}>
-                    <button type="button" onClick={() => openHist(h.id)} className="min-w-0 flex-1 px-2.5 py-2 text-left">
-                      <div className="truncate text-[13px] font-medium">{h.mine === false && <Users className="mr-1 inline h-3 w-3" style={{ color: "var(--accent)" }} />}{h.title}</div>
-                      <div className="truncate text-[10px]" style={{ color: "var(--soft)" }}>{h.mode} · {h.preview}</div>
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Delete"
-                      className="mr-1 hidden h-7 w-7 items-center justify-center rounded-lg group-hover:flex"
-                      style={{ color: "var(--soft)" }}
-                      onClick={async () => {
-                        await deleteHistory(h.id);
-                        if (convId === h.id) newChat();
-                        refreshHistory();
-                      }}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ))}
+              <div className="bw-side-list min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+                {historyGroups.map((g) => {
+                  /* A user with no projects and no teams has exactly one group, and a "Chats"
+                     header above a list that was already called History is decoration that also
+                     happens to be a button in the tab order. So: headers appear when there is
+                     something to choose between. The row markup below stays a single copy. */
+                  const plain = historyGroups.length === 1 && historyGroups[0].kind === "chat";
+                  const folded = !plain && foldedGroups.includes(g.key);
+                  // Folding must not be able to hide which conversation you are looking at.
+                  const holdsOpen = g.items.some((h) => h.id === convId);
+                  const headId = `bw-side-group-${g.key}`;
+                  return (
+                    <div key={g.key} className="mb-1">
+                      {plain || (
+                      <button
+                        type="button"
+                        id={headId}
+                        aria-expanded={!folded}
+                        aria-controls={`${headId}-list`}
+                        data-action={`group-${g.kind}`}
+                        className="bw-side-group__head"
+                        title={folded ? `Show ${g.label}${holdsOpen ? " · your open chat is in here" : ""}` : `Hide ${g.label}`}
+                        onClick={() =>
+                          setFoldedGroups((cur) => (folded ? cur.filter((k) => k !== g.key) : [...cur, g.key]))
+                        }
+                      >
+                        <ChevronRight className="bw-side-group__chev h-3 w-3" aria-hidden />
+                        <span className="min-w-0 flex-1 truncate text-left">{g.label}</span>
+                        {/* The count is outside the button's label so a screen reader reads
+                            "Launch, collapsed, 4 items" instead of "Launch 4". */}
+                        <span className={clsx("bw-side-group__count", holdsOpen && "is-now")} aria-hidden>{g.items.length}</span>
+                      </button>
+                      )}
+                      {!folded && (
+                        <div id={`${headId}-list`} role={plain ? undefined : "group"} aria-labelledby={plain ? undefined : headId} className="space-y-0.5">
+                          {g.items.map((h) => (
+                            <div key={h.id} className="bw-side-item group flex items-center rounded-xl" style={h.id === convId ? { background: "var(--secondary)" } : undefined}>
+                              <button type="button" onClick={() => openHist(h.id)} className="min-w-0 flex-1 px-2.5 py-2 text-left">
+                                <div className="truncate text-[13px] font-medium">{h.mine === false && <Users className="mr-1 inline h-3 w-3" style={{ color: "var(--accent)" }} />}{h.title}</div>
+                                <div className="truncate text-[10px]" style={{ color: "var(--soft)" }}>{h.mode} · {h.preview}</div>
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={`Delete ${h.title}`}
+                                className="bw-side-hover mr-1 flex h-7 w-7 items-center justify-center rounded-lg"
+                                style={{ color: "var(--soft)" }}
+                                onClick={async () => {
+                                  await deleteHistory(h.id);
+                                  if (convId === h.id) newChat();
+                                  refreshHistory();
+                                }}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
                 {!filteredHistory.length && (
                   <p className="px-2 py-8 text-center text-[11px]" style={{ color: "var(--soft)" }}>No history yet</p>
                 )}
