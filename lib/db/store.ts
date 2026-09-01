@@ -192,6 +192,33 @@ export type ConsumedToken = {
   expiresAt: number;
 };
 
+/**
+ * One cached link preview.
+ *
+ * `key` is the SHA-256 of the normalised URL and **the URL is not stored**: a cache
+ * of "what our users clicked" is a profile of their reading, and nothing downstream
+ * needs it — the card renders the host plus whatever that page said about itself, and
+ * a hit requires already knowing the exact URL. So the worst case for someone who
+ * steals the store is "the public title of a page they already have the link to".
+ *
+ * Failures are cached too (`ok: false`, short TTL) on purpose: without that, a
+ * message mentioning one dead host re-requests it on every render, which is how a
+ * preview feature turns into low-grade self-inflicted DDoS.
+ */
+export type LinkPreviewRow = {
+  key: string;
+  host: string;
+  ok: boolean;
+  title?: string;
+  description?: string;
+  siteName?: string;
+  imageUrl?: string;
+  /** Present when `ok` is false — passed through so the client can be told *why*. */
+  code?: string;
+  fetchedAt: number;
+  expiresAt: number;
+};
+
 export type Generation = {
   id: string;
   userId: string;
@@ -227,6 +254,7 @@ export type DB = {
   teams: Team[];
   passwordResets: PasswordReset[];
   consumedTokens: ConsumedToken[];
+  linkPreviews: LinkPreviewRow[];
 };
 
 const emptyDb = (): DB => ({
@@ -244,6 +272,7 @@ const emptyDb = (): DB => ({
   teams: [],
   passwordResets: [],
   consumedTokens: [],
+  linkPreviews: [],
 });
 
 /** Process-local fallback when disk is unavailable */
@@ -318,6 +347,8 @@ function read(): DB {
       teams: parsed.teams || [],
       passwordResets: parsed.passwordResets || [],
       consumedTokens: parsed.consumedTokens || [],
+      // A store written before previews existed simply has no cache yet.
+      linkPreviews: parsed.linkPreviews || [],
     };
     lastReadRaw = raw;
     return memoryDb;
@@ -556,6 +587,7 @@ function bootRemote() {
       teams: remote.teams || [],
       passwordResets: remote.passwordResets || [],
       consumedTokens: remote.consumedTokens || [],
+      linkPreviews: remote.linkPreviews || [],
     };
     const file = getPath();
     if (file && writable) {
@@ -1945,6 +1977,42 @@ export function migrateGuestData(guestId: string, userId: string) {
   if (touched > 0 || guestUsage.length > 0 || moved.credits !== undefined) write(db);
 
   return moved;
+}
+
+/* ── Link-preview cache ──────────────────────────────────── */
+
+/** A good read is worth reusing for a day; a failed one for long enough to stop retrying per render. */
+export const LINK_PREVIEW_OK_TTL_MS = 24 * 60 * 60 * 1000;
+export const LINK_PREVIEW_FAIL_TTL_MS = 15 * 60 * 60 * 1000;
+/** Global cap: previews are shared, so this is not a per-user trim and eviction is cheap. */
+export const LINK_PREVIEW_MAX_ROWS = 500;
+
+/** Derive the cache key. Never hand a raw URL to `linkPreviews` — see LinkPreviewRow. */
+export function linkPreviewKey(normalizedUrl: string): string {
+  return createHash("sha256").update(normalizedUrl).digest("hex");
+}
+
+export function findLinkPreview(key: string, now = Date.now()): LinkPreviewRow | null {
+  const rows = read().linkPreviews;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (r.key !== key) continue;
+    if (r.expiresAt <= now) return null; // expired: treated as absent, pruned on the next write
+    return r;
+  }
+  return null;
+}
+
+export function saveLinkPreview(row: LinkPreviewRow): void {
+  const db = read();
+  db.linkPreviews = db.linkPreviews.filter(
+    (r) => r.key !== row.key && r.expiresAt > row.fetchedAt
+  );
+  db.linkPreviews.unshift(row);
+  if (db.linkPreviews.length > LINK_PREVIEW_MAX_ROWS) {
+    db.linkPreviews = db.linkPreviews.slice(0, LINK_PREVIEW_MAX_ROWS);
+  }
+  write(db);
 }
 
 /**

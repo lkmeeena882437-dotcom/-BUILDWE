@@ -4,6 +4,7 @@ import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { Bot, Eye, ArrowLeft, Loader2 } from "lucide-react";
 import { renderSafeMarkdown } from "@/lib/safe-md";
+import { LinkPreviews } from "@/components/chat/LinkPreviews";
 
 type SharedMsg = {
   role: "user" | "assistant";
@@ -126,6 +127,11 @@ export default function SharePage({
                         <p className="whitespace-pre-wrap">{m.content}</p>
                       ) : (
                         <div className="prose-bw" dangerouslySetInnerHTML={{ __html: md(m.content || "") }} />
+                      )}
+                      {/* Same cards as the app, same server-side read. A shared page is where a
+                          bare link most needs context: the reader did not write the message. */}
+                      {!isUser && (
+                        <LinkPreviews text={m.content || ""} exclude={m.sources?.map((s: { url: string }) => s.url)} />
                       )}
                       {!isUser && !!m.sources?.length && (
                         <div className="mt-3 flex flex-wrap gap-1.5 border-t pt-2" style={{ borderColor: "var(--border)" }}>

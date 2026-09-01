@@ -114,6 +114,7 @@ import { ImageStudio, type StudioImage } from "@/components/workspace/ImageStudi
 import { AudioStudio } from "@/components/workspace/AudioStudio";
 import { AdSlot } from "@/components/AdSlot";
 import { renderSafeMarkdown } from "@/lib/safe-md";
+import { LinkPreviews } from "@/components/chat/LinkPreviews";
 import { useProPrice } from "@/components/billing/useProPrice";
 import { WalletChip, openCredits, useWallet } from "@/components/billing/CreditsUI";
 import { PromptBar } from "@/components/workspace/PromptBar";
@@ -2480,6 +2481,12 @@ function Dashboard() {
                                   <p className="whitespace-pre-wrap">{m.content}</p>
                                 ) : (
                                   <div className="prose-bw" dangerouslySetInnerHTML={{ __html: md(m.content || "") }} />
+                                )}
+                                {/* One card per link the answer actually cited, read by our own server
+                                    (see /api/preview). Not while streaming: a card appearing mid-sentence
+                                    moves the text the reader is following. */}
+                                {!isUser && !m.streaming && (
+                                  <LinkPreviews text={m.content || ""} exclude={m.sources?.map((s) => s.url)} />
                                 )}
                                 {!isUser && !!m.sources?.length && !m.streaming && (
                                   <div className="mt-3 flex flex-wrap gap-1.5 border-t pt-2" style={{ borderColor: "var(--border)" }}>

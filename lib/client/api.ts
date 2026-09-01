@@ -1,5 +1,7 @@
 /** Browser helpers for BUILDWE APIs */
 
+import type { PreviewDto } from "@/lib/net/urls";
+
 export type MeResponse = {
   userId: string;
   kind: "user" | "guest";
@@ -130,6 +132,32 @@ export async function deleteHistory(id: string) {
     method: "DELETE",
     credentials: "include",
   });
+}
+
+/**
+ * Metadata for one link, for the card under an answer.
+ *
+ * Unlike the rest of this module this never throws: a preview is decoration on a
+ * message that is already on screen, and making a card's failure somebody else's
+ * error state would be worse than no card. The server's refusal (an internal
+ * address, a site that is down, a page that describes nothing) all land in the
+ * same place — `null` — and the component removes itself.
+ */
+export async function fetchPreviewApi(
+  url: string,
+  signal?: AbortSignal
+): Promise<PreviewDto | null> {
+  try {
+    const r = await fetch(`/api/preview?url=${encodeURIComponent(url)}`, {
+      credentials: "include",
+      signal,
+    });
+    const j = await readJson(r);
+    if (!r.ok || j?.ok !== true || !j.preview) return null;
+    return j.preview as PreviewDto;
+  } catch {
+    return null;
+  }
 }
 
 export async function streamAI(
