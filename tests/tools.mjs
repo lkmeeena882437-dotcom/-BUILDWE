@@ -776,6 +776,13 @@ await run("the sheet picks from those lists and prices the run from the server's
   assert.ok(page.includes("fetchCompareContract"), "and it is read from the server, not copied into the client");
   const bar = srcFile("components/workspace/PromptBar.tsx");
   assert.equal(bar.includes("ask 3 AIs"), false, "the composer must not promise a fixed three any more");
+  // The ⌘K palette opens this sheet by setting `modal` and nothing else, so the contract read has
+  // to hang off `modal` — an effect only the composer button called leaves the other way in
+  // staring at a spinner.
+  assert.ok(
+    page.includes('if (modal === "compare") void loadLanes()'),
+    "the lane contract is read on every open of the sheet, whichever control opened it"
+  );
   // BYOK changes which rows are callable, so saving a key has to refetch them — otherwise the row
   // the user just earned still says "no key here" until they reload the tab.
   const at = page.indexOf("const doSaveByok");

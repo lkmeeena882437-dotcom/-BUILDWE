@@ -1061,8 +1061,15 @@ function Dashboard() {
     setCompareResult(null);
     setCompareErr("");
     setModal("compare");
-    void loadLanes();
   };
+
+  /* Read the lane contract when the sheet opens — from *any* opening. The composer button and the
+     ⌘K palette both reach this sheet, and an effect that only the button called left the palette
+     route staring at "Reading which models this run can ask…" forever. Refetched on every open
+     rather than cached: the default lanes depend on which keys are connected right now. */
+  useEffect(() => {
+    if (modal === "compare") void loadLanes();
+  }, [modal, loadLanes]);
 
   /**
    * Go back to a saved version without losing the one on screen. The list used to be
