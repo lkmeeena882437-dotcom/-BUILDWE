@@ -41,6 +41,39 @@ create policy "deny all to anon"
 
 
 -- ------------------------------------------------------------
+-- 1b. Conversations keyed by user id
+-- ------------------------------------------------------------
+-- The kv snapshot is last-write-wins across the whole app: one instance
+-- pushing a stale blob erases everyone else's chats. Each conversation is
+-- its own row, filtered by user_id, so a cold start can load *this* person's
+-- history without adopting (or overwriting) anyone else's.
+
+create table if not exists buildwe_conversations (
+  id          text primary key,
+  user_id     text not null,
+  team_id     text,
+  payload     jsonb not null,
+  updated_at  timestamptz not null default now()
+);
+
+create index if not exists buildwe_conversations_user_idx
+  on buildwe_conversations (user_id, updated_at desc);
+
+create index if not exists buildwe_conversations_team_idx
+  on buildwe_conversations (team_id)
+  where team_id is not null;
+
+alter table buildwe_conversations enable row level security;
+
+drop policy if exists "deny all to anon" on buildwe_conversations;
+create policy "deny all to anon"
+  on buildwe_conversations for all
+  to anon, authenticated
+  using (false)
+  with check (false);
+
+
+-- ------------------------------------------------------------
 -- 2. Durable rate limiting
 -- ------------------------------------------------------------
 -- The in-memory limiter resets whenever an instance restarts and is per
@@ -145,7 +178,7 @@ create policy "public read buildwe media"
 -- This whole script is safe to run more than once — every statement is
 -- idempotent, so re-running it after a change will not error or lose data.
 --
--- Expect: buildwe_kv, buildwe_rate_limits, and a buildwe-media bucket.
+-- Expect: buildwe_kv, buildwe_conversations, buildwe_rate_limits, and a buildwe-media bucket.
 select table_name
 from information_schema.tables
 where table_schema = 'public'

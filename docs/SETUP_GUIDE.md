@@ -70,6 +70,7 @@ bilkul wahi kaam jo Redis karta.
    Aakhir me ek list dikhegi:
    ```
    buildwe_kv
+   buildwe_conversations
    buildwe_rate_limits
    ```
    Ye dikh gaya matlab kaam ho gaya. ✅

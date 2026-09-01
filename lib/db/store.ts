@@ -8,7 +8,18 @@
 import fs from "fs";
 import path from "path";
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "crypto";
-import { pullRemoteDb, pushRemoteDb, remoteDbEnabled } from "./remote";
+import {
+  asConversation,
+  deleteRemoteConversation,
+  deleteRemoteConversationsForUser,
+  mergeConversationLists,
+  pullRemoteConversations,
+  pullRemoteDb,
+  pushRemoteDb,
+  reassignRemoteConversations,
+  remoteDbEnabled,
+  upsertRemoteConversation,
+} from "./remote";
 import { CREDITS } from "@/lib/config";
 
 export type Plan = "free" | "pro";
@@ -545,10 +556,13 @@ function mergeOnto(theirs: DB, base: DB, ours: DB): DB {
   return out;
 }
 
-function write(db: DB) {
+function write(db: DB, opts?: { mirror?: boolean; touchBoot?: boolean }) {
   // A local write happened. If bootRemote() is still awaiting its pull, this
   // tells it to abandon the adopt rather than overwrite what we just wrote.
-  localWriteSinceBoot = true;
+  // Hydrating one user's chats from Postgres is not a local write in that
+  // sense — it must not block adopting users/wallets from the blob, and it
+  // must not push a partial snapshot that would erase everyone else.
+  if (opts?.touchBoot !== false) localWriteSinceBoot = true;
   const file = getPath();
   if (file && writable) {
     const lock = acquireLock(file);
@@ -586,7 +600,7 @@ function write(db: DB) {
     }
   }
   memoryDb = db;
-  scheduleRemotePush(db);
+  if (opts?.mirror !== false) scheduleRemotePush(db);
 }
 /* ── Optional Supabase mirror (permanent DB) ─────────────── */
 
@@ -627,24 +641,31 @@ function bootRemote() {
     const remote = await pullRemoteDb();
     if (!remote) return;
     // Re-check AFTER the await — this is the race the guard exists for.
-    if (localWriteSinceBoot) return;
-    if (memoryDb.users.length > 0 || memoryDb.conversations.length > 0) return;
+    // A signup in flight still wins outright. Hydrated chats do not: they
+    // merge with the blob so users/wallets still arrive on a cold start.
+    if (localWriteSinceBoot && memoryDb.users.length > 0) return;
+    const pick = <T,>(local: T[], incoming: unknown): T[] =>
+      local.length ? local : ((Array.isArray(incoming) ? incoming : []) as T[]);
+    const convMerge = mergeConversationLists(
+      memoryDb.conversations,
+      Array.isArray(remote.conversations) ? remote.conversations : []
+    );
     memoryDb = {
-      users: remote.users || [],
-      conversations: remote.conversations || [],
-      generations: remote.generations || [],
-      usage: remote.usage || [],
-      projects: remote.projects || [],
-      projectFiles: remote.projectFiles || [],
-      shares: remote.shares || [],
-      payments: remote.payments || [],
-      wallets: remote.wallets || [],
-      creditLedger: remote.creditLedger || [],
-      apiKeys: remote.apiKeys || [],
-      teams: remote.teams || [],
-      passwordResets: remote.passwordResets || [],
-      consumedTokens: remote.consumedTokens || [],
-      linkPreviews: remote.linkPreviews || [],
+      users: pick(memoryDb.users, remote.users),
+      conversations: convMerge.next as Conversation[],
+      generations: pick(memoryDb.generations, remote.generations),
+      usage: pick(memoryDb.usage, remote.usage),
+      projects: pick(memoryDb.projects, remote.projects),
+      projectFiles: pick(memoryDb.projectFiles, remote.projectFiles),
+      shares: pick(memoryDb.shares, remote.shares),
+      payments: pick(memoryDb.payments, remote.payments),
+      wallets: pick(memoryDb.wallets, remote.wallets),
+      creditLedger: pick(memoryDb.creditLedger, remote.creditLedger),
+      apiKeys: pick(memoryDb.apiKeys, remote.apiKeys),
+      teams: pick(memoryDb.teams, remote.teams),
+      passwordResets: pick(memoryDb.passwordResets, remote.passwordResets),
+      consumedTokens: pick(memoryDb.consumedTokens, remote.consumedTokens),
+      linkPreviews: pick(memoryDb.linkPreviews, remote.linkPreviews),
     };
     const file = getPath();
     if (file && writable) {
@@ -892,6 +913,7 @@ export function deleteUserCascade(userId: string) {
   db.apiKeys = db.apiKeys.filter((k) => k.userId !== userId);
   db.passwordResets = db.passwordResets.filter((r) => r.userId !== userId);
   write(db);
+  void deleteRemoteConversationsForUser(userId);
   return true;
 }
 
@@ -931,6 +953,7 @@ export function createConversation(input: {
     updatedAt: now,
   };
   db.conversations.unshift(c);
+  void upsertRemoteConversation(c);
   // Keep memory bounded PER USER, never globally.
   //
   // This used to be `db.conversations.slice(0, 200)` across the whole table,
@@ -965,9 +988,11 @@ function trimPerUser(db: DB, userId: string) {
       .slice(0, RETENTION.conversationsPerUser)
       .map((c) => c.id)
   );
+  const dropped = mine.filter((c) => !keep.has(c.id));
   db.conversations = db.conversations.filter(
     (c) => c.userId !== userId || keep.has(c.id)
   );
+  for (const c of dropped) void deleteRemoteConversation(c.id, userId);
 }
 
 export function appendMessages(
@@ -1017,6 +1042,7 @@ export function appendMessages(
   db.conversations[i].updatedAt = new Date().toISOString();
   if (title) db.conversations[i].title = title.slice(0, 80);
   write(db);
+  void upsertRemoteConversation(db.conversations[i]);
   return db.conversations[i];
 }
 
@@ -1028,6 +1054,7 @@ export function deleteConversation(id: string, userId: string) {
   );
   db.shares = db.shares.filter((s) => s.conversationId !== id);
   write(db);
+  if (db.conversations.length < before) void deleteRemoteConversation(id, userId);
   return db.conversations.length < before;
 }
 
@@ -1243,6 +1270,7 @@ export function setConversationProject(
   c.projectId = projectId;
   c.updatedAt = new Date().toISOString();
   write(db);
+  void upsertRemoteConversation(c);
   return c;
 }
 
@@ -1821,6 +1849,7 @@ export function setConversationTeam(
   c.teamId = teamId;
   c.updatedAt = new Date().toISOString();
   write(db);
+  void upsertRemoteConversation(c);
   return c;
 }
 
@@ -1837,6 +1866,44 @@ export function listVisibleConversations(userId: string) {
       (c) => c.userId === userId || (c.teamId && teamIds.has(c.teamId))
     )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/**
+ * Pull this owner's chats (and their teams') from Postgres and merge them
+ * into the in-process store. History GET awaits this so a cold serverless
+ * instance still has the thread the user left yesterday.
+ *
+ * Does not push the JSON blob: a partial snapshot would erase everyone else.
+ */
+export async function hydrateConversationsForUser(userId: string): Promise<void> {
+  if (!remoteDbEnabled() || !userId) return;
+  try {
+    const db = read();
+    const teamIds = db.teams
+      .filter((t) => t.members.some((m) => m.userId === userId))
+      .map((t) => t.id);
+    const remote = await pullRemoteConversations(userId, teamIds);
+    if (!remote.length) return;
+    const fresh = read();
+    const visible = (c: Conversation) =>
+      c.userId === userId || (c.teamId != null && teamIds.includes(c.teamId));
+    const incoming = remote.filter((c) => asConversation(c) && visible(c));
+    const { next, changed } = mergeConversationLists(fresh.conversations, incoming);
+    if (!changed) return;
+    fresh.conversations = next;
+    write(fresh, { mirror: false, touchBoot: false });
+  } catch (e) {
+    console.error("[bw] hydrate conversations", e);
+  }
+}
+
+export async function adoptGuestConversations(guestId: string, userId: string): Promise<void> {
+  if (!remoteDbEnabled() || !guestId || !userId || guestId === userId) return;
+  try {
+    await reassignRemoteConversations(guestId, userId);
+  } catch (e) {
+    console.error("[bw] reassign conversations", e);
+  }
 }
 
 /* ── Generations ─────────────────────────────────────────── */
@@ -2362,6 +2429,7 @@ export function migrateGuestData(guestId: string, userId: string) {
     moved.conversations + moved.projects + moved.generations + moved.shares;
   // `moved.credits` is set whenever a guest wallet existed, even at balance 0.
   if (touched > 0 || guestUsage.length > 0 || moved.credits !== undefined) write(db);
+  if (moved.conversations > 0) void reassignRemoteConversations(guestId, userId);
 
   return moved;
 }

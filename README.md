@@ -160,6 +160,7 @@ throwaway data dir, so they can also be run one at a time — the port is in the
 | `npm run test:artifacts` | creations: rename/pin/share/delete, keeping a chat answer, and the public `/s/[id]` |
 | `npm run test:throttle` | credit refunds under 25 concurrent requests |
 | `npm run test:docs` | the API map in this file against the routes that actually exist |
+| `npm run test:conversations` | chats persist in Supabase as rows keyed by user id, not as one last-write-wins blob |
 | `npm run test:durability` | store writes: atomic replace, concurrent writers, recovery from a torn file |
 | `npm run test:credits` | the credit ledger — what each feature costs, what a failure gives back |
 

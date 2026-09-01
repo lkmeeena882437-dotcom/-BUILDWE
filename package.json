@@ -8,7 +8,7 @@
     "start": "next start -H 0.0.0.0 -p 3000",
     "lint": "next lint",
     "test:security": "node tests/security.mjs",
-    "test": "npm run test:security && npm run test:markdown && npm run test:ui && npm run test:auth && npm run test:tools && npm run test:pricing && npm run test:preview && npm run test:workspace && npm run test:artifacts && npm run test:throttle && npm run test:docs",
+    "test": "npm run test:security && npm run test:markdown && npm run test:ui && npm run test:auth && npm run test:tools && npm run test:pricing && npm run test:preview && npm run test:workspace && npm run test:artifacts && npm run test:throttle && npm run test:docs && npm run test:conversations",
     "test:markdown": "node tests/markdown-xss.mjs",
     "test:throttle": "node tests/throttle.mjs",
     "test:durability": "node tests/store-concurrency.mjs",
@@ -20,7 +20,8 @@
     "test:preview": "node tests/preview.mjs",
     "test:workspace": "node tests/workspace-context.mjs",
     "test:artifacts": "node tests/artifacts.mjs",
-    "test:docs": "node tests/docs.mjs"
+    "test:docs": "node tests/docs.mjs",
+    "test:conversations": "node tests/conversations-remote.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

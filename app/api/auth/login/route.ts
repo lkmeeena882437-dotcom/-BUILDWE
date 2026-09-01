@@ -3,6 +3,7 @@ export const runtime = "nodejs";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
+  adoptGuestConversations,
   findUserByEmail,
   migrateGuestData,
   publicUser,
@@ -48,6 +49,7 @@ export async function POST(req: NextRequest) {
     if (guestId) {
       try {
         migrated = migrateGuestData(guestId, user.id);
+        await adoptGuestConversations(guestId, user.id);
       } catch (err) {
         console.error("[bw] guest migration", err);
       }

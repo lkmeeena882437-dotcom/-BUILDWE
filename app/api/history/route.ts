@@ -7,6 +7,7 @@ import {
   appendMessages,
   createConversation,
   deleteConversation,
+  hydrateConversationsForUser,
   isTeamMember,
   listGenerations,
   listVisibleConversations,
@@ -23,6 +24,7 @@ export async function GET(req: NextRequest) {
     if (!rl.ok) {
       return NextResponse.json({ error: rl.error, hint: rl.hint }, { status: 429 });
     }
+    await hydrateConversationsForUser(session.userId);
     const conversations = listVisibleConversations(session.userId).map((c) => ({
       id: c.id,
       title: c.title,
@@ -90,6 +92,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === "get" && body.conversationId) {
+      await hydrateConversationsForUser(session.userId);
       const all = listVisibleConversations(session.userId);
       const c = all.find((x) => x.id === body.conversationId);
       if (!c) return NextResponse.json({ error: "Not found" }, { status: 404 });

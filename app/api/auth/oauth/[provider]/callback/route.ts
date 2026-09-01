@@ -5,7 +5,7 @@ import {
   signSession,
 } from "@/lib/auth/session";
 import { verifyGuestCookie } from "@/lib/auth/guest";
-import { findOrCreateOauthUser, migrateGuestData } from "@/lib/db/store";
+import { adoptGuestConversations, findOrCreateOauthUser, migrateGuestData } from "@/lib/db/store";
 import { OAUTH, isOAuthProvider } from "@/lib/auth/oauth-endpoints";
 
 export const runtime = "nodejs";
@@ -145,6 +145,7 @@ export async function GET(
     if (guestId) {
       try {
         migrateGuestData(guestId, user.id);
+        await adoptGuestConversations(guestId, user.id);
       } catch (err) {
         console.error("[bw] guest migration (oauth)", err);
       }
