@@ -6,8 +6,8 @@ import { runAgent, type AgentEvent } from "@/lib/ai/agent";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { creditGate, refundArtifact, getBalance } from "@/lib/credits";
 import { findUserById, listProjects, createProject } from "@/lib/db/store";
-import { decryptSecret } from "@/lib/crypto";
 import { bump } from "@/lib/metrics/metrics";
+import { userProviderKeys } from "@/lib/ai/byok";
 import { INPUT_LIMITS } from "@/lib/ai/gateway";
 
 export const runtime = "nodejs";
@@ -87,14 +87,9 @@ export async function POST(req: NextRequest) {
         createProject(session.userId, "Agent workspace").id;
     }
 
-    const userKeys = user?.byok
-      ? {
-          groq: user.byok.groq ? decryptSecret(user.byok.groq) || undefined : undefined,
-          openrouter: user.byok.openrouter
-            ? decryptSecret(user.byok.openrouter) || undefined
-            : undefined,
-        }
-      : undefined;
+    // Same resolver the chat and compare routes use: an agent run that ignored a user's own key
+    // would fall back to the platform's, or to nothing.
+    const userKeys = userProviderKeys(session.userId);
 
     // An agent run is the most expensive thing on the platform (a plan plus
     // several model calls plus file writes), so it is held before the first

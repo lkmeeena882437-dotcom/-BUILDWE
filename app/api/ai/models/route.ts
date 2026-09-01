@@ -1,9 +1,12 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { PUBLIC_MODELS, liveModels } from "@/lib/ai/model-tiers";
 import { MODEL_CATALOG, publicModelLabel } from "@/lib/ai/models-catalog";
 import { availableProviders } from "@/lib/ai/provider-registry";
 import { availableImageProviders } from "@/lib/ai/image-providers";
+import { getSessionFromRequest } from "@/lib/auth/session";
+import { byokAccepted, userProviderKeys } from "@/lib/ai/byok";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** One row of `selectable`: a real model, whether this deployment can call it, and what it is
@@ -32,9 +35,16 @@ type SelectableRow = {
  * hardcoded arrays. It reflects what is ACTUALLY callable on this deployment
  * right now, so the picker can never offer a model that will fail. Section 1
  * of the brief: models configurable from the backend, not hardcoded in UI.
+ *
+ * "Callable right now" counts the caller's own key too: a BYOK account can reach
+ * OpenRouter on a deployment that has no OpenRouter key, and marking that row
+ * unavailable would send the reader to Settings for something they already did.
+ * The answer is therefore per-session, which is why the response says `no-store`.
  */
-export async function GET() {
-  const chatProviders = availableProviders();
+export async function GET(req: NextRequest) {
+  const session = await getSessionFromRequest(req);
+  const userKeys = session.kind === "user" ? userProviderKeys(session.userId) : undefined;
+  const chatProviders = availableProviders(userKeys);
   const imageProviders = availableImageProviders();
   const keyless = ["pollinations"];
 
@@ -67,8 +77,15 @@ export async function GET() {
           // available = this deployment can actually call it today
           available,
           // ...and what is missing when it cannot, because "unavailable" with no reason is a dead
-          // row, and this app has made a study of those.
-          ...(!available ? { whyNot: `No ${m.provider} key on this deployment` } : {}),
+          // row, and this app has made a study of those. When a user key would be enough, the row
+          // says so and where to put it — the difference between a dead row and a task.
+          ...(!available
+            ? {
+                whyNot: byokAccepted(m.provider)
+                  ? `No ${m.provider} key here — add yours in Settings → API keys`
+                  : `No ${m.provider} key on this deployment`,
+              }
+            : {}),
         };
       });
       return acc;
@@ -84,7 +101,7 @@ export async function GET() {
     return acc;
   }, {} as Record<string, { total: number; ready: number }>);
 
-  return NextResponse.json({
+  const res = NextResponse.json({
     live: liveModels(),
     all: PUBLIC_MODELS,
     selectable,
@@ -92,6 +109,11 @@ export async function GET() {
     internal: INTERNAL_CAPS,
     catalogSize: MODEL_CATALOG.length,
     llmLive: chatProviders.length > 0,
-    note: "selectable[] reflects what this deployment can call right now.",
+    byokActive: Boolean(userKeys),
+    note: "selectable[] reflects what this deployment — or your own key — can call right now.",
   });
+  // Per-session since a BYOK key changes every `available` flag on this page. A shared cache
+  // entry would show one reader another reader's readiness.
+  res.headers.set("Cache-Control", "no-store");
+  return res;
 }

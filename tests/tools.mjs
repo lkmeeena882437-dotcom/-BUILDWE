@@ -116,12 +116,23 @@ const trusted = await startServer({
     // the knob is what the fixture turns: the credit rules themselves are
     // asserted by tests/credits.mjs, which uses the real default.
     CREDITS_WELCOME: "500",
+    // The compare checks below assert what the default lanes are, so the operator knobs are
+    // pinned off rather than inherited from whatever the developer's shell happens to export.
+    COMPARE_SEATS: "",
+    COMPARE_SEAT_COUNT: "3",
   },
 });
 const offline = await startServer({
   port: PORT_OFFLINE,
   label: "tools-nomodel",
-  env: { GROQ_API_KEY: "", OPENAI_API_KEY: "", OPENROUTER_API_KEY: "" },
+  env: {
+    GROQ_API_KEY: "",
+    OPENAI_API_KEY: "",
+    OPENROUTER_API_KEY: "",
+    // W3.1: asking for more default lanes than the built-in list has must pad from the catalog
+    // rather than quietly run three. This server boots with that knob so the rule is observable.
+    COMPARE_SEAT_COUNT: "5",
+  },
 });
 // resolved from the servers themselves: the harness steps to a free port when a
 // previous interrupted run left one occupied.
@@ -520,13 +531,21 @@ await run("the catalog and the seats it feeds are consistent", () => {
     );
   }
   // And every default compare seat has to be a catalog row, or that lane prints a brand where a
-  // name belongs — the exact failure this step removed.
-  const compare = srcFile("app/api/ai/compare/route.ts");
-  const seats = [...compare.matchAll(/\{ id: "([^"]+)", label: "/g)].map((m) => m[1]);
-  assert.ok(seats.length >= 2, `parsed ${seats.length} default seats`);
+  // name belongs — the exact failure this step removed. W3.1 moved the list out of the route into
+  // `lib/ai/compare-seats.ts`, so the check reads the owner, not the caller.
+  const seatsFile = srcFile("lib/ai/compare-seats.ts");
+  const seats = ((seatsFile.match(/export const DEFAULT_SEAT_IDS = \[([\s\S]*?)\];/) || ["", ""])[1]
+    .match(/"[^"]+"/g) || []).map((x) => x.replace(/"/g, ""));
+  assert.ok(seats.length >= 2, `parsed ${seats.length} default seats out of lib/ai/compare-seats.ts`);
   for (const id of seats) {
-    assert.ok(CAT.catalogRow(id, "chat"), `the compare seat ${id} is not in the catalog, so it cannot name itself`);
+    assert.ok(
+      CAT.MODEL_CATALOG.some((m) => m.id === id && m.capability === "chat"),
+      `the compare seat ${id} is not a chat row in the catalog, so it cannot name itself`
+    );
   }
+  // (The file's comment still *names* gemma2-9b-it, which is why this reads the parsed list rather
+  // than the text: the id must be gone from the seats, and the reason it went belongs in prose.)
+  assert.equal(seats.includes("gemma2-9b-it"), false, "a retired Groq model must not come back as a default seat");
 });
 
 await run("GET /api/ai/models reports what THIS deployment can call", async () => {
@@ -582,6 +601,185 @@ await run("the Models sheet reads that route and never invents a row", () => {
   const fn = api.slice(at, api.indexOf("\n}", at));
   assert.ok(fn.includes("failWith"), "the client throws on a bad read instead of handing back an empty list");
   assert.ok(fn.includes('cache: "no-store"'), "and never serves a stale view of which keys are set");
+});
+
+
+/* ── W3.1: the caller picks the lanes, and sees the price first ─────── */
+
+const CHAT_IDS = CAT.MODEL_CATALOG.filter((m) => m.capability === "chat").map((m) => m.id);
+
+await run("GET /api/ai/compare states the range, the price and the defaults before anything runs", async () => {
+  const res = await fetch(`${BASE}/api/ai/compare`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("cache-control") || "", /no-store/, "the default lanes depend on whose keys are connected");
+  const j = await res.json();
+  assert.equal(j.minLanes, 2, "one answer is not a comparison");
+  assert.equal(j.maxLanes, 6, "and six is where the run stops being about the answers");
+  assert.ok(Number.isInteger(j.perLane) && j.perLane > 0, `per-lane price: ${j.perLane}`);
+  assert.ok(j.defaults.length >= j.minLanes && j.defaults.length <= j.maxLanes, `defaults: ${j.defaults.length}`);
+  for (const d of j.defaults) {
+    assert.ok(CHAT_IDS.includes(d.id), `the default lane ${d.id} is not a catalog chat row`);
+    assert.equal(d.model, CAT.modelDetailLabel(d.id, "chat"), "a default lane says which model it is");
+    assert.match(d.label, /^Model [A-F]$/, `lane label: ${d.label}`);
+  }
+  assert.equal(new Set(j.defaults.map((d) => d.id)).size, j.defaults.length, "a lane asked twice tells you nothing new");
+  // An operator knob that asks for more default lanes than the built-in list has gets them,
+  // padded from the catalog — `COMPARE_SEAT_COUNT=5` used to be silently truncated to three.
+  const dry = await req(OFF, "/api/ai/compare");
+  assert.equal(dry.json.defaults.length, 5, `COMPARE_SEAT_COUNT=5 produced ${dry.json.defaults.length} default lanes`);
+  assert.equal(new Set(dry.json.defaults.map((d) => d.id)).size, 5, "padded lanes have to be distinct models");
+  assert.ok(dry.json.defaults.every((d) => CHAT_IDS.includes(d.id)), "every padded lane is a catalog chat row");
+  // The row list itself stays with /api/ai/models — one projection, two readers.
+  const models = await fetch(`${BASE}/api/ai/models`);
+  assert.match(models.headers.get("cache-control") || "", /no-store/, "readability of a key must not be cached across readers");
+  const mj = await models.json();
+  assert.equal(j.defaults.every((d) => mj.selectable.chat.some((m) => m.id === d.id)), true, "the defaults are rows the picker lists");
+});
+
+await run("a bad lane list is refused with what to send instead", async () => {
+  // Eight POSTs at most against OFF's 10/min compare bucket — the bucket is the reason these
+  // checks live on the keyless server, where a refusal costs nothing anyway.
+  const cases = [
+    [["definitely-not-a-model"], "LANE_NOT_IN_CATALOG"],
+    [["llama-3.1-8b-instant", "fal-ai/flux/schnell"], "LANE_NOT_A_CHAT_MODEL"],
+    [["llama-3.1-8b-instant"], "TOO_FEW_LANES"],
+    // Two identical ids are one lane, and a comparison of one has to say so rather than run.
+    [["llama-3.1-8b-instant", "llama-3.1-8b-instant"], "TOO_FEW_LANES"],
+    [CHAT_IDS.slice(0, 7), "TOO_MANY_LANES"],
+  ];
+  for (const [models, code] of cases) {
+    const r = await req(OFF, "/api/ai/compare", {
+      method: "POST",
+      body: { prompt: "Which model should answer this, and why?", models },
+    });
+    assert.equal(r.status, 400, `${code}: got ${r.status} ${r.text.slice(0, 160)}`);
+    assert.equal(r.json.code, code, `refused for the wrong reason: ${JSON.stringify(r.json)}`);
+    assert.ok(String(r.json.hint || "").length > 20, `${code} arrives without a hint a human can act on`);
+  }
+  const shape = await req(OFF, "/api/ai/compare", { method: "POST", body: { prompt: "x?", models: 42 } });
+  assert.equal(shape.json.code, "BAD_LANE_LIST", "`models` has to be a list");
+  // …and the comma form a curl user reaches for is accepted, not rejected as a type error.
+  const csv = await req(OFF, "/api/ai/compare", {
+    method: "POST",
+    body: { prompt: "Ship the billing page in place or rebuild it?", models: "llama-3.1-8b-instant,llama-3.2-3b-instruct" },
+  });
+  assert.equal(csv.status, 200, `comma list: ${csv.status} ${csv.text.slice(0, 160)}`);
+  assert.equal(csv.json.lanes.length, 2, "both lanes were asked");
+  assert.equal(csv.json.available, false, "on a keyless deployment neither of them answers");
+  assert.ok(csv.json.lanes.every((l) => !l.live && /key/.test(l.note || "")), "and each says what is missing");
+  assert.equal(csv.json.credits.charged, 0, "a run where nothing answered costs nothing");
+  assert.equal(csv.json.credits.refunded, csv.json.credits.held, "the whole hold came back");
+});
+
+await run("the picked lanes are what the vendor is actually asked for, per lane and to the credit", async () => {
+  const before = await req(BASE, "/api/credits", { jar });
+  const asked0 = calls.length;
+  const models = ["llama-3.1-8b-instant", "llama-3.2-3b-instruct"];
+  const r = await req(BASE, "/api/ai/compare", {
+    method: "POST",
+    jar,
+    body: { prompt: "Should a five-person team rewrite its billing page in place or start fresh?", models },
+  });
+  assert.equal(r.status, 200, r.text.slice(0, 300));
+  assert.equal(r.json.available, true, "both seats are on the provider this server can reach");
+  assert.deepEqual(r.json.lanes.map((l) => l.label), ["Model A", "Model B"], "lanes are named in order");
+  assert.deepEqual(
+    r.json.lanes.map((l) => l.model),
+    models.map((id) => CAT.modelDetailLabel(id, "chat")),
+    "each lane is named by its own catalog row, not by the brand every lane shares"
+  );
+  assert.ok(r.json.lanes.every((l) => l.live && l.reply.length > 40), "and both answered");
+  const asked = calls.slice(asked0).map((c) => c.model);
+  for (const id of models) {
+    assert.ok(asked.includes(id), `the vendor was asked for ${asked.join(", ")} — ${id} never left the building`);
+  }
+  const per = r.json.credits.perLane;
+  assert.equal(r.json.credits.held, per * 2, "held for both lanes before either ran");
+  assert.equal(r.json.credits.refunded, 0, "nothing to give back when both answered");
+  assert.equal(r.json.credits.charged, per * 2);
+  assert.deepEqual(r.json.credits.lanes, { total: 2, live: 2, dead: 0 }, "the run reports which lanes it asked for");
+  const after = await req(BASE, "/api/credits", { jar });
+  assert.equal(before.json.balance - after.json.balance, r.json.credits.charged, "the wallet moved by exactly the live lanes");
+  assert.equal(after.json.balance, r.json.credits.balance, "and the receipt the UI got is the balance it now has");
+  assert.ok(String(r.json.synthesis || "").length > 40, "the combined answer came back too");
+});
+
+await run("a lane whose vendor has no key is refused by the picker, refunded by the run", async () => {
+  const r = await req(BASE, "/api/ai/compare", {
+    method: "POST",
+    jar,
+    body: { prompt: "Which caching layer should we pick for a small Postgres app?", models: ["llama-3.1-8b-instant", "gpt-4o-mini"] },
+  });
+  assert.equal(r.status, 200, r.text.slice(0, 200));
+  assert.equal(r.json.lanes.length, 2);
+  const dead = r.json.lanes.find((l) => l.id === "gpt-4o-mini");
+  assert.equal(dead.live, false, "this deployment has no OpenAI key, and the lane admits it");
+  assert.match(dead.note || "", /openai key/, `the dead lane explains itself: ${dead.note}`);
+  assert.equal(dead.reply, "", "and does not fill in with an invented answer");
+  assert.equal(r.json.credits.lanes.dead, 1);
+  assert.equal(r.json.credits.refunded, r.json.credits.perLane, "the dead lane is given back");
+  assert.equal(r.json.credits.charged, r.json.credits.perLane, "only the lane that answered is kept");
+});
+
+await run("the padded default set is what actually runs, and costs nothing when all five are dark", async () => {
+  const r = await req(OFF, "/api/ai/compare", { method: "POST", body: { prompt: "Summarise the tradeoff between a queue and a worker pool for a two-person team." } });
+  assert.equal(r.status, 200, r.text.slice(0, 200));
+  assert.equal(r.json.lanes.length, 5, "five lanes were asked, because five were promised");
+  assert.equal(r.json.available, false, "none of them could answer here");
+  assert.equal(r.json.credits.held, r.json.credits.perLane * 5, "and all five were held for");
+  assert.equal(r.json.credits.refunded, r.json.credits.perLane * 5, "all five came back");
+  assert.equal(r.json.credits.charged, 0, "which is what makes an offline deployment safe to run against");
+  assert.ok(r.json.lanes.every((l) => /key/.test(l.note || "")), "each dark lane says which key is missing");
+});
+
+await run("a BYOK account's own key makes its lanes callable — the picker is not stuck on the deployment's", async () => {
+  // A second account, its own jar: the suite's shared user must stay clean for the checks above.
+  const jar2 = newJar();
+  const reg = await req(BASE, "/api/auth/register", {
+    method: "POST",
+    jar: jar2,
+    body: { email: `byok-lanes-${Date.now()}@buildwe.test`, password: "lane-test-password", name: "Lane tester" },
+  });
+  assert.ok(reg.status === 200 || reg.status === 201, `register: ${reg.status}`);
+  const dry = await req(BASE, "/api/ai/models", { jar: jar2 });
+  const row = dry.json.selectable.chat.find((m) => m.id === "deepseek/deepseek-chat");
+  assert.equal(row.available, false, "with no key of their own, an OpenRouter row is not callable");
+  assert.match(row.whyNot || "", /Settings|deployment/, `and says where to fix it: ${row.whyNot}`);
+
+  // A well-formed key is what the shape check accepts; availability only asks whether one exists.
+  const saved = await req(BASE, "/api/user/keys", {
+    method: "POST",
+    jar: jar2,
+    body: { openrouter: `sk-or-v1-${"a".repeat(40)}` },
+  });
+  assert.equal(saved.status, 200, `byok save: ${saved.status} ${saved.text.slice(0, 160)}`);
+  const wet = await req(BASE, "/api/ai/models", { jar: jar2 });
+  const after = wet.json.selectable.chat.find((m) => m.id === "deepseek/deepseek-chat");
+  assert.equal(after.available, true, "the same row became callable the moment their key was saved");
+  assert.equal(after.whyNot, undefined, "and stopped telling them to do the thing they just did");
+  assert.equal(wet.json.byokActive, true, "the route says whose key is powering the answer");
+});
+
+await run("the sheet picks from those lists and prices the run from the server's number", () => {
+  const route = srcFile("app/api/ai/compare/route.ts");
+  assert.equal(route.includes("DEFAULT_SEATS"), false, "the route no longer owns a seat list");
+  assert.equal(route.includes(".slice(0, 4)"), false, "the cap that silently dropped a fifth pick is gone");
+  assert.ok(route.includes("resolveLanes"), "what it will run is decided by the module that prices it");
+  assert.ok(route.includes("userKeys"), "a BYOK account's comparison runs on their own key, not on nothing");
+  const picker = srcFile("components/workspace/CompareLanes.tsx");
+  assert.equal(picker.includes("MODEL_CATALOG"), false, "the picker is handed its rows; it does not read the catalog itself");
+  assert.ok(picker.includes('role="checkbox"') && picker.includes("aria-checked"), "a lane is a checkbox, not a div with an onClick");
+  assert.ok(picker.includes("data-lane-off"), "a lane without a key stays visible, disabled, with its reason");
+  const page = srcFile("app/page.tsx");
+  assert.ok(page.includes("<CompareLanes") && page.includes("selectable?.chat"), "the sheet lists /api/ai/models' chat rows");
+  assert.ok(page.includes("data-compare-cost"), "the price of this exact run is on screen before the click");
+  assert.ok(page.includes("fetchCompareContract"), "and it is read from the server, not copied into the client");
+  const bar = srcFile("components/workspace/PromptBar.tsx");
+  assert.equal(bar.includes("ask 3 AIs"), false, "the composer must not promise a fixed three any more");
+  // BYOK changes which rows are callable, so saving a key has to refetch them — otherwise the row
+  // the user just earned still says "no key here" until they reload the tab.
+  const at = page.indexOf("const doSaveByok");
+  assert.ok(page.slice(at, at + 1500).includes("loadModels()"), "saving a key refreshes the lists that depend on it");
 });
 
 fs.rmSync(labelDir, { recursive: true, force: true });

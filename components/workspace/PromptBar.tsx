@@ -790,7 +790,7 @@ export function PromptBar(props: PromptBarProps) {
                 variant="icon"
                 size="sm"
                 aria-label="Compare models"
-                title="Compare models — ask 3 AIs the same question"
+                title="Compare models — pick 2–6, get one combined answer"
                 onClick={onCompare}
               >
                 <Layers className="h-4 w-4" />

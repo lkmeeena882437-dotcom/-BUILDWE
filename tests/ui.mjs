@@ -159,7 +159,7 @@ await run("Step 2: the extracted composer keeps every literal the inline one had
     "Remove image",
     "Answer style — length & language",
     "Web search — live sources",
-    "Compare models — ask 3 AIs the same question",
+    "Compare models — pick 2–6, get one combined answer",
     "Use Chrome for voice input",
     "you can stop anytime, the partial answer is saved",
     "BUILDWE picks the right tool",

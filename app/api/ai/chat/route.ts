@@ -14,11 +14,11 @@ import { understandPrompt } from "@/lib/ai/understanding";
 import { qualityGate } from "@/lib/ai/quality";
 import { estimateComplexity } from "@/lib/ai/models-catalog";
 import { INPUT_LIMITS, toUserFacingError } from "@/lib/ai/gateway";
+import { userProviderKeys } from "@/lib/ai/byok";
 import { bump } from "@/lib/metrics/metrics";
 import {
   appendMessages,
   createConversation,
-  findUserById,
   isTeamMember,
   listProjectFiles,
   uid,
@@ -28,7 +28,6 @@ import {
   formatProjectContext,
   parseContextInput,
 } from "@/lib/ai/workspace-context";
-import { decryptSecret } from "@/lib/crypto";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -242,13 +241,10 @@ export async function POST(req: NextRequest) {
       ? [{ role: "system", content: systemParts.join("\n\n") }, ...body.messages]
       : body.messages;
 
-    // BYOK — the user's own keys take precedence
-    const owner = findUserById(session.userId);
-    const byok = owner?.byok || {};
-    const userKeys = {
-      groq: byok.groq ? decryptSecret(byok.groq) : undefined,
-      openrouter: byok.openrouter ? decryptSecret(byok.openrouter) : undefined,
-    };
+    // BYOK — the user's own keys take precedence. Decrypted by `lib/ai/byok.ts`, the one place
+    // that knows which providers a user may store a key for, so this cannot drift from what
+    // /api/user/keys accepts or from what /api/ai/models reports as reachable.
+    const userKeys = userProviderKeys(session.userId);
 
     const altModel = Number(body.altModel) > 0 && Number(body.altModel) < 4 ? Number(body.altModel) : 0;
 

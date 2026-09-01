@@ -88,6 +88,7 @@ import {
   assignProject,
   deleteProjectApi,
   fetchByok,
+  fetchCompareContract,
   saveByok,
   fetchTeams,
   createTeam,
@@ -107,7 +108,9 @@ import {
   type ProjectFileMeta,
   type TeamView,
   type MeResponse,
-      type ModelsInfo } from "@/lib/client/api";
+  type ModelsInfo,
+  type CompareContract,
+  type CompareRun } from "@/lib/client/api";
 import { ImageStudio, type StudioImage } from "@/components/workspace/ImageStudio";
 import { AudioStudio } from "@/components/workspace/AudioStudio";
 import { CanvasHistoryMenu, type CanvasVersion } from "@/components/workspace/CanvasHistoryMenu";
@@ -125,6 +128,14 @@ import dynamic from "next/dynamic";
    and a workspace that ships a 31-tool jump list to every first visit pays for it on every load.
    No `loading` shell here — the sheet that arrives IS the loading state, and a skeleton that
    flashes for one frame in a dialog is noise. */
+/* The lane picker too: its weight is a list of models nobody needs until they have decided to
+   compare, and it renders inside a sheet that is itself conditional. Same shape as the two above —
+   no loading shell, because "Reading which models this run can ask…" already is one. */
+const CompareLanes = dynamic(
+  () => import("@/components/workspace/CompareLanes").then((m) => m.CompareLanes),
+  { ssr: false }
+);
+
 const CommandPalette = dynamic(
   () => import("@/components/workspace/CommandPalette").then((m) => m.CommandPalette),
   { ssr: false }
@@ -440,7 +451,15 @@ function Dashboard() {
   const [webSearchOn, setWebSearchOn] = useState(false);
   const [comparePrompt, setComparePrompt] = useState("");
   const [compareBusy, setCompareBusy] = useState(false);
-  const [compareResult, setCompareResult] = useState<Awaited<ReturnType<typeof compareApi>> | null>(null);
+  const [compareResult, setCompareResult] = useState<CompareRun | null>(null);
+  /* Which lanes this run should ask. `null` means "the deployment's default set", and the set
+     itself is read from the server (`GET /api/ai/compare`) rather than copied into this file —
+     three hard-coded seats used to be the only answer anyone could get, and a picker built on a
+     guess about them is how a client ends up offering a model the server refuses. */
+  const [laneContract, setLaneContract] = useState<CompareContract | null>(null);
+  const [laneErr, setLaneErr] = useState("");
+  const [laneIds, setLaneIds] = useState<string[] | null>(null);
+  const [compareErr, setCompareErr] = useState("");
   const [attachment, setAttachment] = useState<{ dataUrl: string; name: string } | null>(null);
   const [visionBusy, setVisionBusy] = useState(false);
 
@@ -753,6 +772,10 @@ function Dashboard() {
       setByokActive(Boolean(r.active));
       setByokDraft((d) => ({ ...d, [which]: "" }));
       setByokNote(clear ? "Key removed." : `Saved — ${which === "groq" ? "Groq" : "OpenRouter"} key is now powering your chats ⚡`);
+      // …and the model lists are refetched, because "which lanes can run" is now answered with
+      // this key in mind: /api/ai/models drives both the Models sheet and the compare picker, so
+      // without this the row they just made live would still say "no key here" until a reload.
+      void loadModels();
     } catch (e) {
       setByokNote((e as Error).message);
     } finally {
@@ -975,16 +998,58 @@ function Dashboard() {
     setTimeout(() => setCopied(null), 1000);
   };
 
+  /** The lane list and its price, read when the sheet opens. Separate from `loadModels` on purpose:
+   *  the picker needs `/api/ai/models` *and* `/api/ai/compare`, and a retry should say which one
+   *  failed rather than silently refetching a list that was fine. */
+  const loadLanes = useCallback(() => {
+    setLaneErr("");
+    return fetchCompareContract()
+      .then((c) => setLaneContract(c))
+      .catch((e) => {
+        setLaneContract(null);
+        setLaneErr((e as Error).message || "The comparison settings could not be read.");
+      });
+  }, []);
+
+  const chosenLanes = useMemo(() => {
+    if (laneIds) return laneIds;
+    return (laneContract?.defaults || []).map((d) => d.id);
+  }, [laneIds, laneContract]);
+  /** What the run will be held for, computed from the server's own per-lane price. */
+  const compareCost = (laneContract?.perLane || 0) * chosenLanes.length;
+  /** 0 unless the wallet has actually been read — an unloaded balance is not a reason to block a
+   *  button, and a stale-low one is the reason the server's hold stays the real gate. */
+  const compareShort =
+    laneContract && wallet.loaded && compareCost > wallet.balance ? compareCost - wallet.balance : 0;
+
+  /** Toggle a lane. Bounded to the range the server enforces, so a click can't produce a 400. */
+  const toggleLane = (id: string) => {
+    const max = laneContract?.maxLanes || 6;
+    const min = laneContract?.minLanes || 2;
+    setLaneIds((prev) => {
+      const cur = prev || (laneContract?.defaults || []).map((d) => d.id);
+      if (cur.includes(id)) {
+        return cur.length <= min ? cur : cur.filter((x) => x !== id);
+      }
+      return cur.length >= max ? cur : [...cur, id];
+    });
+  };
+
   const doCompare = async () => {
     const p = comparePrompt.trim();
     if (!p || compareBusy) return;
     setCompareBusy(true);
     setError("");
+    setCompareErr("");
     try {
-      const r = await compareApi(p);
+      const r = await compareApi(p, laneContract ? chosenLanes : undefined);
       setCompareResult(r);
+      refreshMe();
     } catch (e) {
-      setError((e as Error).message);
+      // The route refuses a bad lane list with a `hint` that says what to send instead; a sheet
+      // that swallowed that into the page-level toast would hide the only actionable part of it.
+      const err = e as Error & { hint?: string };
+      setCompareErr(err.hint ? `${err.message} ${err.hint}` : err.message);
     } finally {
       setCompareBusy(false);
     }
@@ -994,7 +1059,9 @@ function Dashboard() {
     const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content || "";
     setComparePrompt(input.trim() || lastUser.slice(0, 500));
     setCompareResult(null);
+    setCompareErr("");
     setModal("compare");
+    void loadLanes();
   };
 
   /**
@@ -3670,11 +3737,11 @@ function Dashboard() {
       )}
 
       {modal === "compare" && (
-        <Sheet onClose={() => setModal(null)} title="Compare models">
+        <Sheet onClose={() => setModal(null)} title="Compare models" wide>
           <div className="space-y-3">
             <p className="text-[12px]" style={{ color: "var(--muted)" }}>
-              Ask the same question to 3 different AI models at once — then read the combined
-              synthesis. Same prompt, three perspectives, one answer.
+              Ask the same question to 2–6 models at once, then read one combined answer. You pick the
+              lanes; a lane that cannot answer is refunded, and model agreement is never treated as proof.
             </p>
             <textarea
               value={comparePrompt}
@@ -3684,10 +3751,75 @@ function Dashboard() {
               className="w-full resize-none rounded-2xl border px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
               style={{ borderColor: "var(--border)", background: "var(--secondary)", color: "inherit" }}
             />
+
+            {/* The lane picker. Its rows are `selectable.chat` from /api/ai/models — the same
+                projection the Models sheet reads — and its prices come from /api/ai/compare, so the
+                number next to the button is the number the hold will take. Nothing here is guessed. */}
+            {laneErr ? (
+              <div className="flex items-center gap-2 rounded-2xl border px-3 py-2 text-[12px]" style={{ borderColor: "var(--err)", color: "var(--err)" }} role="alert" data-compare-error>
+                <span className="min-w-0 flex-1">{laneErr}</span>
+                <Btn size="sm" variant="soft" onClick={() => void loadLanes()}>
+                  Retry
+                </Btn>
+              </div>
+            ) : !laneContract ? (
+              <p className="flex items-center gap-2 text-[12px]" style={{ color: "var(--muted)" }}>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Reading which models this run can ask…
+              </p>
+            ) : (
+              <>
+                <CompareLanes
+                  rows={modelsInfo?.selectable?.chat || []}
+                  selected={chosenLanes}
+                  minLanes={laneContract.minLanes}
+                  maxLanes={laneContract.maxLanes}
+                  perLane={laneContract.perLane}
+                  busy={compareBusy}
+                  onToggle={toggleLane}
+                  onConnectKeys={() => setModal("byok")}
+                />
+                <p className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-2xl border px-3 py-2 text-[11px]" style={{ borderColor: "var(--border)", background: "var(--secondary)", color: "var(--muted)" }} data-compare-cost>
+                  <span>
+                    {chosenLanes.length} lanes × {laneContract.perLane} credit{laneContract.perLane === 1 ? "" : "s"} ={" "}
+                    <b style={{ color: "var(--ink)" }}>{compareCost}</b> credit{compareCost === 1 ? "" : "s"}, held before
+                    the run and given back for any lane that doesn’t answer.
+                  </span>
+                  {compareShort && (
+                    <>
+                      <span style={{ color: "var(--err)" }}>Your balance is {wallet.balance} — {compareShort} short.</span>
+                      <Btn size="sm" variant="soft" onClick={openCredits}>
+                        <CreditCard className="h-3.5 w-3.5" /> Top up
+                      </Btn>
+                    </>
+                  )}
+                </p>
+                {!modelsInfo && (
+                  <p className="flex flex-wrap items-center gap-2 text-[11px]" style={{ color: "var(--muted)" }}>
+                    {modelsErr
+                      ? "The model list could not be read, so the lanes below are this deployment's defaults."
+                      : "The model list is still loading — this run uses the default lanes."}
+                    {!!modelsErr && (
+                      <Btn size="sm" variant="soft" onClick={() => void loadModels()}>
+                        Retry
+                      </Btn>
+                    )}
+                  </p>
+                )}
+              </>
+            )}
+
             <div className="flex items-center gap-2">
-              <Btn size="sm" onClick={doCompare} disabled={!comparePrompt.trim() || compareBusy}>
+              <Btn
+                size="sm"
+                onClick={doCompare}
+                disabled={!comparePrompt.trim() || compareBusy || Boolean(compareShort)}
+              >
                 {compareBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Layers className="h-3.5 w-3.5" />}
-                {compareBusy ? "Asking 3 models…" : "Run comparison"}
+                {compareBusy
+                  ? `Asking ${chosenLanes.length} models…`
+                  : laneContract
+                    ? `Run comparison · ${compareCost} credit${compareCost === 1 ? "" : "s"}`
+                    : "Run comparison"}
               </Btn>
               {compareResult && (
                 <Btn
@@ -3705,40 +3837,54 @@ function Dashboard() {
               )}
             </div>
 
+            {compareErr && (
+              <div className="rounded-2xl border px-3 py-2 text-[12px]" style={{ borderColor: "var(--err)", color: "var(--err)" }} role="alert" data-compare-run-error>
+                {compareErr}
+              </div>
+            )}
+
+            {/* A run with no live lane still returns the lanes it asked, each with the reason it
+                came back empty. "Nothing answered" and "these three did not answer, because…" are
+                different screens, and the second one is actionable. */}
             {compareResult && !compareResult.available && (
-              <div className="rounded-2xl border px-3 py-3 text-[12px]" style={{ borderColor: "var(--border)", background: "var(--secondary)", color: "var(--muted)" }}>
-                {compareResult.synthesis}
+              <div className="rounded-2xl border px-3 py-3 text-[12px]" style={{ borderColor: "var(--border)", background: "var(--secondary)", color: "var(--muted)" }} data-compare-offline>
+                {compareResult.message || compareResult.synthesis}
+              </div>
+            )}
+
+            {!!compareResult?.lanes?.length && (
+              <div className="grid gap-2">
+                {compareResult.lanes.map((l) => (
+                  <div key={l.id} className="rounded-2xl border p-3" style={{ borderColor: "var(--border)", background: l.live ? "var(--card)" : "var(--secondary)" }}>
+                    <div className="mb-1.5 flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold uppercase tracking-wide" style={{ color: l.live ? "var(--accent)" : "var(--muted)" }}>
+                        {l.label}
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="text-[10px]" style={{ color: "var(--soft)" }}>{l.model}</span>
+                        {l.live && (
+                          <Btn variant="icon" size="sm" aria-label={`Copy ${l.label} (${l.model})`} onClick={() => copy(l.reply, `cmp-${l.id}`)}>
+                            {copied === `cmp-${l.id}` ? <Check className="h-3.5 w-3.5" style={{ color: "var(--ok)" }} /> : <Copy className="h-3.5 w-3.5" />}
+                          </Btn>
+                        )}
+                      </span>
+                    </div>
+                    <p className="max-h-44 overflow-y-auto whitespace-pre-wrap text-[12px] leading-relaxed" style={{ color: "var(--muted)" }}>
+                      {l.reply.trim() ? l.reply : l.note || "— this lane did not answer —"}
+                    </p>
+                  </div>
+                ))}
               </div>
             )}
 
             {compareResult?.available && (
               <>
-                <div className="grid gap-2">
-                  {compareResult.lanes.map((l) => (
-                    <div key={l.label} className="rounded-2xl border p-3" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
-                      <div className="mb-1.5 flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-bold uppercase tracking-wide" style={{ color: "var(--accent)" }}>
-                          {l.label}
-                        </span>
-                        <span className="flex items-center gap-1.5">
-                          <span className="text-[10px]" style={{ color: "var(--soft)" }}>{l.model}</span>
-                          <Btn variant="icon" size="sm" aria-label={`Copy ${l.label}`} onClick={() => copy(l.reply, `cmp-${l.label}`)}>
-                            {copied === `cmp-${l.label}` ? <Check className="h-3.5 w-3.5" style={{ color: "var(--ok)" }} /> : <Copy className="h-3.5 w-3.5" />}
-                          </Btn>
-                        </span>
-                      </div>
-                      <p className="max-h-44 overflow-y-auto whitespace-pre-wrap text-[12px] leading-relaxed" style={{ color: "var(--muted)" }}>
-                        {l.reply.trim() ? l.reply : "— offline (no live provider for this seat) —"}
-                      </p>
-                    </div>
-                  ))}
-                </div>
                 <div className="rounded-2xl border p-3" style={{ borderColor: "var(--accent)", background: "var(--accent-soft)" }}>
                   <div className="mb-1 text-[11px] font-bold uppercase tracking-wide" style={{ color: "var(--accent)" }}>
                     Best combined answer
                   </div>
                   <p className="max-h-60 overflow-y-auto whitespace-pre-wrap text-[13px] leading-relaxed">
-                    {compareResult.synthesis}
+                    {compareResult.synthesis || "No model answered the combined pass — the lanes above are all there is."}
                   </p>
                 </div>
                 <p className="text-center text-[10px]" style={{ color: "var(--soft)" }}>

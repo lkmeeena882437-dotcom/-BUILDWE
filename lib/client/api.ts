@@ -415,23 +415,74 @@ export async function codeActionApi(
 }
 
 
-export async function compareApi(prompt: string) {
+export async function compareApi(prompt: string, models?: string[]) {
   const r = await fetch("/api/ai/compare", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify(models && models.length ? { prompt, models } : { prompt }),
   });
   const j = await readJson(r);
   noteCredits(r, j);
-  if (!r.ok) throw new Error(j.error || "Comparison failed");
-  return j as {
-    ok: boolean;
-    available: boolean;
-    complexity: string;
-    lanes: { label: string; model: string; live: boolean; reply: string }[];
-    synthesis: string;
+  if (!r.ok) {
+    const err = new Error(j.error || "Comparison failed") as Error & { code?: string; hint?: string };
+    if (j.code) err.code = j.code;
+    if (j.hint) err.hint = j.hint;
+    throw err;
+  }
+  return j as CompareRun;
+}
+
+/** One lane of a comparison: a model the user picked, whether it answered, and what it said. */
+export type CompareLane = {
+  id: string;
+  label: string;
+  model: string;
+  live: boolean;
+  reply: string;
+  /** Only on a lane that did not answer: the reason, in the reader's terms. */
+  note?: string;
+};
+
+export type CompareRun = {
+  ok: boolean;
+  available: boolean;
+  complexity?: string;
+  message?: string;
+  lanes: CompareLane[];
+  synthesis: string;
+  credits?: {
+    perLane: number;
+    held: number;
+    charged: number;
+    refunded: number;
+    balance?: number;
+    lanes: { total: number; live: number; dead: number };
   };
+};
+
+/**
+ * `GET /api/ai/compare` — what a comparison will accept and what it costs, before anything runs.
+ * Deliberately small: the model rows themselves come from `/api/ai/models`, so the projection is
+ * not written twice. Throwing on a non-2xx like `fetchModels` does, because a picker that cannot
+ * read its prices must say so rather than guess them.
+ */
+export type CompareContract = {
+  ok: boolean;
+  minLanes: number;
+  maxLanes: number;
+  perLane: number;
+  lanes: number;
+  defaults: { id: string; label: string; model: string }[];
+  note?: string;
+  error?: string;
+};
+
+export async function fetchCompareContract(): Promise<CompareContract> {
+  const r = await fetch("/api/ai/compare", { cache: "no-store" });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "The comparison settings could not be read.");
+  return j as CompareContract;
 }
 
 /* ── BYOK (bring your own key) ──────────────────────────── */
@@ -773,11 +824,18 @@ export type SelectableModel = {
 export type ModelsInfo = {
   live: ModelLadderRow[];
   all: ModelLadderRow[];
+  /**
+   * Per-capability rows, each saying whether THIS reader can call it — deployment key or the
+   * reader's own BYOK key, either way. Every picker in the app reads its list from here rather
+   * than keeping a copy: `selectable.chat` is what the compare lane picker lists.
+   */
   selectable: Record<string, SelectableModel[]>;
   ready: Record<string, { total: number; ready: number }>;
   /** Capabilities the catalog routes but the picker must not offer (the router itself). */
   internal?: string[];
   llmLive: boolean;
+  /** True when the readiness above is being carried by the signed-in user's own key. */
+  byokActive?: boolean;
   catalogSize: number;
   note?: string;
 };

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { findUserById, updateUser } from "@/lib/db/store";
 import { decryptSecret, encryptSecret, maskSecret } from "@/lib/crypto";
+import { BYOK_PROVIDERS, type ByokProvider } from "@/lib/ai/byok";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,7 +16,10 @@ export const dynamic = "force-dynamic";
  * These are the published prefixes for the two BYOK vendors we support. A new
  * vendor shape means a new entry plus a new test case, not a looser regex.
  */
-const KEY_SHAPES: Record<string, { re: RegExp; expect: string }> = {
+/* `Record<ByokProvider, …>` on purpose: `lib/ai/byok.ts` owns the list of providers a user may
+   bring a key for, and this map has to have a shape for every one of them. Adding a provider there
+   without one here is a compile error, not a route that accepts anything. */
+const KEY_SHAPES: Record<ByokProvider, { re: RegExp; expect: string }> = {
   groq: { re: /^gsk_[A-Za-z0-9_-]{20,120}$/, expect: "gsk_… (Groq console → API Keys)" },
   openrouter: { re: /^sk-or-v1-[A-Za-z0-9]{20,120}$/, expect: "sk-or-v1-… (openrouter.ai/keys)" },
 };
@@ -62,7 +66,7 @@ export async function POST(req: NextRequest) {
     const next: { groq?: string; openrouter?: string } = { ...u.byok };
     const rejected: string[] = [];
 
-    for (const provider of ["groq", "openrouter"] as const) {
+    for (const provider of BYOK_PROVIDERS) {
       if (body.clear === provider) {
         delete next[provider];
         continue;

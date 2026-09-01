@@ -83,7 +83,7 @@ GROQ_API_KEY=gsk_...
 | `POST /api/ai/file` | CSV/text analysis (stats + summary, key-free) |
 | `POST /api/ai/agent` | Coding Agent — plan, then real file edits in a project folder |
 | `POST /api/ai/code-action` | Apply a fenced code block to the canvas or a project file |
-| `POST /api/ai/compare` | One prompt across every live model, one credit per lane that answers |
+| `GET/POST /api/ai/compare` | Model comparison: `POST { prompt, models? }` runs the 2–6 ids you pick (or this deployment's default lanes) and holds one credit per lane, refunding any lane that cannot answer; `GET` returns the lane contract — `minLanes`/`maxLanes`, `perLane`, and the `defaults` a run starts from |
 | `POST /api/ai/verify` | Score a draft for factual risk (claims, hedging, sources) |
 | `POST /api/ai/feedback` | Thumbs up/down on an answer, stored with the generation |
 | `GET /api/ai/models` | The model catalogue the UI reads: `selectable` rows per capability with `available`/`whyNot`, `ready` counts, and the `all` marketing ladder — never a second list in the client |
