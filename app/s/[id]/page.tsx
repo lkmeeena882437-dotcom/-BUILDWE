@@ -1,169 +1,77 @@
-"use client";
+import { notFound } from "next/navigation";
+import type { Metadata } from "next";
+import { getShare } from "@/lib/db/store";
+import { ShareView, type ShareDto } from "./ShareView";
 
-import { use, useEffect, useState } from "react";
-import Link from "next/link";
-import { Bot, Eye, ArrowLeft, Loader2 } from "lucide-react";
-import { renderSafeMarkdown } from "@/lib/safe-md";
-import { LinkPreviews } from "@/components/chat/LinkPreviews";
+/**
+ * A share is read per request from a mutable store, so it must not be cached by the
+ * framework: `force-dynamic` is what keeps a deleted link deleted on the next open.
+ */
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-type SharedMsg = {
-  role: "user" | "assistant";
-  content: string;
-  createdAt: string;
-  sources?: { title: string; url: string; host: string }[];
-};
+type Params = Promise<{ id: string }> | { id: string };
 
-type ShareData = {
-  title: string;
-  mode: string;
-  createdAt: string;
-  views: number;
-  messages: SharedMsg[];
-};
-
-function md(text: string): string {
-  return renderSafeMarkdown(text, { looseBreaks: true });
+async function idOf(params: Params): Promise<string> {
+  return (await params).id;
 }
 
-export default function SharePage({
-  params,
-}: {
-  params: Promise<{ id: string }> | { id: string };
-}) {
-  const resolved = params instanceof Promise ? use(params) : params;
-  const [data, setData] = useState<ShareData | null>(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
+/** What a reader may see: user/assistant only, and no internal message meta. */
+function toDto(share: NonNullable<ReturnType<typeof getShare>>): ShareDto {
+  return {
+    title: share.title,
+    mode: share.mode,
+    createdAt: share.createdAt,
+    views: share.views,
+    isArtifact: Boolean(share.artifactId),
+    messages: share.messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: m.content,
+        createdAt: m.createdAt,
+        sources: (m.meta as { sources?: { title: string; url: string; host: string }[] } | undefined)
+          ?.sources,
+      })),
+  };
+}
 
-  useEffect(() => {
-    fetch(`/api/share?id=${encodeURIComponent(resolved.id)}`)
-      .then(async (r) => {
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(j.error || "Share not found");
-        setData(j);
-      })
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [resolved.id]);
+/**
+ * The title and description a crawler or a link unfurler sees.
+ *
+ * This page used to be a client component that fetched its own content, so the HTML every
+ * one of those readers received was an empty shell plus a spinner — and the unfurl card for
+ * a shared creation was blank. Rendering on the server fixed the shell; `robots` is set here
+ * because a shared conversation is public but must not be *indexed*: the link is the access
+ * grant, and a search snippet of somebody's chat is a leak no one agreed to.
+ */
+export async function generateMetadata({ params }: { params: Params }): Promise<Metadata> {
+  const share = getShare(await idOf(params));
+  const robots = { index: false, follow: false } as const;
+  if (!share) {
+    return { title: "This shared link has no content · BUILDWE", robots };
+  }
+  const last = [...share.messages].reverse().find((m) => m.role === "assistant");
+  const describe = (last?.content || share.title || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/[#*`>_~\[\]]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return {
+    title: `${share.title || "Shared chat"} · BUILDWE`,
+    description: describe ? describe.slice(0, 155) : "A conversation shared on BUILDWE.",
+    robots,
+  };
+}
 
-  return (
-    <main className="min-h-screen" style={{ background: "var(--bg)" }}>
-      <header
-        className="sticky top-0 z-10 border-b backdrop-blur-md"
-        style={{ borderColor: "var(--border)", background: "color-mix(in srgb, var(--bg-elevated) 92%, transparent)" }}
-      >
-        <div className="mx-auto flex h-14 max-w-2xl items-center gap-2 px-4">
-          <Link
-            href="/"
-            className="flex h-8 w-8 items-center justify-center rounded-xl"
-            style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
-            aria-label="Back to BUILDWE"
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold tracking-tight">
-              {data?.title || "Shared chat"}
-            </div>
-            <div className="text-[11px]" style={{ color: "var(--muted)" }}>
-              Read-only share · BUILDWE
-            </div>
-          </div>
-          {data && (
-            <span
-              className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium"
-              style={{ background: "var(--secondary)", color: "var(--muted)" }}
-            >
-              <Eye className="h-3 w-3" /> {data.views + 1}
-            </span>
-          )}
-        </div>
-      </header>
-
-      <div className="mx-auto max-w-2xl px-4 py-6">
-        {loading && (
-          <div className="flex items-center justify-center gap-2 py-20 text-sm" style={{ color: "var(--muted)" }}>
-            <Loader2 className="h-4 w-4 animate-spin" /> Opening shared chat…
-          </div>
-        )}
-        {error && (
-          <div className="rounded-3xl border p-8 text-center" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
-            <p className="text-sm font-medium">{error}</p>
-            <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
-              This link may have been deleted or never existed.
-            </p>
-            <Link href="/" className="mt-4 inline-block text-sm font-semibold" style={{ color: "var(--accent)" }}>
-              Build your own free workspace →
-            </Link>
-          </div>
-        )}
-        {data && (
-          <div className="space-y-4">
-            {data.messages.map((m, i) => {
-              const isUser = m.role === "user";
-              return (
-                <div key={i} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-                  <div className="max-w-[min(100%,36rem)]">
-                    {!isUser && (
-                      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium" style={{ color: "var(--muted)" }}>
-                        <span
-                          className="flex h-5 w-5 items-center justify-center rounded-md text-[10px] font-bold text-white"
-                          style={{ background: "var(--accent)" }}
-                        >
-                          B
-                        </span>
-                        BUILDWE
-                      </div>
-                    )}
-                    <div
-                      className={`rounded-3xl px-4 py-3 text-[15px] leading-relaxed ${isUser ? "rounded-br-md" : "rounded-bl-md border"}`}
-                      style={
-                        isUser
-                          ? { background: "var(--ink)", color: "var(--bg)" }
-                          : { background: "var(--card)", borderColor: "var(--border)" }
-                      }
-                    >
-                      {isUser ? (
-                        <p className="whitespace-pre-wrap">{m.content}</p>
-                      ) : (
-                        <div className="prose-bw" dangerouslySetInnerHTML={{ __html: md(m.content || "") }} />
-                      )}
-                      {/* Same cards as the app, same server-side read. A shared page is where a
-                          bare link most needs context: the reader did not write the message. */}
-                      {!isUser && (
-                        <LinkPreviews text={m.content || ""} exclude={m.sources?.map((s: { url: string }) => s.url)} />
-                      )}
-                      {!isUser && !!m.sources?.length && (
-                        <div className="mt-3 flex flex-wrap gap-1.5 border-t pt-2" style={{ borderColor: "var(--border)" }}>
-                          {m.sources.slice(0, 5).map((s: { title: string; url: string; host: string }, j: number) => (
-                            <a
-                              key={j}
-                              href={s.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="rounded-full px-2 py-0.5 text-[10px] font-medium"
-                              style={{ background: "var(--secondary)", color: "var(--muted)" }}
-                            >
-                              [{j + 1}] {s.host}
-                            </a>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-            <p className="pt-6 text-center text-[11px]" style={{ color: "var(--soft)" }}>
-              Shared via{" "}
-              <Link href="/" className="font-semibold" style={{ color: "var(--accent)" }}>
-                BUILDWE.ONLINE
-              </Link>{" "}
-              — Build anything. Create everything.
-            </p>
-          </div>
-        )}
-      </div>
-    </main>
-  );
+export default async function SharePage({ params }: { params: Params }) {
+  const share = getShare(await idOf(params));
+  // A wrong or deleted id is a 404, which is what it has always meant. It used to answer
+  // 200 with a client-side error box, so a stale link looked like a live page to every
+  // tool that only reads the status line. A share whose only rows are system rows has
+  // nothing a reader can be shown, so it is the same 404 rather than an empty page.
+  if (!share) notFound();
+  const dto = toDto(share);
+  if (!dto.messages.length) notFound();
+  return <ShareView share={dto} />;
 }

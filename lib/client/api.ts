@@ -769,6 +769,102 @@ export async function fetchGenerations(
   return (j.generations || []) as GenerationItem[];
 }
 
+/**
+ * One creation, as the list shows it. Declared on its own rather than
+ * `GenerationItem & {…}` because the raw shape has `outputUrl?: string` and this one
+ * needs `string | null` — an intersection of the two collapses to a type nothing can
+ * assign, which is how "optional or null" usually turns into a cast at the call site.
+ */
+export type ArtifactItem = {
+  id: string;
+  type: "image" | "audio" | "code";
+  prompt: string;
+  title: string | null;
+  pinned: boolean;
+  outputUrl: string | null;
+  outputText?: string;
+  meta?: Record<string, unknown>;
+  /** Already has a public link — the menu says "Copy link" instead of "Share". */
+  shareId: string | null;
+  /** False when there is nothing a reader could open (audio made without media storage). */
+  shareable: boolean;
+  createdAt: string;
+};
+
+function failWith(j: unknown, fallback: string): never {
+  const o = (j || {}) as { error?: unknown; code?: unknown };
+  const e = new Error(String(o.error || fallback)) as Error & { code?: string };
+  if (o.code) e.code = String(o.code);
+  throw e;
+}
+
+/**
+ * The curated list. Unlike fetchGenerations() this throws: a library that quietly
+ * answers "nothing here yet" while the rows still exist teaches people their work is
+ * gone, which is worse than a retry button.
+ */
+export async function fetchArtifacts(
+  type?: ArtifactItem["type"],
+  limit = 60
+): Promise<{ artifacts: ArtifactItem[]; titleMax: number }> {
+  const qs = new URLSearchParams({ view: "artifacts", limit: String(limit) });
+  if (type) qs.set("type", type);
+  const r = await fetch(`/api/ai/generations?${qs.toString()}`, { credentials: "include" });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "Could not load your creations.");
+  return {
+    artifacts: (j.artifacts || []) as ArtifactItem[],
+    titleMax: Number(j.titleMax) || 120,
+  };
+}
+
+/** The whole row, untruncated — what "open in canvas" needs for a code artifact. */
+export async function fetchArtifact(id: string): Promise<ArtifactItem> {
+  const r = await fetch(`/api/ai/generations?id=${encodeURIComponent(id)}`, {
+    credentials: "include",
+  });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "That creation could not be opened.");
+  return j.artifact as ArtifactItem;
+}
+
+export async function updateArtifact(
+  id: string,
+  patch: { title?: string | null; pinned?: boolean }
+): Promise<ArtifactItem> {
+  const r = await fetch("/api/ai/generations", {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, ...patch }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "That change could not be saved.");
+  return j.artifact as ArtifactItem;
+}
+
+export async function deleteArtifact(id: string): Promise<void> {
+  const r = await fetch(`/api/ai/generations?id=${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "That creation could not be deleted.");
+}
+
+/** Public link for one creation. Repeating it refreshes the same link, never a new one. */
+export async function shareArtifact(id: string): Promise<{ id: string; url: string }> {
+  const r = await fetch("/api/share", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ artifactId: id }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "A share link could not be made for that creation.");
+  return { id: String(j.id), url: String(j.url) };
+}
+
 /* ── Project files — Coding Agent (Update #1 §3) ──────────── */
 
 export type ProjectFileMeta = {

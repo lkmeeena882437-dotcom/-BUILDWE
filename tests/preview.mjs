@@ -603,9 +603,13 @@ try {
     assert.equal((chat.match(/<LinkPreviews /g) || []).length, 1, "one render site in the chat");
     assert.ok(chat.includes('!isUser && !m.streaming && ('), "assistant-only, and not while streaming");
     assert.ok(chat.includes('<LinkPreviews text={m.content || ""} exclude={m.sources?.map((s) => s.url)} />'), "and Sources chips are not duplicated as cards");
-    const share = src("app/s/[id]/page.tsx");
+    // UI step 10 moved the transcript markup into ./ShareView.tsx so the page itself could
+    // render on the server; the card rule travels with it, and the page file must stay free
+    // of it, otherwise a second reader of the same links appears in the RSC shell.
+    const share = src("app/s/[id]/ShareView.tsx");
     assert.equal((share.match(/<LinkPreviews /g) || []).length, 1, "and one on the shared page");
     assert.ok(share.includes("exclude={m.sources?.map("), "same rule on the shared page");
+    assert.equal(src("app/s/[id]/page.tsx").includes("<LinkPreviews"), false, "and not twice — the server file renders none");
     const md = src("lib/safe-md.ts");
     assert.equal(/LinkPreview|bw-preview/.test(md), false, "the shared markdown renderer stays a pure string function: no cards inside tool output");
   });

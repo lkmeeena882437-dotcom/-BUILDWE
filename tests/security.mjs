@@ -216,22 +216,50 @@ await check("C2: share page escapes quotes and kills javascript: links", async (
   assert.equal(share.status, 200, `share create failed: ${share.text.slice(0, 120)}`);
   const page = await req(share.json.url);
   assert.equal(page.status, 200, "the share page must render");
-  // The message bodies are rendered client-side, so the HTML alone cannot
-  // prove the renderer is safe — tests/markdown-xss.mjs asserts on the
-  // renderer directly. Here we prove the transport is not leaking raw HTML.
-  assert.ok(
-    !/onmouseover=|onerror=/.test(page.text),
-    "raw handler text reached the served HTML"
+  // Since UI step 10 the transcript is rendered on the SERVER, so the payload's own words
+  // are now inside the served HTML (and inside the flight payload in a <script>, where the
+  // parser reads them as text). "the string never appears" was therefore always a proxy for
+  // "nothing the parser trusts was opened" — and it is now a proxy that cannot hold. These
+  // assertions are the thing itself: no attribute may be opened in any element tag, no
+  // javascript: URL may reach a src/href, and the payload must arrive ESCAPED, which is the
+  // positive proof that renderSafeMarkdown ran before the bytes left the server.
+  // tests/markdown-xss.mjs still asserts on the renderer itself; that pair is the coverage.
+  // Scanning "tags" with a regex would be its own bug: an attribute value may legally hold
+  // a `>`, so the honest shape of the invariant is that an event handler is never followed
+  // by a real quote. Escaped text always reads `onmouseover=&quot;`, and the flight payload
+  // inside <script> reads `onmouseover=\"` — neither can start an attribute.
+  // The name has to START an attribute, which is what the leading character class is for:
+  // without it `content="` matches through its own "on", and a check that fires on every
+  // meta tag is a check nobody keeps.
+  const handler = page.text.match(/[\s"']on[a-z]+\s*=\s*["']/i);
+  assert.equal(
+    handler,
+    null,
+    `an event handler was opened with a live quote in the served HTML: ${String(handler).slice(0, 120)}`
   );
   assert.ok(
-    !/onmouseover=|onerror=|onload=/.test(page.text),
-    "an event handler reached the HTML of a public page"
+    !/(href|src)="\s*javascript:/i.test(page.text),
+    "a javascript: URL reached an href or src"
   );
-  assert.ok(!/javascript:/.test(page.text), "a javascript: URL reached an href");
+  assert.ok(
+    page.text.includes("&lt;img src=x onerror="),
+    "the probe did not reach the page at all — this test would pass on an empty response"
+  );
   assert.ok(
     !/<img\s/i.test(page.text.replace(/<img [^>]*src="\/_next[^"]*"/g, "")),
     "raw <img> from user content was not escaped"
   );
+  // The new title/description path is its own risk: a share title is user text, and it now
+  // goes into a <meta content="…">. One quote there would close the attribute.
+  const meta = page.text.match(/<meta name="description" content="([^"]*)"/);
+  assert.ok(meta, "a share should describe itself");
+  assert.ok(!meta[1].includes("<"), "a description could open a tag");
+  assert.ok(
+    meta[1].includes("&quot;"),
+    "and the quote in the probe had to arrive escaped, not as the end of the attribute"
+  );
+  const robots = page.text.match(/<meta name="robots" content="([^"]*)"/);
+  assert.ok(robots && /noindex/.test(robots[1]), "a shared conversation is public, not indexable");
 });
 
 await check("history answers, and never lies with an empty list", async () => {

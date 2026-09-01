@@ -458,11 +458,13 @@ try {
     );
     assert.ok(page.includes("m.context ? <ContextNote context={m.context} />"), "the note reads the server's meta");
     assert.ok(page.includes("<FileApplyBlocks"), "and the apply rows are rendered from the answer");
-    assert.equal(
-      src("app/s/[id]/page.tsx").includes("FileApplyBlocks"),
-      false,
-      "a shared page shows the answer but never a button that writes into someone's project"
-    );
+    for (const f of ["app/s/[id]/page.tsx", "app/s/[id]/ShareView.tsx"]) {
+      assert.equal(
+        src(f).includes("FileApplyBlocks"),
+        false,
+        `a shared page shows the answer but never a button that writes into someone's project (${f})`
+      );
+    }
     assert.ok(page.includes('beat("project_file_apply")'), "an apply is counted as an apply, not as a canvas save");
     assert.equal((code.match(/!isUser && !m\.streaming && m\.context/g) || []).length, 1);
     assert.ok(code.includes("setChatCtxPath(null);"), "a new chat starts with nothing attached");

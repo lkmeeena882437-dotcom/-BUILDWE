@@ -112,6 +112,22 @@ import {
 } from "@/lib/client/api";
 import { ImageStudio, type StudioImage } from "@/components/workspace/ImageStudio";
 import { AudioStudio } from "@/components/workspace/AudioStudio";
+import dynamic from "next/dynamic";
+
+/* The creations list is opened by a click, not by a page load: ~3 kB of First Load JS for
+   every session that never opens it is the wrong trade, so the panel (and its row menu,
+   which is the only thing that pulls in Popover/MenuRow here) arrives as its own chunk. */
+const CreationsPanel = dynamic(
+  () => import("@/components/workspace/CreationsPanel").then((m) => m.CreationsPanel),
+  {
+    ssr: false,
+    loading: () => (
+      <p className="py-6 text-xs" style={{ color: "var(--muted)" }}>
+        Opening your creations…
+      </p>
+    ),
+  }
+);
 import { AdSlot } from "@/components/AdSlot";
 import { renderSafeMarkdown } from "@/lib/safe-md";
 import { LinkPreviews } from "@/components/chat/LinkPreviews";
@@ -378,7 +394,7 @@ function Dashboard() {
   const [foldedGroups, setFoldedGroups] = useState<string[]>([]);
   const [drawer, setDrawer] = useState(false);
   const [modal, setModal] = useState<
-    null | "auth" | "settings" | "plans" | "profile" | "models" | "skills" | "byok" | "teams" | "compare"
+    null | "auth" | "settings" | "plans" | "profile" | "models" | "skills" | "byok" | "teams" | "compare" | "creations"
   >(null);
   const [authTab, setAuthTab] = useState<"login" | "register">("login");
   const [themePref, setThemePref] = useState<ThemePref>("system");
@@ -1382,6 +1398,30 @@ function Dashboard() {
   };
 
 
+  /* ── Creations (the artifacts list) ────────────────────── */
+
+  /**
+   * Put a stored code answer into the canvas. The content that was in the canvas becomes
+   * a version first — the same promise the file-apply rows keep — so the existing History
+   * / Restore covers "I opened the wrong thing over my work" without new machinery.
+   */
+  const openArtifactCode = (code: string, lang: string) => {
+    if (codePanel.trim()) pushCanvasVersion(codePanel, codeLang);
+    setCodePanel(code);
+    setCodeLang(lang);
+    setMode("code");
+    setCanvasTab("code");
+    setModal(null);
+    beat("artifact_open_canvas");
+  };
+
+  /** The studios restore their own history on mount, so switching is the whole action. */
+  const openArtifactStudio = (kind: "image" | "audio") => {
+    setMode(kind);
+    setModal(null);
+    beat("artifact_open_studio");
+  };
+
   /* ── Coding Agent run ───────────────────────────────────── */
 
   const runCodingAgent = async (goalText?: string) => {
@@ -2339,6 +2379,10 @@ function Dashboard() {
           )}
           {/* aria-label always, title only when collapsed: with the labels hidden these rows
               were icon-only buttons with no accessible name at all. */}
+          <button type="button" onClick={() => setModal("creations")} aria-label="Creations" title={sidebarOpen ? undefined : "Creations"} className={clsx("bw-side-row flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm", sidebarOpen ? "px-3" : "justify-center")} style={{ color: "var(--muted)" }}>
+            <Layers className="h-4 w-4" />
+            {sidebarOpen && "Creations"}
+          </button>
           <button type="button" onClick={() => setModal("settings")} aria-label="Settings" title={sidebarOpen ? undefined : "Settings"} className={clsx("bw-side-row flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm", sidebarOpen ? "px-3" : "justify-center")} style={{ color: "var(--muted)" }}>
             <Settings className="h-4 w-4" />
             {sidebarOpen && "Settings"}
@@ -3389,6 +3433,7 @@ function Dashboard() {
             </div>
             <div className="space-y-1 border-t p-3" style={{ borderColor: "var(--border)", paddingBottom: "calc(12px + var(--safe-b))" }}>
               <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm" style={{ color: "var(--muted)" }} onClick={() => { setDrawer(false); setModal("settings"); }}><Settings className="h-4 w-4" /> Settings</button>
+              <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm" style={{ color: "var(--muted)" }} onClick={() => { setDrawer(false); setModal("creations"); }}><Layers className="h-4 w-4" /> Creations</button>
               <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium" style={{ background: "var(--accent-soft)", color: "var(--accent)" }} onClick={() => { setDrawer(false); setModal("plans"); }}><Zap className="h-4 w-4" /> Plans</button>
             </div>
           </div>
@@ -3415,6 +3460,16 @@ function Dashboard() {
 
       {modal === "plans" && (
         <PlansSheet plan={plan} onClose={() => setModal(null)} onPro={goProFromPlans} />
+      )}
+
+      {modal === "creations" && (
+        <Sheet onClose={() => setModal(null)} title="Your creations" wide>
+          <p className="mb-3 text-[12px]" style={{ color: "var(--muted)" }}>
+            Every image, voice clip and code answer you have made. Name the ones worth
+            keeping, pin them to the top, or send a link that shows exactly one of them.
+          </p>
+          <CreationsPanel onOpenCode={openArtifactCode} onShowStudio={openArtifactStudio} />
+        </Sheet>
       )}
 
       {modal === "compare" && (

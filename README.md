@@ -81,8 +81,9 @@ GROQ_API_KEY=gsk_...
 | `POST /api/ai/file` | CSV/text analysis |
 | `GET/POST/DELETE /api/projects` | Project folders |
 | `GET/POST /api/teams` | Team workspaces (create/join/invite/leave/assign) |
-| `POST /api/share` · `GET /api/share?id=` | Public share links |
-| `POST /api/checkout/order` | Razorpay order (real + demo) |
+| `GET/PATCH/DELETE /api/ai/generations` | Your creations — studios' history (`?type=`), the curated list (`?view=artifacts`), one whole row (`?id=`), rename/pin, delete |
+| `POST /api/share` · `GET /api/share?id=` | Public share links — for a whole chat or one creation; `action:"view"` counts an open |
+| `POST /api/checkout/order` | Razorpay order (real only — 503 `CHECKOUT_UNAVAILABLE` without keys) |
 | `POST /api/checkout/verify` | HMAC verify → plan=pro |
 | `GET/POST /api/user/keys` | BYOK — save/mask own Groq/OpenRouter keys |
 | `GET/POST/DELETE /api/dev/keys` | Developer API key management |

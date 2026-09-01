@@ -117,7 +117,14 @@ export type Team = {
 
 export type Share = {
   id: string;
-  conversationId: string;
+  /**
+   * Null on a share created from one artifact rather than a whole chat — the two kinds
+   * are mutually exclusive by construction (a generation has no messages to snapshot,
+   * a conversation has no output of its own), so one nullable pair beats a `kind` string
+   * the readers would each have to switch on.
+   */
+  conversationId: string | null;
+  artifactId?: string | null;
   userId: string;
   title: string;
   mode: Conversation["mode"];
@@ -227,6 +234,14 @@ export type Generation = {
   outputUrl?: string;
   outputText?: string;
   meta?: Record<string, unknown>;
+  /**
+   * A name the owner gave this output. Absent means "show the prompt", which is what
+   * every row written before the creations panel looked like — so nothing had to be
+   * back-filled, and `ARTIFACT_TITLE_MAX` is enforced at the API rather than clamped.
+   */
+  title?: string;
+  /** Kept at the top of the creations list. Optional because that is the old shape. */
+  pinned?: boolean;
   createdAt: string;
 };
 
@@ -1209,7 +1224,16 @@ export function createShare(conversationId: string, userId: string) {
     createdAt: new Date().toISOString(),
   };
   db.shares.unshift(s);
-  // Per-owner cap (was a global slice that evicted other users' share links).
+  capSharesPerOwner(db, userId);
+  write(db);
+  return s;
+}
+
+/**
+ * Per-owner cap (was a global slice that evicted other users' share links). Both share
+ * creators call this: a cap that only one of two entry points honours is not a cap.
+ */
+function capSharesPerOwner(db: DB, userId: string) {
   const mineShares = db.shares.filter((x) => x.userId === userId);
   if (mineShares.length > RETENTION.sharesPerUser) {
     const keep = new Set(
@@ -1217,20 +1241,23 @@ export function createShare(conversationId: string, userId: string) {
     );
     db.shares = db.shares.filter((x) => x.userId !== userId || keep.has(x.id));
   }
-  write(db);
-  return s;
 }
 
 export function getShare(id: string) {
   return read().shares.find((s) => s.id === id) || null;
 }
 
-export function bumpShareViews(id: string) {
+/**
+ * One view, counted. Returns the number to show, so a client that could not reach this
+ * keeps displaying the count the page rendered with instead of inventing one.
+ */
+export function bumpShareViews(id: string): { ok: boolean; views: number } {
   const db = read();
   const s = db.shares.find((x) => x.id === id);
-  if (!s) return;
+  if (!s) return { ok: false, views: 0 };
   s.views += 1;
   write(db);
+  return { ok: true, views: s.views };
 }
 
 export function deleteSharesForConversation(conversationId: string) {
@@ -1790,6 +1817,196 @@ export function listGenerations(userId: string, type?: Generation["type"]) {
   return read()
     .generations.filter((g) => g.userId === userId && (!type || g.type === type))
     .slice(0, 100);
+}
+
+/* ── Artifacts — the generations a user keeps and shows ──── */
+
+/** Longest title the creations panel accepts. Refused, never truncated. */
+export const ARTIFACT_TITLE_MAX = 120;
+
+export type ArtifactPatch = { title?: string | null; pinned?: boolean };
+export type ArtifactResult =
+  | { ok: true; artifact: Generation }
+  | { ok: false; code: "ARTIFACT_NOT_FOUND" | "TITLE_TOO_LONG" | "NOTHING_TO_CHANGE" };
+
+/**
+ * One owner's artifacts, pinned first and then newest.
+ *
+ * `listGenerations` stays the raw log the studios restore from — image/audio rows in the
+ * order they were made, vision analyses included. This is the *curation* view over the
+ * same rows, so the two have different filters on purpose: a vision analysis is text
+ * about somebody's upload, not something they created, and it would sit in a list of
+ * "your creations" as a row with nothing to open.
+ *
+ * `filter` copies the array, so the sort cannot reorder the stored log.
+ */
+export function listArtifacts(userId: string, type?: Generation["type"]) {
+  return read()
+    .generations.filter(
+      (g) =>
+        g.userId === userId &&
+        (!type || g.type === type) &&
+        (g.meta as { kind?: string } | undefined)?.kind !== "vision"
+    )
+    .sort((a, b) => {
+      const pin = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
+      if (pin) return pin;
+      return a.createdAt === b.createdAt ? 0 : a.createdAt < b.createdAt ? 1 : -1;
+    })
+    .slice(0, 100);
+}
+
+/** Full row, including the untruncated text — the canvas needs the whole file. */
+export function getArtifact(id: string, userId: string): Generation | null {
+  const g = read()
+    .generations.find((x) => x.id === id && x.userId === userId);
+  return g || null;
+}
+
+export function updateArtifact(
+  id: string,
+  userId: string,
+  patch: ArtifactPatch
+): ArtifactResult {
+  const db = read();
+  const g = db.generations.find((x) => x.id === id && x.userId === userId);
+  if (!g) return { ok: false, code: "ARTIFACT_NOT_FOUND" };
+
+  const touched: string[] = [];
+  if (patch.title !== undefined) {
+    const next = String(patch.title ?? "")
+      .replace(/[\r\n]+/g, " ")
+      .trim()
+      .slice(0, ARTIFACT_TITLE_MAX + 10);
+    if (next.length > ARTIFACT_TITLE_MAX) {
+      return { ok: false, code: "TITLE_TOO_LONG" };
+    }
+    if (next) g.title = next;
+    else delete g.title;
+    touched.push("title");
+  }
+  if (patch.pinned !== undefined) {
+    if (patch.pinned) g.pinned = true;
+    else delete g.pinned;
+    touched.push("pinned");
+  }
+  // An empty PATCH is a bug in the caller, not a write: the store rewrites the whole
+  // document, and doing it for nothing is how a list starts costing disk on focus.
+  if (!touched.length) return { ok: false, code: "NOTHING_TO_CHANGE" };
+  write(db);
+  return { ok: true, artifact: g };
+}
+
+/**
+ * Deleting an artifact takes its public link with it. A share that outlives its source is
+ * a page nobody can un-publish, and the snapshot is a copy of content the owner just
+ * chose to throw away.
+ */
+export function deleteArtifact(id: string, userId: string): { ok: boolean } {
+  const db = read();
+  const before = db.generations.length;
+  db.generations = db.generations.filter((x) => !(x.id === id && x.userId === userId));
+  if (db.generations.length === before) return { ok: false };
+  db.shares = db.shares.filter((x) => x.artifactId !== id);
+  write(db);
+  return { ok: true };
+}
+
+export function findShareByArtifact(artifactId: string): Share | null {
+  return read().shares.find((s) => s.artifactId === artifactId) || null;
+}
+
+/**
+ * What a shared artifact page shows. Deliberately markdown-as-text, because the share
+ * page renders through `renderSafeMarkdown`, which allow-lists links and code fences and
+ * not raw HTML: an image is a link to the file we host, never an `<img>` injected here.
+ *
+ * Returns null when there is nothing to show — an audio row whose file was never
+ * persisted (no media storage configured) has a transcript but no sound, and calling
+ * that shareable would be a link to a half-artifact.
+ */
+export function artifactShareBody(g: Generation): string | null {
+  const url = g.outputUrl && /^https?:/i.test(g.outputUrl) ? g.outputUrl : null;
+  const label = String(g.title || g.prompt || "Untitled")
+    .replace(/[\[\]]/g, "")
+    .replace(/[\r\n]+/g, " ")
+    .trim();
+  if (g.type === "code") {
+    const code = String(g.outputText || "").trim();
+    if (!code) return null;
+    // A fence inside the code would close ours early and the rest of the file would
+    // render as prose, so the opener is one backtick longer than anything inside it.
+    const run = (code.match(/`{3,}/g) || []).reduce((m, f) => Math.max(m, f.length), 2);
+    const fence = "`".repeat(run + 1);
+    const ask = String(g.prompt || "").replace(/[\r\n]+/g, " ").trim();
+    return `${ask ? `**Prompt:** ${ask}\n\n` : ""}${fence}txt\n${code}\n${fence}`;
+  }
+  if (!url) return null;
+  if (g.type === "audio") {
+    const meta = (g.meta || {}) as { voice?: string };
+    return `**${label}**\n\n[Play the audio](${url})${
+      meta.voice ? `\n\nVoice: ${meta.voice}` : ""
+    }`;
+  }
+  const meta = (g.meta || {}) as { model?: string; aspect?: string };
+  return `**${label}**\n\n[Open the image](${url})${
+    meta.aspect || meta.model
+      ? `\n\n${[meta.aspect, meta.model].filter(Boolean).join(" · ")}`
+      : ""
+  }`;
+}
+
+/**
+ * A public link for one output. Same `shares` table and the same `/s/<id>` page as a
+ * conversation share: the page reads `messages`, so a snapshot of "the prompt, then this
+ * answer" is everything a reader needs, and building a second share surface would mean a
+ * second retention cap, a second view counter and a second delete path to forget.
+ */
+export function createArtifactShare(
+  artifactId: string,
+  userId: string
+): { ok: true; share: Share } | { ok: false; code: "ARTIFACT_NOT_FOUND" | "NOTHING_TO_SHARE" } {
+  const db = read();
+  const g = db.generations.find((x) => x.id === artifactId && x.userId === userId);
+  if (!g) return { ok: false, code: "ARTIFACT_NOT_FOUND" };
+  const body = artifactShareBody(g);
+  if (!body) return { ok: false, code: "NOTHING_TO_SHARE" };
+  const title = (g.title || g.prompt || "Shared creation").slice(0, 80);
+  const mode: Conversation["mode"] = g.type === "code" ? "code" : g.type;
+
+  const existing = db.shares.find((x) => x.artifactId === artifactId);
+  if (existing) {
+    // Re-sharing refreshes, exactly like createShare does for a conversation: the link a
+    // user already sent should show what the artifact is now, not what it was at 3pm.
+    existing.title = title;
+    existing.mode = mode;
+    existing.messages = snapshotMessages(g, body);
+    write(db);
+    return { ok: true, share: existing };
+  }
+  const s: Share = {
+    id: randomBytes(8).toString("base64url"),
+    conversationId: null,
+    artifactId,
+    userId,
+    title,
+    mode,
+    messages: snapshotMessages(g, body),
+    views: 0,
+    createdAt: new Date().toISOString(),
+  };
+  db.shares.unshift(s);
+  capSharesPerOwner(db, userId);
+  write(db);
+  return { ok: true, share: s };
+}
+
+function snapshotMessages(g: Generation, body: string): Message[] {
+  const now = new Date(g.createdAt || Date.now()).toISOString();
+  return [
+    { id: uid("m"), role: "user", content: g.prompt || "", createdAt: now },
+    { id: uid("m"), role: "assistant", content: body, createdAt: now },
+  ];
 }
 
 /* ── Usage ───────────────────────────────────────────────── */
