@@ -503,6 +503,10 @@ try {
     assert.ok(card.includes("data-file-blocks="), "rows are countable in markup, for the lab and for this suite");
     assert.ok(card.includes("role=\"alert\"") || card.includes("role={'alert'}"), "a refusal is announced to a screen reader");
     assert.equal(src("lib/ai/file-blocks.ts").includes("node:"), false, "the parser stays free of server imports");
+    assert.ok(
+      card.includes("useMemo(() => extractFileBlocks(text), [text])"),
+      "and it runs once per finished answer, not once per keystroke in the composer"
+    );
   });
 } finally {
   fixture.close();

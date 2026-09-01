@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AlertTriangle, Check, FileDown } from "lucide-react";
 import { extractFileBlocks } from "@/lib/ai/file-blocks";
 
@@ -21,7 +21,8 @@ import { extractFileBlocks } from "@/lib/ai/file-blocks";
  *
  * The network call is a prop, not an import: `app/page.tsx` already owns saving files,
  * reloading the list and the canvas versions, and a second owner of that would be a
- * second behaviour.
+ * second behaviour. Shared pages (`/s/[id]`) render answers without these rows on
+ * purpose — a reader of a share link has no business writing into somebody's project.
  */
 export type ApplyHandler = (block: {
   path: string;
@@ -41,7 +42,11 @@ export function FileApplyBlocks({
   knownPaths?: string[];
   onApply: ApplyHandler;
 }) {
-  const blocks = extractFileBlocks(text);
+  // Memoised because the transcript re-renders on every keystroke in the composer, and
+  // a regex over every finished answer on every one of them is a real cost for a
+  // decoration. The message text never changes once it stops streaming, so this is also
+  // the only time the work has to happen.
+  const blocks = useMemo(() => extractFileBlocks(text), [text]);
   if (!blocks.length) return null;
   return (
     <div className="mt-2 flex flex-col gap-1.5" data-file-blocks={blocks.length}>

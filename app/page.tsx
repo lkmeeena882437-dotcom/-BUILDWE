@@ -293,7 +293,7 @@ function ContextNote({
       data-context-note="attached"
     >
       Read <span className="font-mono">{context.openPath || "the project"}</span> ·{" "}
-      {parts.join(" · ")}
+      {parts.join(" · ")} of context
     </p>
   );
 }
