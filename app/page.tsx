@@ -115,6 +115,7 @@ import { AudioStudio } from "@/components/workspace/AudioStudio";
 import { AdSlot } from "@/components/AdSlot";
 import { renderSafeMarkdown } from "@/lib/safe-md";
 import { LinkPreviews } from "@/components/chat/LinkPreviews";
+import { FileApplyBlocks } from "@/components/chat/FileApplyBlocks";
 import { useProPrice } from "@/components/billing/useProPrice";
 import { WalletChip, openCredits, useWallet } from "@/components/billing/CreditsUI";
 import { PromptBar } from "@/components/workspace/PromptBar";
@@ -132,6 +133,24 @@ type Msg = {
   streaming?: boolean;
   image?: string;
   sources?: { title: string; url: string; host: string }[];
+  /**
+   * Workspace context, as reported by the server on the stream and stored on the
+   * message. It is the *server's* answer, not an echo of what the client asked for,
+   * so the line under an answer can say "nothing was read" when that is what
+   * actually happened (the file was renamed or deleted after the chip was set).
+   */
+  context?: {
+    attached: boolean;
+    openPath?: string | null;
+    openAttached?: boolean;
+    files?: number;
+    included?: number;
+    truncated?: number;
+    omitted?: number;
+    chars?: number;
+    requested?: string;
+    reason?: "not_found" | "empty_project";
+  };
   understood?: string;
   clarifier?: string;
   quality?: { label: "good" | "review"; notes: string[] };
@@ -234,6 +253,49 @@ function md(text: string) {
   // but not quotes, so a fence label or a link target could close an
   // attribute and run script in every reader's browser.
   return renderSafeMarkdown(text);
+}
+
+/**
+ * One line under an answer: which project file it was written against, in the numbers
+ * the server reported. Truncation is named because a model that answered about a file
+ * it only saw half of is the thing a reader is entitled to know about.
+ */
+function ContextNote({
+  context,
+}: {
+  context: NonNullable<Msg["context"]>;
+}) {
+  if (!context.attached) {
+    const why =
+      context.reason === "empty_project"
+        ? "this project has no files yet"
+        : "that file is not in this project any more";
+    return (
+      <p
+        className="mt-2 text-[11px] leading-snug"
+        style={{ color: "var(--muted)" }}
+        data-context-note="none"
+      >
+        No workspace context was read — {why}.
+      </p>
+    );
+  }
+  const k = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} kB`);
+  const parts = [k(context.chars || 0)];
+  const others = (context.included || 0) - (context.openAttached ? 1 : 0);
+  if (others > 0) parts.push(`${others} other file${others === 1 ? "" : "s"}`);
+  if (context.truncated) parts.push(`${context.truncated} truncated`);
+  if (context.omitted) parts.push(`${context.omitted} over budget`);
+  return (
+    <p
+      className="mt-2 text-[11px] leading-snug"
+      style={{ color: "var(--muted)" }}
+      data-context-note="attached"
+    >
+      Read <span className="font-mono">{context.openPath || "the project"}</span> ·{" "}
+      {parts.join(" · ")}
+    </p>
+  );
 }
 
 function extractCode(text: string) {
@@ -406,6 +468,10 @@ function Dashboard() {
   const [projFilesBusy, setProjFilesBusy] = useState(false);
   const [projFilesErr, setProjFilesErr] = useState("");
   const [openFileId, setOpenFileId] = useState<string | null>(null);
+  // Chat -> workspace (UI step 9): opt-in per file. The chip in the composer is the
+  // only way context gets attached, because "silently read whatever is open" is how a
+  // chat product ends up spending tokens and quoting files the reader never meant to send.
+  const [chatCtxPath, setChatCtxPath] = useState<string | null>(null);
   const [newFilePath, setNewFilePath] = useState("");
   // Coding Agent run state — the agent works autonomously, so the user needs
   // to see each step as it happens rather than a single opaque spinner.
@@ -714,6 +780,8 @@ function Dashboard() {
     setConvTeamId(null);
     setCanvasTab("code");
     setAttachment(null);
+    // A new chat starts with nothing attached - not even the file the last one read.
+    setChatCtxPath(null);
   };
 
   const openHist = async (id: string) => {
@@ -723,11 +791,12 @@ function Dashboard() {
       setMessages(
         (c.messages || [])
           .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
-          .map((m: { id: string; role: string; content: string; meta?: { sources?: Msg["sources"]; understood?: string; qualityLabel?: "good" | "review" } }) => ({
+          .map((m: { id: string; role: string; content: string; meta?: { sources?: Msg["sources"]; context?: Msg["context"]; understood?: string; qualityLabel?: "good" | "review" } }) => ({
             id: m.id,
             role: m.role as "user" | "assistant",
             content: m.content,
             sources: m.meta?.sources,
+            context: m.meta?.context as Msg["context"],
             understood: m.meta?.understood,
             ...(m.meta?.qualityLabel ? { quality: { label: m.meta.qualityLabel, notes: [] } } : {}),
           }))
@@ -1188,6 +1257,12 @@ function Dashboard() {
 
   const currentProjectId = convProjectId ?? activeProject ?? null;
 
+  useEffect(() => {
+    // A path belonging to another project is not "still selected", it is a bug
+    // waiting to be attached. Drop it rather than resolve it against the wrong project.
+    setChatCtxPath(null);
+  }, [currentProjectId]);
+
   const loadProjFiles = useCallback(async () => {
     if (!currentProjectId) {
       setProjFiles([]);
@@ -1250,6 +1325,45 @@ function Dashboard() {
       setProjFilesErr((e as Error).message || "Save failed.");
     } finally {
       setProjFilesBusy(false);
+    }
+  };
+
+  /**
+   * Write a code block from an answer into the project. Returns the error *sentence*
+   * to show, or null on success - the row owns its own state, so this must not throw
+   * over a path the model invented.
+   */
+  const applyFileBlock = async (block: {
+    path: string;
+    content: string;
+    lang: string | null;
+  }): Promise<string | null> => {
+    if (!currentProjectId) {
+      return "Pick a project first - files are saved inside a project.";
+    }
+    try {
+      await saveProjectFileApi({
+        projectId: currentProjectId,
+        path: block.path,
+        content: block.content,
+        ...(block.lang ? { lang: block.lang } : {}),
+      });
+      // Its own counter: "the model wrote a file" and "the reader pressed Save canvas"
+      // are different features, and one number for both hides which one is used.
+      beat("project_file_apply");
+      await loadProjFiles();
+      // If that file is the one open in the canvas, the canvas has to agree with the
+      // file straight away - and the version history keeps the previous content first,
+      // so the existing Restore affordance covers this with no new machinery.
+      const openPath = projFiles.find((f) => f.id === openFileId)?.path;
+      if (openPath && openPath === block.path) {
+        pushCanvasVersion(codePanel, codeLang);
+        setCodePanel(block.content);
+        setCodeLang(block.lang || codeLang);
+      }
+      return null;
+    } catch (e) {
+      return (e as Error).message || "Save failed.";
     }
   };
 
@@ -1511,6 +1625,11 @@ function Dashboard() {
           depth,
           tone,
           ...(retry?.altModel ? { altModel: retry.altModel } : {}),
+          // One file, if the reader pointed at one. No `context` field means the server
+          // sends no workspace block at all - the absence is the signal.
+          ...(chatCtxPath && currentProjectId
+            ? { context: { projectId: currentProjectId, path: chatCtxPath } }
+            : {}),
         },
         (ev) => {
           if (ev.meta && typeof ev.meta === "object") {
@@ -1519,6 +1638,7 @@ function Dashboard() {
               model?: string;
               live?: boolean;
               sources?: Msg["sources"];
+              context?: Msg["context"];
               understood?: string;
               clarifier?: string;
               fallbackNote?: string;
@@ -1528,6 +1648,7 @@ function Dashboard() {
             if (
               meta.understood ||
               meta.sources?.length ||
+              meta.context ||
               meta.fallbackNote ||
               meta.live === false
             ) {
@@ -1539,6 +1660,7 @@ function Dashboard() {
                         ...(meta.understood ? { understood: meta.understood } : {}),
                         ...(meta.clarifier ? { clarifier: meta.clarifier } : {}),
                         ...(meta.sources?.length ? { sources: meta.sources } : {}),
+                        ...(meta.context ? { context: meta.context } : {}),
                         ...(meta.fallbackNote ? { fallbackNote: meta.fallbackNote } : {}),
                         ...(meta.live === false ? { offline: true } : {}),
                       }
@@ -2488,6 +2610,19 @@ function Dashboard() {
                                 {!isUser && !m.streaming && (
                                   <LinkPreviews text={m.content || ""} exclude={m.sources?.map((s) => s.url)} />
                                 )}
+                                {/* What the answer was built on, in the server's own numbers, and the
+                                    Apply rows for any file block in it. Both are assistant-only and
+                                    hidden while streaming: a button for a block that has not finished
+                                    arriving is a bug. */}
+                                {!isUser && !m.streaming && m.context ? <ContextNote context={m.context} /> : null}
+                                {!isUser && !m.streaming && (
+                                  <FileApplyBlocks
+                                    text={m.content || ""}
+                                    projectId={currentProjectId}
+                                    knownPaths={projFiles.map((f) => f.path)}
+                                    onApply={applyFileBlock}
+                                  />
+                                )}
                                 {!isUser && !!m.sources?.length && !m.streaming && (
                                   <div className="mt-3 flex flex-wrap gap-1.5 border-t pt-2" style={{ borderColor: "var(--border)" }}>
                                     <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: "var(--soft)" }}>Sources</span>
@@ -2782,6 +2917,13 @@ function Dashboard() {
                 me={me}
                 byokActive={byokActive}
                 lastPromptText={lastPrompt.current}
+        contextPath={chatCtxPath}
+        contextNote={
+          chatCtxPath
+            ? "The next answer reads this file (12 kB budget). Apply can write it back."
+            : undefined
+        }
+        onClearContext={() => setChatCtxPath(null)}
                 taRef={taRef}
                 fileRef={fileRef}
                 imgAttachRef={imgAttachRef}
@@ -3093,6 +3235,34 @@ function Dashboard() {
                                 <span className="shrink-0 text-[10px] text-white/35">
                                   {f.size < 1024 ? `${f.size} B` : `${Math.round(f.size / 1024)} KB`}
                                 </span>
+                                {/* Opt-in chat context. Always focusable and always
+                                    labelled — a hover-only reveal here would hide the
+                                    whole feature from a keyboard and a tablet. */}
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setChatCtxPath((cur) => (cur === f.path ? null : f.path))
+                                  }
+                                  aria-pressed={chatCtxPath === f.path}
+                                  aria-label={
+                                    chatCtxPath === f.path
+                                      ? `Stop using ${f.path} as chat context`
+                                      : `Use ${f.path} as chat context`
+                                  }
+                                  title={
+                                    chatCtxPath === f.path
+                                      ? "The next chat answer reads this file — click to stop"
+                                      : "The next chat answer reads this file"
+                                  }
+                                  className={clsx(
+                                    "shrink-0 rounded px-1.5 py-0.5 text-[10px] transition",
+                                    chatCtxPath === f.path
+                                      ? "bg-white/20 text-white"
+                                      : "text-white/35 hover:bg-white/10 hover:text-white/70"
+                                  )}
+                                >
+                                  @
+                                </button>
                                 <button
                                   type="button"
                                   onClick={() => void removeProjFile(f.id)}
@@ -3106,8 +3276,10 @@ function Dashboard() {
                           </ul>
                         )}
                         <p className="mt-3 text-[10px] leading-relaxed text-white/35">
-                          Files are private to your account and are sent to the agent as project
-                          context so it can reason across your whole project, not just one snippet.
+                          Files are private to your account. The coding agent sees the whole
+                          project; a chat answer reads only the file you mark with @ above, up to a
+                          12 kB budget — and the answer tells you when a file was truncated or left
+                          out.
                         </p>
                       </>
                     )}

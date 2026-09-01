@@ -20,8 +20,14 @@ import {
   createConversation,
   findUserById,
   isTeamMember,
+  listProjectFiles,
   uid,
 } from "@/lib/db/store";
+import {
+  fileEditInstruction,
+  formatProjectContext,
+  parseContextInput,
+} from "@/lib/ai/workspace-context";
 import { decryptSecret } from "@/lib/crypto";
 
 export const runtime = "nodejs";
@@ -59,6 +65,15 @@ export async function POST(req: NextRequest) {
         },
         { status: 413 }
       );
+    }
+
+    // Workspace context (UI step 9): a chat can be pointed at the file the user has
+    // open. Shape is validated here, ownership by the store query, and "that file is
+    // gone" is answered with *no context and a plain reason* rather than a failed chat —
+    // losing an answer to a stale chip would be a worse bug than losing the context.
+    const ctxIn = parseContextInput(body.context);
+    if (!ctxIn.ok) {
+      return NextResponse.json({ error: ctxIn.error, code: ctxIn.code }, { status: 400 });
     }
 
     const limit = checkLimit(session.userId, session.plan, "chat");
@@ -174,6 +189,29 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    let workspace: { text: string; stats: ReturnType<typeof formatProjectContext>["stats"] } | null = null;
+    let workspaceRef: { requested: string; attached: false; reason: "not_found" | "empty_project" } | null = null;
+    if (ctxIn.value) {
+      try {
+        const rows = listProjectFiles(ctxIn.value.projectId, session.userId);
+        const out = formatProjectContext(rows, {
+          purpose: "chat",
+          openPath: ctxIn.value.path,
+        });
+        if (out.stats.openAttached) workspace = out;
+        else workspaceRef = {
+          requested: ctxIn.value.path,
+          attached: false,
+          reason: rows.length ? "not_found" : "empty_project",
+        };
+      } catch (e) {
+        console.error("[bw] chat workspace context", e);
+      }
+    }
+    const contextMeta = workspace
+      ? { attached: true as const, ...workspace.stats }
+      : workspaceRef;
+
     const styleLines: string[] = [];
     if (depth === "short") {
       styleLines.push("LENGTH: Answer in 1–3 sentences. No lists, no preamble.");
@@ -192,6 +230,9 @@ export async function POST(req: NextRequest) {
     const systemParts = [
       styleLines.length ? styleLines.join("\n") : "",
       understood.systemHint,
+      // The file the reader is looking at, then how to hand an edit back. Instruction
+      // second so it is the last thing before the conversation.
+      workspace ? `${workspace.text}\n\n${fileEditInstruction(workspace.stats)}` : "",
       ...systemHintExtras,
       contextBlock
         ? `${contextBlock}\n\nAnswer using these results where relevant. Cite sources inline as [1], [2]. If the results don't cover it, say so and answer from your own knowledge.`
@@ -272,6 +313,7 @@ export async function POST(req: NextRequest) {
                     })),
                   }
                 : {}),
+              ...(contextMeta ? { context: contextMeta } : {}),
             },
           },
         ]);
@@ -303,6 +345,10 @@ export async function POST(req: NextRequest) {
                         })),
                       }
                     : {}),
+                  // What the model was actually shown. The chip and the line under the
+                  // answer both read this, so the UI can never claim context it did not
+                  // send (or hide that it dropped one).
+                  ...(contextMeta ? { context: contextMeta } : {}),
                 },
               })}\n\n`
             )

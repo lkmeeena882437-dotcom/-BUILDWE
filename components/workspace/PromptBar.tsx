@@ -121,6 +121,14 @@ export interface PromptBarProps {
   onMode: (m: Mode) => void;
   /** Plain setter, for a side effect that must not abort a running stream. */
   setMode: React.Dispatch<React.SetStateAction<Mode>>;
+  /**
+   * Workspace context (UI step 9): the file the next answer is allowed to read, and the
+   * one way to stop it. Optional — the tool pages and the landing prompt have no project
+   * to attach, and a chip that lies about what will be sent is worse than no chip.
+   */
+  contextPath?: string | null;
+  contextNote?: string;
+  onClearContext?: () => void;
   onCompare: () => void;
   onStop: () => void;
   onUpgrade: () => void;
@@ -160,6 +168,9 @@ export function PromptBar(props: PromptBarProps) {
     me,
     byokActive,
     lastPromptText,
+    contextPath,
+    contextNote,
+    onClearContext,
   maxMessageChars,
     taRef,
     fileRef,
@@ -502,6 +513,36 @@ export function PromptBar(props: PromptBarProps) {
               </Btn>
             </div>
           )}
+          {contextPath ? (
+            <div
+              className="mx-3 mt-3 flex items-center gap-2 rounded-2xl border px-3 py-2"
+              style={{ borderColor: "var(--border)", background: "var(--secondary)" }}
+              data-promptbar="context"
+            >
+              {/* No icon: the @ is what the files tab uses to set this, and matching the
+                  two is more useful than decoration. */}
+              <span className="shrink-0 text-[13px] font-semibold leading-none" aria-hidden>
+                @
+              </span>
+              <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                <span style={{ color: "var(--muted)" }}>Context · </span>
+                <span className="font-mono">{contextPath}</span>
+              </span>
+              {contextNote ? (
+                <span className="hidden shrink-0 text-[10px] md:block" style={{ color: "var(--soft)" }}>
+                  {contextNote}
+                </span>
+              ) : null}
+              <Btn
+                variant="icon"
+                size="sm"
+                aria-label="Stop reading that file for this chat"
+                onClick={() => onClearContext?.()}
+              >
+                <XCircle className="h-4 w-4" />
+              </Btn>
+            </div>
+          ) : null}
           <textarea
             ref={taRef}
             value={input}

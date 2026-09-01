@@ -1072,6 +1072,13 @@ export function getProjectFile(id: string, userId: string) {
   );
 }
 
+/** Why a project file write was refused. `code` for callers, `error` for the human. */
+export type SaveFileErrorCode =
+  | "INVALID_PATH"
+  | "FILE_TOO_LARGE"
+  | "PROJECT_NOT_FOUND"
+  | "FILE_LIMIT";
+
 /** Create or update a file by path (upsert), scoped to one owner + project. */
 export function saveProjectFile(input: {
   userId: string;
@@ -1079,20 +1086,25 @@ export function saveProjectFile(input: {
   path: string;
   content: string;
   lang?: string;
-}): { file: ProjectFile } | { error: string } {
+}): { file: ProjectFile } | { error: string; code: SaveFileErrorCode } {
+  /**
+   * Every refusal carries a code as well as a sentence, because two callers now show
+   * this message — the files tab, and the "Apply to file" button on a chat answer — and
+   * a UI that can only grep prose cannot tell "path is invalid" from "you have 40 files".
+   */
   const path = normalizeFilePath(input.path);
-  if (!path) return { error: "Invalid file path." };
+  if (!path) return { error: "Invalid file path.", code: "INVALID_PATH" };
 
   const content = String(input.content ?? "");
   if (content.length > MAX_FILE_CHARS) {
-    return { error: "File too large — keep it under 120,000 characters." };
+    return { error: "File too large — keep it under 120,000 characters.", code: "FILE_TOO_LARGE" };
   }
 
   const db = read();
   const project = db.projects.find(
     (p) => p.id === input.projectId && p.userId === input.userId
   );
-  if (!project) return { error: "Project not found." };
+  if (!project) return { error: "Project not found.", code: "PROJECT_NOT_FOUND" };
 
   const now = new Date().toISOString();
   const existing = db.projectFiles.find(
@@ -1114,7 +1126,7 @@ export function saveProjectFile(input: {
     (f) => f.projectId === input.projectId && f.userId === input.userId
   ).length;
   if (count >= MAX_FILES_PER_PROJECT) {
-    return { error: `Project file limit reached (${MAX_FILES_PER_PROJECT}).` };
+    return { error: `Project file limit reached (${MAX_FILES_PER_PROJECT}).`, code: "FILE_LIMIT" };
   }
 
   const file: ProjectFile = {
@@ -1144,44 +1156,11 @@ export function deleteProjectFile(id: string, userId: string) {
 }
 
 /**
- * Compact project snapshot for the model's context window.
- * Full text for small files, head+tail excerpt for large ones — the agent needs
- * shape and entry points, not every byte.
+ * `buildProjectContext` used to live here. Formatting a project into a prompt block is
+ * not storage, and it needed statistics (what was cut, what was omitted) that a returned
+ * string cannot carry — so it is `formatProjectContext` in `lib/ai/workspace-context.ts`,
+ * which takes rows from `listProjectFiles` and is testable without a store.
  */
-export function buildProjectContext(
-  projectId: string,
-  userId: string,
-  budgetChars = 12_000
-): string {
-  const files = listProjectFiles(projectId, userId);
-  if (!files.length) return "";
-
-  const lines: string[] = [
-    `PROJECT FILES (${files.length}) — this is the user's current project. Modify these files; don't invent new structure unless asked.`,
-    "",
-    "Structure:",
-    ...files.map((f) => `  ${f.path} (${f.lang}, ${f.content.length} chars)`),
-    "",
-  ];
-
-  let used = lines.join("\n").length;
-  for (const f of files) {
-    const remaining = budgetChars - used;
-    if (remaining < 400) {
-      lines.push(`--- ${f.path} — omitted (context budget reached) ---`);
-      continue;
-    }
-    const body =
-      f.content.length <= remaining
-        ? f.content
-        : `${f.content.slice(0, Math.floor(remaining * 0.6))}\n… (truncated) …\n${f.content.slice(-Math.floor(remaining * 0.25))}`;
-    const block = `--- ${f.path} ---\n${body}\n`;
-    lines.push(block);
-    used += block.length;
-  }
-
-  return lines.join("\n");
-}
 
 export function setConversationProject(
   conversationId: string,

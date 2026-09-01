@@ -92,7 +92,12 @@ export async function POST(req: NextRequest) {
     });
 
     if ("error" in result) {
-      return NextResponse.json({ error: result.error }, { status: 400 });
+      // The message is written for a person and the code is for the caller: the chat's
+      // "Apply to file" button shows the sentence and branches on the code.
+      return NextResponse.json(
+        { error: result.error, code: result.code },
+        { status: 400 }
+      );
     }
 
     const res = NextResponse.json({ ok: true, file: result.file });

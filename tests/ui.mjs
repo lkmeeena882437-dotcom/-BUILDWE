@@ -777,7 +777,14 @@ await run("Step 6b: headers organise the list, the chips still decide what is in
   assert.ok(css.includes(".bw-side-hover:focus-visible"), "and a focused one is never invisible");
 
   // Selection state on the chips was colour-only, like the theme buttons were.
-  assert.equal((page.match(/aria-pressed=/g) || []).length, 4, "All / project / Personal / team each report which is on");
+  const sidebarBlock = page.slice(0, page.indexOf("{/* Opt-in chat context"));
+  assert.ok(sidebarBlock.length > 1000 && sidebarBlock.includes('aria-pressed={!activeProject}'), "the sidebar list is the region this counts");
+  assert.equal(
+    (sidebarBlock.match(/aria-pressed=/g) || []).length,
+    4,
+    "All / project / Personal / team each report which is on — a fifth exists below (step 9's @ toggle, " +
+      "asserted in tests/workspace-context.mjs), so this counts the sidebar rather than the file"
+  );
   assert.ok(page.includes('aria-label="Search history"'), "the search field keeps a name after its placeholder is typed over");
 
   // One list of one group needs no header, and the row markup must not be duplicated to get that.

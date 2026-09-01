@@ -1040,6 +1040,74 @@ button:active:not(:disabled) {
   border: 1px solid var(--border);
 }
 
+/* ── Workspace apply rows ───────────────────────────────── */
+/* The row is a control with a state, so it looks like one: a boxed line, the verb on the
+   right, and the reason for a refusal inline rather than in a toast that disappears. */
+.bw-apply {
+  --bw-focus-r: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--secondary);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.bw-apply--blocked {
+  border-style: dashed;
+}
+
+.bw-apply__meta {
+  margin-left: 6px;
+  color: var(--soft);
+  font-size: 11px;
+}
+
+.bw-apply__btn {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: var(--ink);
+  color: var(--bg);
+  cursor: pointer;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.bw-apply__btn:hover {
+  opacity: 0.86;
+}
+
+.bw-apply__btn:disabled {
+  background: var(--secondary);
+  color: var(--soft);
+  cursor: not-allowed;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.bw-apply__done {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ok);
+}
+
+.bw-apply__err {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--err);
+}
+
 /* ── Reduced motion: respect the user ───────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *,
