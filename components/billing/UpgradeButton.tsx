@@ -31,7 +31,18 @@ function loadRazorpayScript(): Promise<boolean> {
   });
 }
 
-export function UpgradeButton({ className }: { className?: string }) {
+export function UpgradeButton({
+  className,
+  /** Business multiplier. 1 keeps the old single-seat behaviour exactly. */
+  seats = 1,
+  description,
+  label,
+}: {
+  className?: string;
+  seats?: number;
+  description?: string;
+  label?: string;
+}) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -72,7 +83,10 @@ export function UpgradeButton({ className }: { className?: string }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({}),
+        // The seat count is a request, nothing more: the server validates it, multiplies
+        // the amount itself, and reads the number back off its own ledger row before it
+        // grants anything. Sending it here is what the stepper chose, not what we'll honour.
+        body: JSON.stringify({ seats }),
       });
       const orderJ = await orderR.json().catch(() => ({}));
       if (!orderR.ok) {
@@ -100,7 +114,7 @@ export function UpgradeButton({ className }: { className?: string }) {
         amount: order.amount,
         currency: order.currency,
         name: "BUILDWE.ONLINE",
-        description: "BUILDWE PRO — monthly",
+        description: description || "BUILDWE PRO — monthly",
         order_id: order.id,
         theme: { color: "#C45C26" },
         handler: async (response: RazorpayResponse) => {
@@ -137,7 +151,7 @@ export function UpgradeButton({ className }: { className?: string }) {
         }
       >
         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : done ? <Check className="h-4 w-4" /> : null}
-        {busy ? "Opening checkout…" : done ? "PRO active" : "Upgrade to PRO →"}
+        {busy ? "Opening checkout…" : done ? "PRO active" : label || "Upgrade to PRO →"}
       </button>
       {note && <p className="mt-2 text-center text-[11px] text-[#9C958C]">{note}</p>}
     </div>

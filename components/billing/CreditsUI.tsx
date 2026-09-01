@@ -16,6 +16,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import clsx from "clsx";
 import { Check, Coins, Loader2, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 
@@ -52,6 +53,8 @@ type WalletState = {
   welcomeAt: string | null;
   plan: string;
   proMonthly: number;
+  /** `proMonthly` before this account's seats were multiplied in — what a quote starts from. */
+  proMonthlyBase: number;
   /** Seats on the paid plan; 1 for a personal PRO or a free account. */
   proSeats: number;
   signedIn: boolean;
@@ -75,6 +78,7 @@ const state: WalletState = {
   welcomeAt: null,
   plan: "free",
   proMonthly: 1000,
+  proMonthlyBase: 0,
   proSeats: 1,
   signedIn: false,
   loaded: false,
@@ -111,6 +115,7 @@ export async function loadWallet(): Promise<void> {
         state.plan = String(j.plan || "free");
         state.proMonthly = Number(j.proMonthly ?? state.proMonthly);
         state.proSeats = Math.max(1, Number(j.proSeats ?? state.proSeats));
+        state.proMonthlyBase = Number(j.proMonthlyBase ?? state.proMonthlyBase);
         state.ledger = Array.isArray(j.ledger) ? j.ledger : [];
         state.signedIn = Boolean(j.signedIn);
         state.loaded = true;
@@ -469,6 +474,60 @@ export function useBuyPack() {
   );
 }
 
+/**
+ * The buy control for one pack: its busy / credited / note states and the real checkout
+ * behind them. `PackRow` in the credits sheet and the tier cards on /pricing both render
+ * this, because the money path is one thing and the layout is another — the last time a
+ * purchase was implemented twice, the two versions disagreed about what a guest could do.
+ */
+export function PackBuyButton({
+  pack,
+  onBuy,
+  signedIn,
+  block = false,
+  className,
+}: {
+  pack: PackPrice;
+  onBuy: () => Promise<{ note?: string; granted?: boolean }>;
+  signedIn: boolean;
+  /** full-width, for a card instead of a row */
+  block?: boolean;
+  className?: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [done, setDone] = useState(false);
+  return (
+    <div className={block ? "text-center" : "shrink-0 text-right"}>
+      <button
+        type="button"
+        disabled={busy}
+        data-action={`buy-pack-${pack.id}`}
+        onClick={async () => {
+          setBusy(true);
+          setNote("");
+          const r = await onBuy();
+          setBusy(false);
+          if (r.granted) setDone(true);
+          if (r.note) setNote(r.note);
+        }}
+        className={clsx(
+          "inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#C45C26] font-semibold text-white hover:bg-[#A84B1C] disabled:opacity-60",
+          block ? "h-11 w-full text-sm" : "px-3 py-1.5 text-xs",
+          className
+        )}
+      >
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+        {done ? <Check className="h-3.5 w-3.5" /> : null}
+        {busy ? "Opening…" : done ? "Credited" : signedIn ? "Buy" : "Log in & buy"}
+      </button>
+      {note && (
+        <p className={clsx("mt-1 text-[10px] text-[#8C2F22]", block && "mx-auto max-w-[240px]")}>{note}</p>
+      )}
+    </div>
+  );
+}
+
 function PackRow({
   pack,
   onBuy,
@@ -478,9 +537,6 @@ function PackRow({
   onBuy: () => Promise<{ note?: string; granted?: boolean }>;
   signedIn: boolean;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState("");
-  const [done, setDone] = useState(false);
   const perCredit = pack.paise / 100 / pack.credits;
   // Currency symbol taken from the server's own display string, so nothing is
   // hard-coded here that could disagree with what is charged.
@@ -498,26 +554,7 @@ function PackRow({
           {perCredit.toFixed(2)} per credit
         </p>
       </div>
-      <div className="shrink-0 text-right">
-        <button
-          type="button"
-          disabled={busy}
-          onClick={async () => {
-            setBusy(true);
-            setNote("");
-            const r = await onBuy();
-            setBusy(false);
-            if (r.granted) setDone(true);
-            if (r.note) setNote(r.note);
-          }}
-          className="inline-flex items-center gap-1.5 rounded-xl bg-[#C45C26] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#A84B1C] disabled:opacity-60"
-        >
-          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-          {done ? <Check className="h-3.5 w-3.5" /> : null}
-          {busy ? "Opening…" : done ? "Credited" : signedIn ? "Buy" : "Log in & buy"}
-        </button>
-        {note && <p className="mt-1 max-w-[190px] text-[10px] text-[#8C2F22]">{note}</p>}
-      </div>
+      <PackBuyButton pack={pack} onBuy={onBuy} signedIn={signedIn} />
     </div>
   );
 }

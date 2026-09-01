@@ -845,6 +845,18 @@ button:active:not(:disabled) {
   }
 }
 
+/* ── Step 7a: /pricing tier cards ────────────────────────── */
+/* Only a live CTA moves: a disabled one is a statement about the account, and lifting it
+   on hover would invite the click it just refused. */
+.bw-tier__cta {
+  --bw-focus-r: 16px;
+  transition: background var(--dur) var(--ease), transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+
+.bw-tier__cta:not([disabled]):hover {
+  transform: translateY(-1px);
+}
+
 /* ── Step 6b: grouped history in the sidebar ─────────────── */
 .bw-side-group__head {
   --bw-focus-r: 10px;

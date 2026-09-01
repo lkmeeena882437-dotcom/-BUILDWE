@@ -11,14 +11,11 @@ import {
   normalizeSeats,
 } from "@/lib/payments/razorpay";
 import { addPayment } from "@/lib/db/store";
+import { formatPaise } from "@/lib/money";
 import { CREDITS, creditPack } from "@/lib/config";
 
-/** Prices are rupee-first (Razorpay/INR is the configured currency). */
-function formatPackPrice(paise: number): string {
-  return RAZORPAY.currency === "INR"
-    ? `\u20b9${(paise / 100).toFixed(0)}`
-    : `$${(paise / 100).toFixed(2)}`;
-}
+/** The formatting rule is `lib/money.ts`'s, so a page and this route cannot print two
+ *  different versions of the same number. */
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,7 +30,7 @@ export async function GET() {
       label: p.label,
       credits: p.credits,
       paise: p.paise,
-      displayAmount: formatPackPrice(p.paise),
+      displayAmount: formatPaise(p.paise, RAZORPAY.currency),
     })),
   });
 }
@@ -120,13 +117,13 @@ export async function POST(req: NextRequest) {
       keyId: pub.keyId,
       planName: productLabel,
       displayAmount: pack
-        ? formatPackPrice(pack.paise)
-        : formatPackPrice(productPaise),
+        ? formatPaise(pack.paise, RAZORPAY.currency)
+        : formatPaise(productPaise, RAZORPAY.currency),
       /** A Business order also reports its unit price, so the receipt the UI draws
        *  says "₹500 × 3" and not a number it invented. */
       ...(pack
         ? { kind: "pack", packId: pack.id, credits: pack.credits }
-        : { kind: "pro", seats: seats.seats, unitAmount: formatPackPrice(RAZORPAY.amountPaise) }),
+        : { kind: "pro", seats: seats.seats, unitAmount: formatPaise(RAZORPAY.amountPaise, RAZORPAY.currency) }),
     });
     attachGuestCookie(res, session.userId);
     return res;

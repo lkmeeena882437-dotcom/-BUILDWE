@@ -353,9 +353,15 @@ try {
 
   await run("the customer-facing pages are untouched, and lib/ui stays out of them", async () => {
     for (const [name, html] of [["/", homeHtml], ["/pricing", pricingHtml]]) {
-      assert.ok(!html.includes("bw-pop"), `${name} must not use the popover yet`);
-      assert.ok(!html.includes("data-bw-seg"), `${name} must not use the segmented control yet`);
+      assert.ok(!html.includes("bw-pop"), `${name} must not use the popover until a step says so`);
     }
+    // The workspace page still has no menu primitives in its server HTML. /pricing earned
+    // exactly one in Step 7 - the Personal/Business toggle - so the rule there is not
+    // "nothing shared" but "one control, one purpose", which is checkable in the markup.
+    assert.ok(!homeHtml.includes("data-bw-seg"), "the app's own surfaces have no segmented control yet");
+    assert.equal((pricingHtml.match(/role="tablist"/g) || []).length, 1, "one segmented control on /pricing, for the audience");
+    assert.equal((pricingHtml.match(/data-bw-seg-item="(personal|business)"/g) || []).length, 2, "with exactly its two choices");
+    assert.equal((pricingHtml.match(/aria-selected="true"/g) || []).length, 1, "and exactly one of them on");
     const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
     const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
     // Hand-rolled menus that fake dismissal with a full-screen invisible <button>:

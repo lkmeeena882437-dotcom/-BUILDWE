@@ -159,5 +159,54 @@ await run("a fresh account reads its own seat count, not a marketing number", as
   assert.equal(j.proMonthly % j.proSeats, 0, "the number shown is the number minted, divided by nothing");
 });
 
+await run("the pricing page draws four tiers and quotes nothing it has not been told", async () => {
+  const page = readFileSync(path.join(ROOT, "app", "pricing", "page.tsx"), "utf8");
+  const code = codeOnly(page);
+  const html = (await req(BASE, "/pricing")).text;
+
+  // Two static tiers render from the server; the two pack tiers are whatever the server sells.
+  assert.ok(html.includes('data-tier="free"'), "Free renders in the server HTML");
+  assert.ok(html.includes('data-tier="pro"'), "PRO renders in the server HTML");
+  assert.ok(html.includes("Recommended"), "one card is marked, in words, not only by a border");
+  assert.ok(!/data-tier="starter"|data-tier="value"/.test(code), "pack tiers are mapped from the server's list, never hard-coded");
+  assert.ok(code.includes("wallet.packs") && code.includes(".slice(0, 1)") && code.includes(".slice(1)"), "the first pack and the rest, so a third pack still lands in the grid");
+
+  // The price area must not guess while the request is in flight.
+  assert.ok(html.includes("···"), "an unloaded price shows as a placeholder, not a number");
+  assert.ok(!/50000|FALLBACK/.test(code), "no config value is copied into the page");
+  const hook = codeOnly(src("components/billing/useProPrice.ts"));
+  assert.ok(hook.includes("const PENDING: ProPrice") && !/amountPaise: [1-9]/.test(hook), "the hook starts empty and holds no price of its own");
+  assert.ok(hook.includes("loaded: true"), "and only the server's answer flips it");
+
+  // Personal/Business is a real control over real arithmetic the server also performs.
+  assert.ok(code.includes("<SegmentedControl"), "the toggle is the shared control, not three hand-drawn buttons");
+  assert.ok(html.includes('role="tablist"'), "and it is in the markup a screen reader can navigate");
+  assert.ok(code.includes('setSeats(1)'), "leaving Business cannot strand a seat count under a label that no longer mentions it");
+  assert.ok(code.includes("body: JSON.stringify({ seats })") === false, "the page does not post orders itself — the button owns that");
+  assert.ok(code.includes("<UpgradeButton") && code.includes("seats={seatCount}"), "the seat count reaches the one checkout owner");
+  assert.ok(code.includes("baseMonthly") && code.includes("wallet.proMonthlyBase"), "the quote multiplies the server's per-seat base");
+  assert.ok(!/proMonthly\s*\*/.test(code), "and never re-derives the grant someone already has");
+
+  // Pack tiers buy through the same control the credits sheet uses.
+  assert.ok(code.includes("<PackBuyButton"), "the pack CTA is the shared button, not a second checkout");
+  assert.ok(!code.includes("CreditPacksBlock"), "the page no longer stacks a duplicate pack list under the grid");
+  const sheet = codeOnly(src("components/billing/CreditsUI.tsx"));
+  assert.ok(sheet.includes("export function PackBuyButton"), "one implementation, exported");
+  assert.equal((sheet.match(/setBusy\(true\)/g) || []).length, 1, "and PackRow did not keep its own copy of the buy states");
+
+  // A signed-in free account is told so; a guest is not lied to.
+  assert.ok(code.includes("disabled={onFreePlan}") && code.includes(': "Continue free"') && code.includes("onFreePlan ? "), "the Free card's CTA depends on the account, not on a mock");
+  assert.ok(code.includes('disabled={onFreePlan}'), "and the disabled state is the real one");
+
+  // Every number on the page is traceable to one of two server reads.
+  assert.ok(code.includes("useProPrice()") && code.includes("useWallet()"), "price from the order endpoint, packs and grants from the wallet");
+  assert.ok(html.includes("Credits"), "the credit explainer survived the redesign");
+
+  const money = codeOnly(src("lib/money.ts"));
+  assert.ok(money.includes('currency === "INR"'), "and the rupee/dollar rule is in its one file");
+  assert.ok(!/RAZORPAY|process\.env/.test(money), "which stays free of server config, so a client can import it");
+  assert.ok(!/const sym = .*replace\(/.test(code), "the page does not scrape a currency symbol out of a label any more");
+});
+
 await srv.stop();
 process.exit(report("Seats: the Business multiplier (step 7b)") ? 1 : 0);

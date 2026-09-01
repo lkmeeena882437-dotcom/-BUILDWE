@@ -35,6 +35,7 @@ import {
 } from "@/lib/db/store";
 import type { Plan } from "@/lib/db/store";
 import { INPUT_LIMITS } from "@/lib/ai/gateway";
+import { packPhrase } from "@/lib/money";
 
 export type WorkKind =
   | "tool"
@@ -225,8 +226,9 @@ export function creditReceipt(userId: string, hold: { ok: true; cost: number }) 
 
 /** "₹99 for 100 credits" — derived, so a price change can never strand copy. */
 export function packLabel(p: { paise: number; credits: number }): string {
-  const sym = RAZORPAY.currency === "INR" ? "\u20b9" : "$";
-  return `${sym}${(p.paise / 100).toFixed(0)} for ${p.credits} credits`;
+  // The same rule the order endpoint and /pricing print with, so the 402 message and the
+  // checkout receipt cannot disagree about what a pack costs.
+  return packPhrase(p.paise, p.credits, RAZORPAY.currency);
 }
 
 export function topUpCredits(args: { userId: string; credits: number; refId: string }) {
@@ -257,6 +259,12 @@ export function creditSummary(userId: string, plan: Plan) {
     welcomeAt: wallet.welcomeAt || null,
     plan,
     proMonthly: monthly,
+    /**
+     * The unmultiplied config value. A page quoting a total for seats that have not been bought
+     * yet needs this rather than dividing `proMonthly` back apart, and the copy on /pricing is
+     * asserted to read it from here for that reason.
+     */
+    proMonthlyBase: CREDITS.proMonthly,
     /** The multiplier behind `proMonthly`, so the UI can say "1,000 × 3 seats". */
     proSeats: seats,
     costs: {

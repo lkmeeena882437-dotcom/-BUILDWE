@@ -20,6 +20,7 @@
 
 import crypto from "crypto";
 import { safeEqual } from "@/lib/crypto";
+import { formatPaise } from "@/lib/money";
 import { RAZORPAY, razorpayConfigured, APP } from "@/lib/config";
 
 export type CheckoutOrder = {
@@ -94,11 +95,8 @@ export function getCheckoutPublicConfig() {
     /** Business tier bounds, straight from the server that enforces them. */
     seatsMax: seatsMax(),
     seatsMin: SEATS_MIN,
-    /** Display helper */
-    displayAmount:
-      RAZORPAY.currency === "INR"
-        ? `₹${(RAZORPAY.amountPaise / 100).toFixed(0)}`
-        : `$${(RAZORPAY.amountPaise / 100).toFixed(2)}`,
+    /** Display helper — the shared rule, with this server's currency. */
+    displayAmount: formatPaise(RAZORPAY.amountPaise, RAZORPAY.currency),
     configured: razorpayConfigured(),
   };
 }

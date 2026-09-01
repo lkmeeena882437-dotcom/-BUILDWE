@@ -1689,6 +1689,23 @@ function Dashboard() {
     }
   };
 
+  /**
+   * Both plans sheets (the workspace one and the mobile drawer's) used to carry their own
+   * copy of this, and the drawer's copy forgot the logged-in branch — so a signed-in person
+   * tapping "Upgrade to PRO" there got the *login* form. One handler, both call sites.
+   */
+  const goProFromPlans = () => {
+    if (!loggedIn) {
+      setAuthTab("register");
+      setModal("auth");
+      return;
+    }
+    setModal(null);
+    // Seats and the gateway live on /pricing; the sheet stays a summary rather than a
+    // second checkout that could disagree with it.
+    window.location.href = "/pricing";
+  };
+
   const doLogout = async () => {
     await apiLogout();
     await refreshMe();
@@ -1917,7 +1934,7 @@ function Dashboard() {
           />
         )}
         {modal === "plans" && (
-          <PlansSheet plan={plan} onClose={() => setModal(null)} onPro={() => setModal("auth")} />
+          <PlansSheet plan={plan} onClose={() => setModal(null)} onPro={goProFromPlans} />
         )}
       </div>
     );
@@ -3218,20 +3235,7 @@ function Dashboard() {
       )}
 
       {modal === "plans" && (
-        <PlansSheet
-          plan={plan}
-          onClose={() => setModal(null)}
-          onPro={() => {
-            if (!loggedIn) {
-              setAuthTab("register");
-              setModal("auth");
-            } else {
-              setModal(null);
-              // Billing hooks live under /api/checkout — wire keys when ready
-              window.location.href = "/pricing";
-            }
-          }}
-        />
+        <PlansSheet plan={plan} onClose={() => setModal(null)} onPro={goProFromPlans} />
       )}
 
       {modal === "compare" && (
@@ -3661,6 +3665,8 @@ function PlansSheet({ plan, onClose, onPro }: { plan: string; onClose: () => voi
   // Price comes from the server's checkout config — the same number the order
   // endpoint charges. It used to be hand-written here as "$5" while /pricing
   // said "₹500" and Razorpay was configured for 50000 paise (audit A6).
+  // And while that request is in flight the price is `···`, because the hook no
+  // longer carries a made-up default for a page to flash.
   const proPrice = useProPrice();
   // Credit numbers come from the wallet endpoint for the same reason.
   const wallet = useWallet();
@@ -3682,8 +3688,13 @@ function PlansSheet({ plan, onClose, onPro }: { plan: string; onClose: () => voi
           </ul>
         </div>
         <div className="rounded-2xl border-2 p-4" style={{ borderColor: "var(--accent)", background: "var(--card)" }}>
-          <div className="text-xs font-semibold" style={{ color: "var(--accent)" }}>PRO</div>
-          <div className="mt-1 text-2xl font-semibold">{proPrice.label}<span className="text-sm font-normal" style={{ color: "var(--muted)" }}>/mo</span></div>
+          <div className="text-xs font-semibold" style={{ color: "var(--accent)" }}>
+            PRO {plan === "pro" && "· CURRENT"}
+            {/* A Business account pays per seat, so the sheet says which it holds rather
+                than showing a bare PRO next to a credit number it cannot explain. */}
+            {wallet.loaded && wallet.proSeats > 1 ? ` · ${wallet.proSeats} seats` : ""}
+          </div>
+          <div className="mt-1 text-2xl font-semibold">{proPrice.loaded ? proPrice.label : "···"}<span className="text-sm font-normal" style={{ color: "var(--muted)" }}>/mo</span></div>
           <ul className="mt-3 space-y-1.5 text-xs">
             <li>✓ Higher creative limits</li>
             <li>✓ Priority generation</li>
