@@ -202,6 +202,20 @@ await run("the pricing page draws four tiers and quotes nothing it has not been 
   assert.ok(code.includes("useProPrice()") && code.includes("useWallet()"), "price from the order endpoint, packs and grants from the wallet");
   assert.ok(html.includes("Credits"), "the credit explainer survived the redesign");
 
+  // A redesigned page accumulates imports it stopped using; `tsc` does not look and the
+  // bundle does not care, but the next reader does.
+  for (const file of ["app/pricing/page.tsx", "components/billing/CreditsUI.tsx", "components/billing/UpgradeButton.tsx", "components/billing/useProPrice.ts"]) {
+    const code = codeOnly(src(file));
+    for (const m of code.matchAll(/^import(?: type)? \{([^}]*)\} from/gm)) {
+      for (const raw of m[1].split(",")) {
+        const name = raw.trim().replace(/^type /, "").split(" as ").pop().trim();
+        if (!name) continue;
+        const body = code.slice(m.index + m[0].length);
+        assert.ok(new RegExp(`\\b${name}\\b`).test(body), `${file}: ${name} is imported and never used`);
+      }
+    }
+  }
+
   const money = codeOnly(src("lib/money.ts"));
   assert.ok(money.includes('currency === "INR"'), "and the rupee/dollar rule is in its one file");
   assert.ok(!/RAZORPAY|process\.env/.test(money), "which stays free of server config, so a client can import it");

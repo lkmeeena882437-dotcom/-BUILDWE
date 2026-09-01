@@ -4,7 +4,6 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Check, Minus, Plus, X } from "lucide-react";
-import clsx from "clsx";
 import { UpgradeButton } from "@/components/billing/UpgradeButton";
 import { useProPrice } from "@/components/billing/useProPrice";
 import { PackBuyButton, useBuyPack, useWallet } from "@/components/billing/CreditsUI";
