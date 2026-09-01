@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
       : msg.includes("already")
         ? "Email already registered. Try logging in."
         : msg.includes("Invalid") || msg.includes("email")
-          ? "Enter a valid email and password (min 6 characters)."
+          ? "Enter a valid email and password (min 8 characters)."
           : "Couldn’t create account. Please try again.";
     const status = msg.includes("already") ? 409 : busy ? 503 : 400;
     console.error("[bw] register", e);

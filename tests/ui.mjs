@@ -897,6 +897,10 @@ await run("step 11: the auth sheet's tabs are the shared control", async () => {
   assert.ok(page.includes('ariaLabel="Log in or create an account"'), "one SegmentedControl, named");
   assert.equal(page.includes('(["login", "register"] as const).map('), false, "no second two-button tab strip in the app");
   assert.ok(page.includes("<SegmentedControl\n              ariaLabel=\"Log in or create an account\""), "with its own props on their own lines, so a diff reads");
+  assert.ok(page.includes("minLength={props.tab === \"register\" ? 8 : 1}"), "the form's floor matches POST /api/auth/register");
+  assert.ok(page.includes("Password (min 8)"), "signup copy names the real floor");
+  assert.ok(page.includes("const openAuth = "), "one opener for every Log in / Sign up control");
+  assert.ok(page.includes('q.get("auth")'), "/?auth=login is a real reader, not a dead link");
 });
 
 await run("step 11: the sheet holds the keyboard", async () => {
@@ -1005,6 +1009,10 @@ await run("step 12: the ranking is explainable, and the caps are counted", async
     assert.match(buildRows({ ...src, running: "answer" }).find((r) => r.kind === "stop").title, /answer/);
     assert.match(buildRows({ ...src, running: "agent" }).find((r) => r.kind === "stop").title, /agent/);
 
+    // Guests are not "signed in": Boolean(me) was true for a guest session too, so ⌘K hid Log in.
+    assert.equal(buildRows({ ...src, signedIn: true }).some((r) => r.key === "modal:auth"), false);
+    assert.ok(buildRows({ ...src, signedIn: false }).some((r) => r.key === "modal:auth" && r.value === "auth"));
+
     // Titles come from a user's first line, so they are long; the clip keeps them tellable apart.
     const long = chatRows([{ id: "x", title: " ".repeat(200) }, { id: "y", title: "Explain photosynthesis simply, with a diagram for a 12 year old person" }]);
     assert.ok(long[0].title.length < 60 && long[1].title.endsWith("…"), "clipped, with the mark that says so");
@@ -1040,6 +1048,7 @@ await run("step 12: the palette reaches only things that exist", async () => {
     assert.ok(modalKeys.has(key), `MODAL_TARGETS opens "${key}", which is not a modal the page owns`);
   }
   assert.ok(modalKeys.has("auth") && pure.includes('value: "auth"'), "and a signed-out visitor is offered the one thing they need");
+  assert.ok(page.includes("signedIn: me?.kind === \"user\""), "guests are signed-out for the palette, not Boolean(me)");
 
   // Modes come from the same catalogue the chips use — no second list of modes.
   assert.ok(page.includes("modes: MODE_META.map("), "the palette's mode rows are MODE_META, not a copy");

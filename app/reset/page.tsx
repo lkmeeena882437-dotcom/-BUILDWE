@@ -50,7 +50,7 @@ function ResetInner() {
           <div className="space-y-3 text-center">
             <CheckCircle2 className="mx-auto h-10 w-10" style={{ color: "var(--ok)" }} />
             <p className="text-sm font-medium">Password updated ✓</p>
-            <Link href="/" className="inline-flex h-10 items-center rounded-2xl px-4 text-sm font-semibold text-white" style={{ background: "var(--accent)" }}>
+            <Link href="/?auth=login" className="inline-flex h-10 items-center rounded-2xl px-4 text-sm font-semibold text-white" style={{ background: "var(--accent)" }}>
               Back to log in
             </Link>
           </div>
@@ -68,8 +68,8 @@ function ResetInner() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="New password (min 6 characters)"
-              minLength={6}
+              placeholder="New password (min 8 characters)"
+              minLength={8}
               className="h-11 w-full rounded-2xl border px-3 text-sm outline-none"
               style={{ borderColor: "var(--border)", background: "var(--bg)" }}
               required
@@ -81,7 +81,7 @@ function ResetInner() {
             )}
             <button
               type="submit"
-              disabled={busy || password.length < 6 || !token}
+              disabled={busy || password.length < 8 || !token}
               className="flex h-11 w-full items-center justify-center gap-2 rounded-2xl text-sm font-semibold text-white disabled:opacity-50"
               style={{ background: "var(--accent)" }}
             >
