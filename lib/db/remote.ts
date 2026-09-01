@@ -165,6 +165,17 @@ function toRow(c: Conversation): ConvRow {
   };
 }
 
+/** True only after a conversations-table call actually succeeded (not a 404 schema miss). */
+let conversationsTableOk: boolean | null = null;
+
+export function conversationsTableReady(): boolean {
+  return conversationsTableOk === true;
+}
+
+function noteConversationsTable(ok: boolean) {
+  if (ok) conversationsTableOk = true;
+}
+
 export async function upsertRemoteConversation(c: Conversation): Promise<boolean> {
   const { url, key, ok } = cfg();
   if (!ok || !c?.id || !c.userId) return false;
@@ -175,6 +186,7 @@ export async function upsertRemoteConversation(c: Conversation): Promise<boolean
       body: JSON.stringify(toRow(c)),
       ...timed(),
     });
+    if (res.ok) noteConversationsTable(true);
     return res.ok;
   } catch {
     return false;
@@ -218,6 +230,7 @@ async function pullByQuery(query: string): Promise<Conversation[]> {
       timed({ headers: headers(key) })
     );
     if (!res.ok) return [];
+    noteConversationsTable(true);
     const rows = (await res.json()) as { payload?: unknown }[];
     if (!Array.isArray(rows)) return [];
     const out: Conversation[] = [];

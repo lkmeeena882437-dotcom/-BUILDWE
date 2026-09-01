@@ -10,6 +10,7 @@ import path from "path";
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import {
   asConversation,
+  conversationsTableReady,
   deleteRemoteConversation,
   deleteRemoteConversationsForUser,
   mergeConversationLists,
@@ -336,7 +337,7 @@ function tryInitPath(file: string): boolean {
     const dir = path.dirname(file);
     fs.mkdirSync(dir, { recursive: true });
     if (!fs.existsSync(file)) {
-      fs.writeFileSync(file, JSON.stringify(emptyDb(), null, 2), "utf8");
+      fs.writeFileSync(file, JSON.stringify(emptyDb()), "utf8");
     } else {
       // touch-read to ensure readable
       fs.readFileSync(file, "utf8");
@@ -582,7 +583,8 @@ function write(db: DB, opts?: { mirror?: boolean; touchBoot?: boolean }) {
         if (lock) blind = true;
       }
       if (blind) throw new StoreBusyError("the store could not be read before writing");
-      const out = JSON.stringify(current, null, 2);
+      // Compact JSON: pretty-print doubled the write and the parse on every mutation.
+      const out = JSON.stringify(current);
       // atomic: never leave a half-written store behind
       const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
       fs.writeFileSync(tmp, out, "utf8");
@@ -602,6 +604,12 @@ function write(db: DB, opts?: { mirror?: boolean; touchBoot?: boolean }) {
   memoryDb = db;
   if (opts?.mirror !== false) scheduleRemotePush(db);
 }
+
+/** Chat mutations already upsert a row. Skip the whole-blob push once that table is live. */
+function writeConversations(db: DB) {
+  write(db, { mirror: !conversationsTableReady() });
+}
+
 /* ── Optional Supabase mirror (permanent DB) ─────────────── */
 
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -670,7 +678,7 @@ function bootRemote() {
     const file = getPath();
     if (file && writable) {
       try {
-        fs.writeFileSync(file, JSON.stringify(memoryDb, null, 2), "utf8");
+        fs.writeFileSync(file, JSON.stringify(memoryDb), "utf8");
       } catch {
         /* */
       }
@@ -962,7 +970,7 @@ export function createConversation(input: {
   // conversations were created. Trimming per owner keeps the table bounded
   // without ever touching another account's data.
   trimPerUser(db, input.userId);
-  write(db);
+  writeConversations(db);
   return c;
 }
 
@@ -1041,7 +1049,7 @@ export function appendMessages(
   }
   db.conversations[i].updatedAt = new Date().toISOString();
   if (title) db.conversations[i].title = title.slice(0, 80);
-  write(db);
+  writeConversations(db);
   void upsertRemoteConversation(db.conversations[i]);
   return db.conversations[i];
 }
@@ -1853,6 +1861,46 @@ export function setConversationTeam(
   return c;
 }
 
+/** Sidebar list cap — the rail cannot usefully show 200 full threads. */
+export const HISTORY_LIST_CAP = 80;
+
+export type ConversationSummary = {
+  id: string;
+  title: string;
+  mode: Conversation["mode"];
+  updatedAt: string;
+  preview: string;
+  messageCount: number;
+  projectId: string | null;
+  teamId: string | null;
+  mine: boolean;
+};
+
+export function summarizeConversation(c: Conversation, viewerId: string): ConversationSummary {
+  const last = c.messages[c.messages.length - 1];
+  return {
+    id: c.id,
+    title: c.title,
+    mode: c.mode,
+    updatedAt: c.updatedAt,
+    preview: String(last?.content || "").replace(/\s+/g, " ").slice(0, 100),
+    messageCount: c.messages.length,
+    projectId: c.projectId ?? null,
+    teamId: c.teamId ?? null,
+    mine: c.userId === viewerId,
+  };
+}
+
+/** One chat, if this viewer may see it. Does not scan every other thread. */
+export function getVisibleConversation(id: string, userId: string) {
+  const db = read();
+  const c = db.conversations.find((x) => x.id === id) || null;
+  if (!c) return null;
+  if (c.userId === userId) return c;
+  if (c.teamId && isTeamMember(c.teamId, userId)) return c;
+  return null;
+}
+
 /** Conversations visible to a user: own + their teams' */
 export function listVisibleConversations(userId: string) {
   const db = read();
@@ -1866,6 +1914,19 @@ export function listVisibleConversations(userId: string) {
       (c) => c.userId === userId || (c.teamId && teamIds.has(c.teamId))
     )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export function listVisibleConversationSummaries(
+  userId: string,
+  cap = HISTORY_LIST_CAP
+) {
+  const all = listVisibleConversations(userId);
+  const n = Math.max(1, Math.min(Math.floor(cap) || HISTORY_LIST_CAP, HISTORY_LIST_CAP));
+  return {
+    conversations: all.slice(0, n).map((c) => summarizeConversation(c, userId)),
+    total: all.length,
+    capped: all.length > n,
+  };
 }
 
 /**

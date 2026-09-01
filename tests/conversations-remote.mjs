@@ -37,6 +37,27 @@ await run("history GET hydrates this user before listing", () => {
   assert.ok(store.includes("adoptGuestConversations"), "guest chats follow the account into Postgres too");
 });
 
+await run("history GET is a capped summary, not the whole store", () => {
+  const hist = readFileSync(path.join(ROOT, "app", "api", "history", "route.ts"), "utf8");
+  const store = readFileSync(path.join(ROOT, "lib", "db", "store.ts"), "utf8");
+  const client = readFileSync(path.join(ROOT, "lib", "client", "api.ts"), "utf8");
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  assert.ok(store.includes("HISTORY_LIST_CAP"), "the rail has a named cap, not an unbounded map");
+  assert.ok(hist.includes("listVisibleConversationSummaries"), "GET lists summaries, not full message arrays");
+  assert.equal(hist.includes("listGenerations"), false, "images do not ride along on every workspace mount");
+  assert.ok(hist.includes("getVisibleConversation"), "opening a chat looks the id up, it does not scan the sidebar list");
+  assert.ok(hist.includes("let c = getVisibleConversation"), "a warm instance skips the 200-row remote pull");
+  assert.ok(store.includes("JSON.stringify(current)"), "the JSON file is compact, not pretty-printed on every mutation");
+  assert.equal(store.includes("JSON.stringify(current, null, 2)"), false, "pretty-print must not come back");
+  assert.ok(store.includes("writeConversations(db)"), "chat writes skip the blob once the conversations table is live");
+  assert.ok(store.includes("mirror: !conversationsTableReady()"), "a 404 schema still pushes the blob so chats are not lost");
+  const at = client.indexOf("export async function fetchHistory");
+  const fn = client.slice(at, client.indexOf("\n}", at) + 2);
+  assert.equal(fn.includes("generations:"), false, "the client no longer types a generations array this route does not send");
+  assert.ok(page.includes("setHistory("), "the workspace still fills the rail from conversations");
+  assert.ok(page.includes("fetchGenerations("), "studios still load creations from their own route");
+});
+
 await run("login/register/oauth wait for the reassignment", () => {
   for (const rel of [
     "app/api/auth/login/route.ts",

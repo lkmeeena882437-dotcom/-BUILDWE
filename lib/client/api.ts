@@ -111,8 +111,12 @@ export async function fetchHistory() {
       updatedAt: string;
       preview: string;
       messageCount: number;
+      projectId?: string | null;
+      teamId?: string | null;
+      mine?: boolean;
     }[];
-    generations: unknown[];
+    total?: number;
+    capped?: boolean;
   };
 }
 

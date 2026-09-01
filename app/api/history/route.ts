@@ -7,10 +7,10 @@ import {
   appendMessages,
   createConversation,
   deleteConversation,
+  getVisibleConversation,
   hydrateConversationsForUser,
   isTeamMember,
-  listGenerations,
-  listVisibleConversations,
+  listVisibleConversationSummaries,
   uid,
 } from "@/lib/db/store";
 
@@ -25,19 +25,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: rl.error, hint: rl.hint }, { status: 429 });
     }
     await hydrateConversationsForUser(session.userId);
-    const conversations = listVisibleConversations(session.userId).map((c) => ({
-      id: c.id,
-      title: c.title,
-      mode: c.mode,
-      updatedAt: c.updatedAt,
-      preview: c.messages[c.messages.length - 1]?.content?.slice(0, 100) || "",
-      messageCount: c.messages.length,
-      projectId: c.projectId ?? null,
-      teamId: c.teamId ?? null,
-      mine: c.userId === session.userId,
-    }));
-    const generations = listGenerations(session.userId);
-    const res = NextResponse.json({ conversations, generations });
+    const listed = listVisibleConversationSummaries(session.userId);
+    // Generations live on GET /api/ai/generations — the workspace never reads
+    // them from this payload, and shipping every image on every mount is waste.
+    const res = NextResponse.json({
+      conversations: listed.conversations,
+      total: listed.total,
+      capped: listed.capped,
+    });
     attachGuestCookie(res, session.userId);
     return res;
   } catch (e) {
@@ -92,9 +87,12 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === "get" && body.conversationId) {
-      await hydrateConversationsForUser(session.userId);
-      const all = listVisibleConversations(session.userId);
-      const c = all.find((x) => x.id === body.conversationId);
+      const id = String(body.conversationId);
+      let c = getVisibleConversation(id, session.userId);
+      if (!c) {
+        await hydrateConversationsForUser(session.userId);
+        c = getVisibleConversation(id, session.userId);
+      }
       if (!c) return NextResponse.json({ error: "Not found" }, { status: 404 });
       return NextResponse.json({ conversation: c });
     }

@@ -71,7 +71,7 @@ GROQ_API_KEY=gsk_...
 | `POST /api/auth/login` | Login |
 | `POST /api/auth/logout` | Logout |
 | `GET  /api/auth/me` | Session + usage |
-| `GET/POST/DELETE /api/history` | Conversations |
+| `GET/POST/DELETE /api/history` | Conversations — GET is a capped sidebar (no message bodies, no generations); POST `action:"get"` loads one thread |
 | `POST /api/ai/chat` | SSE chat stream (`webSearch: true` → grounded + sources) |
 | `POST /api/ai/code` | SSE code stream |
 | `POST /api/ai/image` | Image URL |
