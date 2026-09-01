@@ -88,6 +88,7 @@ import {
   assignProject,
   deleteProjectApi,
   fetchByok,
+  compareMixApi,
   fetchCompareContract,
   saveByok,
   fetchTeams,
@@ -111,6 +112,7 @@ import {
   type ModelsInfo,
   type CompareContract,
   type CompareRun } from "@/lib/client/api";
+import type { MixEntry } from "@/components/workspace/CompareResults";
 import { ImageStudio, type StudioImage } from "@/components/workspace/ImageStudio";
 import { AudioStudio } from "@/components/workspace/AudioStudio";
 import { CanvasHistoryMenu, type CanvasVersion } from "@/components/workspace/CanvasHistoryMenu";
@@ -133,6 +135,12 @@ import dynamic from "next/dynamic";
    no loading shell, because "Reading which models this run can ask…" already is one. */
 const CompareLanes = dynamic(
   () => import("@/components/workspace/CompareLanes").then((m) => m.CompareLanes),
+  { ssr: false }
+);
+
+/* Same reason as the picker above, and it only appears once a comparison has answered. */
+const CompareResults = dynamic(
+  () => import("@/components/workspace/CompareResults").then((m) => m.CompareResults),
   { ssr: false }
 );
 
@@ -460,6 +468,13 @@ function Dashboard() {
   const [laneErr, setLaneErr] = useState("");
   const [laneIds, setLaneIds] = useState<string[] | null>(null);
   const [compareErr, setCompareErr] = useState("");
+  /* The mix. `mixes[0]` is the run's own combined answer and every later entry is one the reader
+     folded themselves, so the strip can say which is which (and which cost a credit). `null`
+     include means "every lane that answered", which is what the run did. */
+  const [mixes, setMixes] = useState<MixEntry[]>([]);
+  const [mixView, setMixView] = useState(0);
+  const [mixInclude, setMixInclude] = useState<string[] | null>(null);
+  const [mixBusy, setMixBusy] = useState(false);
   const [attachment, setAttachment] = useState<{ dataUrl: string; name: string } | null>(null);
   const [visionBusy, setVisionBusy] = useState(false);
 
@@ -1021,6 +1036,16 @@ function Dashboard() {
    *  button, and a stale-low one is the reason the server's hold stays the real gate. */
   const compareShort =
     laneContract && wallet.loaded && compareCost > wallet.balance ? compareCost - wallet.balance : 0;
+  /* Which answers the combined one is made of. Until the reader touches a checkbox that is
+     "every lane that answered" — the same set the run itself was judged on. */
+  const mixLanes = useMemo(() => {
+    const live = (compareResult?.lanes || []).filter((l) => l.live && l.reply.trim());
+    if (!mixInclude) return live.map((l) => l.id);
+    return live.filter((l) => mixInclude.includes(l.id)).map((l) => l.id);
+  }, [compareResult, mixInclude]);
+  const mixCost = laneContract?.mixCost ?? laneContract?.perLane ?? 1;
+  const mixShort =
+    wallet.loaded && mixes.length > 0 && mixCost > wallet.balance ? mixCost - wallet.balance : 0;
 
   /** Toggle a lane. Bounded to the range the server enforces, so a click can't produce a 400. */
   const toggleLane = (id: string) => {
@@ -1044,6 +1069,16 @@ function Dashboard() {
     try {
       const r = await compareApi(p, laneContract ? chosenLanes : undefined);
       setCompareResult(r);
+      // One entry per combined answer, starting with the one this run produced: the reader can
+      // fold a subset and step back to this one rather than losing it.
+      const from = r.combinedFrom || r.lanes.filter((l) => l.live).map((l) => l.id);
+      setMixes(
+        r.available
+          ? [{ synthesis: r.synthesis || r.synthesisNote || "", from, paid: false }]
+          : []
+      );
+      setMixView(0);
+      setMixInclude(null);
       refreshMe();
     } catch (e) {
       // The route refuses a bad lane list with a `hint` that says what to send instead; a sheet
@@ -1055,11 +1090,61 @@ function Dashboard() {
     }
   };
 
+  const toggleMixLane = (id: string) => {
+    setMixInclude((prev) => {
+      const cur = prev || (compareResult?.lanes || []).filter((l) => l.live).map((l) => l.id);
+      return cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+    });
+  };
+
+  /** Fold the checked answers into a new combined one. No model is re-asked, so the price is one
+   *  lane's worth and the server says so on the button rather than the client quoting itself. */
+  const doMix = async () => {
+    const p = comparePrompt.trim();
+    if (!p || mixBusy || mixLanes.length < 2) return;
+    setMixBusy(true);
+    setCompareErr("");
+    try {
+      const byId = new Map((compareResult?.lanes || []).map((l) => [l.id, l] as const));
+      const answers = mixLanes.map((id) => ({ id, reply: byId.get(id)?.reply || "" }));
+      const r = await compareMixApi(p, answers);
+      if (!r.available) {
+        setMixes((m) => [
+          ...m,
+          {
+            synthesis: "",
+            from: mixLanes,
+            used: r.used,
+            paid: true,
+            note: r.message || "The combined-answer pass could not run, so nothing was charged.",
+          },
+        ]);
+        setMixView(mixes.length);
+        setMixInclude(mixLanes);
+        return;
+      }
+      setMixes((m) => [...m, { synthesis: r.synthesis, from: mixLanes, used: r.used, paid: true }]);
+      setMixView(mixes.length);
+      // The new entry is built from exactly what was checked, so the checkbox state has to follow
+      // it: leaving it behind would make the button look stale one step later.
+      setMixInclude(mixLanes);
+      refreshMe();
+    } catch (e) {
+      const err = e as Error & { hint?: string };
+      setCompareErr(err.hint ? `${err.message} ${err.hint}` : err.message);
+    } finally {
+      setMixBusy(false);
+    }
+  };
+
   const openCompare = () => {
     const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content || "";
     setComparePrompt(input.trim() || lastUser.slice(0, 500));
     setCompareResult(null);
     setCompareErr("");
+    setMixes([]);
+    setMixView(0);
+    setMixInclude(null);
     setModal("compare");
   };
 
@@ -3747,8 +3832,9 @@ function Dashboard() {
         <Sheet onClose={() => setModal(null)} title="Compare models" wide>
           <div className="space-y-3">
             <p className="text-[12px]" style={{ color: "var(--muted)" }}>
-              Ask the same question to 2–6 models at once, then read one combined answer. You pick the
-              lanes; a lane that cannot answer is refunded, and model agreement is never treated as proof.
+              Ask the same question to 2–6 models at once, then read one combined answer — or check
+              the two you liked and fold just those into a new one. A lane that cannot answer is
+              refunded, and model agreement is never treated as proof.
             </p>
             <textarea
               value={comparePrompt}
@@ -3850,54 +3936,30 @@ function Dashboard() {
               </div>
             )}
 
-            {/* A run with no live lane still returns the lanes it asked, each with the reason it
-                came back empty. "Nothing answered" and "these three did not answer, because…" are
-                different screens, and the second one is actionable. */}
-            {compareResult && !compareResult.available && (
-              <div className="rounded-2xl border px-3 py-3 text-[12px]" style={{ borderColor: "var(--border)", background: "var(--secondary)", color: "var(--muted)" }} data-compare-offline>
-                {compareResult.message || compareResult.synthesis}
-              </div>
-            )}
-
-            {!!compareResult?.lanes?.length && (
-              <div className="grid gap-2">
-                {compareResult.lanes.map((l) => (
-                  <div key={l.id} className="rounded-2xl border p-3" style={{ borderColor: "var(--border)", background: l.live ? "var(--card)" : "var(--secondary)" }}>
-                    <div className="mb-1.5 flex items-center justify-between gap-2">
-                      <span className="text-[11px] font-bold uppercase tracking-wide" style={{ color: l.live ? "var(--accent)" : "var(--muted)" }}>
-                        {l.label}
-                      </span>
-                      <span className="flex items-center gap-1.5">
-                        <span className="text-[10px]" style={{ color: "var(--soft)" }}>{l.model}</span>
-                        {l.live && (
-                          <Btn variant="icon" size="sm" aria-label={`Copy ${l.label} (${l.model})`} onClick={() => copy(l.reply, `cmp-${l.id}`)}>
-                            {copied === `cmp-${l.id}` ? <Check className="h-3.5 w-3.5" style={{ color: "var(--ok)" }} /> : <Copy className="h-3.5 w-3.5" />}
-                          </Btn>
-                        )}
-                      </span>
-                    </div>
-                    <p className="max-h-44 overflow-y-auto whitespace-pre-wrap text-[12px] leading-relaxed" style={{ color: "var(--muted)" }}>
-                      {l.reply.trim() ? l.reply : l.note || "— this lane did not answer —"}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {compareResult?.available && (
-              <>
-                <div className="rounded-2xl border p-3" style={{ borderColor: "var(--accent)", background: "var(--accent-soft)" }}>
-                  <div className="mb-1 text-[11px] font-bold uppercase tracking-wide" style={{ color: "var(--accent)" }}>
-                    Best combined answer
-                  </div>
-                  <p className="max-h-60 overflow-y-auto whitespace-pre-wrap text-[13px] leading-relaxed">
-                    {compareResult.synthesis || "No model answered the combined pass — the lanes above are all there is."}
-                  </p>
-                </div>
-                <p className="text-center text-[10px]" style={{ color: "var(--soft)" }}>
-                  Model agreement is not proof — verify important facts with the ✓ Verify button.
-                </p>
-              </>
+            {/* The results are an input, not just a read-out (W3.2): each answer can be folded into
+                a fresh combined one, and every answer stays on screen whether it is in the mix or
+                not. The offline case comes through here too — same lanes, each saying why it is
+                empty — because "no results" is not a useful screen. */}
+            {!!compareResult && (
+              <CompareResults
+                lanes={compareResult.lanes}
+                mixes={mixes}
+                view={mixView}
+                include={mixLanes}
+                busy={compareBusy}
+                mixBusy={mixBusy}
+                mixCost={mixCost}
+                mixShort={mixShort}
+                offlineMessage={compareResult.available ? "" : compareResult.message || compareResult.synthesis}
+                onToggleInclude={toggleMixLane}
+                onMix={() => void doMix()}
+                onView={(dir) =>
+                  setMixView((v) => Math.min(mixes.length - 1, Math.max(0, v + dir)))
+                }
+                onCopy={(text, key) => copy(text, key)}
+                onTopUp={openCredits}
+                copied={copied}
+              />
             )}
           </div>
         </Sheet>

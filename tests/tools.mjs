@@ -789,6 +789,125 @@ await run("the sheet picks from those lists and prices the run from the server's
   assert.ok(page.slice(at, at + 1500).includes("loadModels()"), "saving a key refreshes the lists that depend on it");
 });
 
+
+/* ── W3.2: fold the answers you liked into a new combined one ─────── */
+
+await run("POST action:mix folds exactly what you send, asks no model again, and costs one lane", async () => {
+  const A = "llama-3.1-8b-instant";
+  const B = "llama-3.2-3b-instruct";
+  const C = "llama-3.3-70b-versatile";
+  const long = "Z".repeat(5000);
+  const before = calls.length;
+  const r = await req(BASE, "/api/ai/compare", {
+    method: "POST",
+    jar,
+    body: {
+      action: "mix",
+      prompt: "Ship the pricing page rewrite or measure first?",
+      lanes: [
+        { id: A, reply: "SHIP IT — revenue grew 42% while churn held flat." },
+        { id: B, reply: `MEASURE FIRST — here is the number to wait for. ${long}` },
+      ],
+    },
+  });
+  assert.equal(r.status, 200, r.text.slice(0, 300));
+  assert.equal(r.json.available, true, "the judge pass ran on this deployment");
+  const fresh = calls.slice(before);
+  assert.equal(fresh.length, 1, `a re-mix is one judge pass; the fixture saw ${fresh.length} calls`);
+  assert.ok(
+    fresh.every((c) => /comparison synthesizer/i.test(c.system)),
+    "only the synthesiser was called — no lane was asked again"
+  );
+  assert.ok(fresh[0].user.includes("SHIP IT"), "the first answer went in");
+  assert.ok(fresh[0].user.includes("MEASURE FIRST"), "and so did the second");
+  assert.ok(
+    fresh[0].user.includes(CAT.modelDetailLabel(A, "chat")) &&
+      fresh[0].user.includes(CAT.modelDetailLabel(B, "chat")),
+    "the judge is told which model each answer came from"
+  );
+  assert.ok(!fresh[0].user.includes(C), `the lane that was not checked leaked into the mix: ${C}`);
+  assert.equal(r.json.credits.held, r.json.credits.perLane, "held for one unit of work");
+  assert.equal(r.json.credits.charged, r.json.credits.perLane, "kept it, because the pass answered");
+  assert.equal(r.json.credits.refunded, 0);
+  assert.equal(r.json.used.length, 2, "and the response names what was folded");
+  const trimmed = r.json.used.find((u) => u.id === B);
+  assert.equal(trimmed.chars, 2400, "a long answer is clamped to the length the run itself publishes");
+  assert.equal(trimmed.trimmed, true, "and says so, rather than silently cutting");
+  assert.ok(fresh[0].user.length < 5000, "the clamp is enforced in the text sent, not only reported");
+});
+
+await run("a mix is refused, with a reason, when it is not a mix", async () => {
+  const A = "llama-3.1-8b-instant";
+  const B = "llama-3.2-3b-instruct";
+  const cases = [
+    [{ lanes: { id: A, reply: "x" } }, "BAD_MIX_LIST"],
+    [{ lanes: [{ id: "mistral", reply: "x" }, { id: A, reply: "y" }] }, "LANE_NOT_IN_CATALOG"],
+    [{ lanes: [{ id: A, reply: "only one" }] }, "TOO_FEW_LANES"],
+    [{ lanes: [{ id: A, reply: "one side only" }, { id: B, reply: "   " }] }, "MIX_ANSWER_MISSING"],
+  ];
+  for (const [extra, code] of cases) {
+    const r = await req(OFF, "/api/ai/compare", {
+      method: "POST",
+      body: { action: "mix", prompt: "Which of these two readings is better supported?", ...extra },
+    });
+    assert.equal(r.status, 400, `${code}: got ${r.status} ${r.text.slice(0, 160)}`);
+    assert.equal(r.json.code, code, `refused for the wrong reason: ${JSON.stringify(r.json)}`);
+    assert.ok(String(r.json.hint || "").length > 20, `${code} arrives without a hint`);
+  }
+  const action = await req(OFF, "/api/ai/compare", { method: "POST", body: { action: "blend", prompt: "x?" } });
+  assert.equal(action.json.code, "BAD_ACTION", "an unknown action is named, not run as the default");
+});
+
+await run("a mix whose judge cannot answer costs nothing and says which lanes it had", async () => {
+  const r = await req(OFF, "/api/ai/compare", {
+    method: "POST",
+    body: {
+      action: "mix",
+      prompt: "Two sources disagree about the same quarter — which do I trust?",
+      lanes: [
+        { id: "llama-3.1-8b-instant", reply: "The filing says revenue rose." },
+        { id: "llama-3.2-3b-instruct", reply: "The interview says orders rose." },
+      ],
+    },
+  });
+  assert.equal(r.status, 200, r.text.slice(0, 200));
+  assert.equal(r.json.available, false, "no provider, no combined answer");
+  assert.equal(r.json.synthesis, "", "and nothing is invented to fill the card");
+  assert.match(r.json.message, /nothing was charged/i, "the copy says so in the same breath");
+  assert.equal(r.json.credits.charged, 0, "the held credit came back");
+  assert.equal(r.json.credits.refunded, r.json.credits.held);
+  assert.deepEqual(r.json.used.map((u) => u.id), ["llama-3.1-8b-instant", "llama-3.2-3b-instruct"], "the lanes it did have are still named");
+  assert.equal("live" in r.json.used[0], false, "a folded answer must not claim a provider answered");
+});
+
+await run("the results are an input: every lane stays on screen, and the mix is priced by the server", () => {
+  const results = srcFile("components/workspace/CompareResults.tsx");
+  assert.ok(/\{lanes\.map\(\(l\) => \{/.test(results), "the cards map over every lane, not over the ones in the mix");
+  assert.ok(results.includes("data-mix-toggle"), "each answer can be put into or taken out of the combined one");
+  assert.ok(results.includes('role="checkbox"') && results.includes("aria-checked"), "and that control is a checkbox, announced as one");
+  assert.ok(results.includes("{mixCost} credit"), "the re-mix button quotes the server's own price");
+  assert.ok(results.includes("view + 1}/"), "combined answers are steppable, so a fold never destroys the last one");
+  assert.ok(results.includes("data-compare-offline"), "the nothing-answered case is this screen's too, not a second one");
+  assert.equal(results.includes("fetch("), false, "it renders state; it does not go and ask for more");
+
+  const page = srcFile("app/page.tsx");
+  assert.ok(page.includes("r.combinedFrom"), "the strip starts from what the run actually folded, not a guess");
+  assert.equal(page.includes("Best combined answer"), false, "the result markup lives in one place now");
+  assert.ok(page.includes("compareMixApi"), "and the page is the one that calls it");
+  const api = srcFile("lib/client/api.ts");
+  const at = api.indexOf("export async function compareMixApi(");
+  assert.ok(at > 0, "the client has one way to ask for a mix");
+  const fn = api.slice(at, api.indexOf("\n}", at));
+  assert.ok(fn.includes("noteCredits(r, j)"), "a charged re-mix moves the wallet chip like any other paid call");
+  const pricing = srcFile("app/pricing/page.tsx");
+  assert.ok(
+    /\["Combining a chosen few of them again", wallet\.costs\.compareLane\]/.test(pricing),
+    "the price table quotes the same per-lane number rather than inventing a second one"
+  );
+  const ledger = srcFile("components/billing/CreditsUI.tsx");
+  assert.ok(ledger.includes('"compare-mix"'), "a re-mix shows up in the ledger under a real name");
+});
+
 fs.rmSync(labelDir, { recursive: true, force: true });
 
 /* ── teardown ────────────────────────────────────────────── */

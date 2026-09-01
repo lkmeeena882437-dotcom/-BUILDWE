@@ -112,11 +112,21 @@ export function laneContract(userKeys?: ProviderKeys) {
     maxLanes: MAX_LANES,
     /** One live lane costs this much; the combined-answer pass over the lanes is included. */
     perLane: CREDITS.cost.compareLane,
+    /** A re-mix is one judge pass over answers already paid for, so it is priced as one lane. */
+    mixCost: CREDITS.cost.compareLane,
     lanes: ids.length,
     defaults: ids.map((id, i) => laneFor(id, i)),
-    note: "A lane is held before it runs and refunded if it cannot answer. Pick 2–6 models.",
+    note:
+      "A lane is held before it runs and refunded if it cannot answer. Pick 2–6 models, and re-mixing the answers costs one lane.",
   };
 }
+
+/**
+ * How much of one lane's answer is kept — for the run's report *and* for the text a re-mix is
+ * allowed to hand the judge. The same number has to cover both or a re-mix could send the
+ * synthesiser more text than the run that produced it did, which is how a "cap" becomes a joke.
+ */
+export const LANE_REPLY_CHARS = 2400;
 
 export type LanePlan = { ok: true; ids: string[]; defaulted: boolean };
 export type LaneRejection = {
@@ -126,35 +136,20 @@ export type LaneRejection = {
 };
 
 /**
- * Turn whatever the caller sent into the set to run — or into an error that says what to send
- * instead. An unknown id and a too-short list are refused with the valid options in the payload:
- * the point of a code is that a client can branch on it, and the point of a hint is that a human
- * does not have to read the source to fix a typo.
+ * The rules every lane list is held to, whether it arrives as `models` (what to ask) or as the
+ * ids inside `lanes` (what to re-mix). Kept in one function because the two must not drift: a
+ * caller who can smuggle an image model into a mix but not into a run has found a bug, not a
+ * feature.
+ *
+ * Refusals carry a code (so a client can branch) and a hint (so a human does not have to read
+ * this file to fix a typo).
  */
-export function resolveLanes(raw: unknown, userKeys?: ProviderKeys): LanePlan | LaneRejection {
-  if (raw === undefined || raw === null || raw === "") {
-    const ids = defaultLaneIds(userKeys);
-    return { ok: true, ids, defaulted: true };
-  }
-  const list = Array.isArray(raw)
-    ? raw
-    : typeof raw === "string"
-      ? raw.split(",")
-      : null;
-  if (!list) {
-    return {
-      ok: false,
-      status: 400,
-      body: {
-        error: "`models` must be a list of model ids.",
-        code: "BAD_LANE_LIST",
-        hint: `Send "models": ["${DEFAULT_SEAT_IDS[0]}", "${DEFAULT_SEAT_IDS[1]}"] — between ${MIN_LANES} and ${MAX_LANES} ids from GET /api/ai/models (selectable.chat).`,
-      },
-    };
-  }
-  const ids = Array.from(
-    new Set(list.map((v) => String(v ?? "").trim()).filter(Boolean))
-  );
+function validateLaneIds(
+  rawIds: string[],
+  opts: { field: string; emptyMeansDefault?: boolean }
+): { ok: true; ids: string[] } | LaneRejection {
+  const { field } = opts;
+  const ids = Array.from(new Set(rawIds.map((v) => String(v ?? "").trim()).filter(Boolean)));
   if (!ids.length) {
     return {
       ok: false,
@@ -162,7 +157,7 @@ export function resolveLanes(raw: unknown, userKeys?: ProviderKeys): LanePlan | 
       body: {
         error: "Pick at least two models to compare.",
         code: "TOO_FEW_LANES",
-        hint: `"models" needs ${MIN_LANES}–${MAX_LANES} distinct ids. Omit it to use this deployment's default set.`,
+        hint: `"${field}" needs ${MIN_LANES}–${MAX_LANES} distinct ids from GET /api/ai/models (selectable.chat).`,
       },
     };
   }
@@ -173,7 +168,7 @@ export function resolveLanes(raw: unknown, userKeys?: ProviderKeys): LanePlan | 
       body: {
         error: `A comparison runs ${MAX_LANES} models at most — ${ids.length} were asked for.`,
         code: "TOO_MANY_LANES",
-        hint: `Each lane is a real model call, held against your balance before it runs. Trim the list to ${MAX_LANES}.`,
+        hint: `Each lane is a real model call, held against your balance before it runs. Trim "${field}" to ${MAX_LANES}.`,
         requested: ids.length,
       },
     };
@@ -215,12 +210,106 @@ export function resolveLanes(raw: unknown, userKeys?: ProviderKeys): LanePlan | 
             ? "One model is an answer, not a comparison."
             : "Pick at least two models to compare.",
         code: "TOO_FEW_LANES",
-        hint: `"models" needs ${MIN_LANES}–${MAX_LANES} distinct ids. Omit it to use this deployment's default set.`,
+        hint: `"${field}" needs ${MIN_LANES}–${MAX_LANES} distinct ids.`,
         received: ids,
       },
     };
   }
-  return { ok: true, ids, defaulted: false };
+  return { ok: true, ids };
+}
+
+/**
+ * Turn whatever the caller sent into the set to run — or into an error that says what to send
+ * instead. Omitting the list is not a guess: it means this deployment's default lanes, which
+ * `GET /api/ai/compare` publishes so a client never has to.
+ */
+export function resolveLanes(raw: unknown, userKeys?: ProviderKeys): LanePlan | LaneRejection {
+  if (raw === undefined || raw === null || raw === "") {
+    const ids = defaultLaneIds(userKeys);
+    return { ok: true, ids, defaulted: true };
+  }
+  const list = Array.isArray(raw)
+    ? raw
+    : typeof raw === "string"
+      ? raw.split(",")
+      : null;
+  if (!list) {
+    return {
+      ok: false,
+      status: 400,
+      body: {
+        error: "`models` must be a list of model ids.",
+        code: "BAD_LANE_LIST",
+        hint: `Send "models": ["${DEFAULT_SEAT_IDS[0]}", "${DEFAULT_SEAT_IDS[1]}"] — between ${MIN_LANES} and ${MAX_LANES} ids from GET /api/ai/models (selectable.chat).`,
+      },
+    };
+  }
+  const checked = validateLaneIds(list, { field: "models" });
+  if (!checked.ok) return checked;
+  return { ok: true, ids: checked.ids, defaulted: false };
+}
+
+/**
+ * One answer the caller wants folded into a fresh combined answer.
+ *
+ * A re-mix does NOT re-ask the models — that is the whole point. The lanes a run already paid for
+ * are on the caller's screen; choosing a different subset of them needs one judge pass, priced as
+ * one lane, and nothing else. So this takes the answers back in, keeps each one to the same
+ * `LANE_REPLY_CHARS` the run published it at (a re-mix can never be a bigger prompt than the run
+ * that came before it), and refuses anything the run could not have produced.
+ */
+export type MixLane = { id: string; label: string; model: string; reply: string; chars: number; trimmed: boolean };
+export type MixPlan = { ok: true; lanes: MixLane[] } | LaneRejection;
+
+export function resolveMix(raw: unknown): MixPlan {
+  if (!Array.isArray(raw)) {
+    return {
+      ok: false,
+      status: 400,
+      body: {
+        error: "`lanes` must be a list of { id, reply } pairs.",
+        code: "BAD_MIX_LIST",
+        hint: `Send "lanes": [{"id":"${DEFAULT_SEAT_IDS[0]}","reply":"…"}] with ${MIN_LANES}–${MAX_LANES} entries — the answers a comparison already returned.`,
+      },
+    };
+  }
+  const entries = raw
+    .map((r) => ({
+      id: String((r as { id?: unknown })?.id ?? "").trim(),
+      reply: String((r as { reply?: unknown })?.reply ?? "").trim(),
+    }))
+    .filter((r) => r.id);
+  const checked = validateLaneIds(entries.map((e) => e.id), { field: "lanes" });
+  if (!checked.ok) return checked;
+  const byId = new Map(entries.map((e) => [e.id, e.reply] as const));
+  const missing = checked.ids.filter((id) => !byId.get(id));
+  if (missing.length) {
+    return {
+      ok: false,
+      status: 400,
+      body: {
+        error: `No answer to mix for: ${missing.join(", ")}.`,
+        code: "MIX_ANSWER_MISSING",
+        hint: "A re-mix folds answers a comparison already returned — send each lane's `reply` with it.",
+        missing,
+      },
+    };
+  }
+  return {
+    ok: true,
+    lanes: checked.ids.map((id, i) => {
+      const full = byId.get(id) || "";
+      const reply = full.slice(0, LANE_REPLY_CHARS);
+      return {
+        ...laneFor(id, i),
+        reply,
+        chars: reply.length,
+        // Said out loud rather than silently cut: a combined answer built from a trimmed lane is
+        // a different fact from one built from the whole thing.
+        trimmed: full.length > LANE_REPLY_CHARS,
+      };
+    }),
+  };
 }
 
 /**

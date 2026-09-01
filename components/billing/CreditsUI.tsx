@@ -223,6 +223,8 @@ const REASONS: Record<string, string> = {
   "top-up": "Top-up",
   compare: "Model comparison",
   "compare-lane-refund": "Comparison: dead lanes refunded",
+  "compare-mix": "Comparison: re-mixed answers",
+  "compare-mix-refund": "Comparison: re-mix refunded (nothing answered)",
   image: "Image",
   "image-refund": "Image refund (provider returned nothing)",
   audio: "Voice",

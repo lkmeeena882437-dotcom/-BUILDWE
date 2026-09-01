@@ -385,6 +385,9 @@ export default function PricingPage() {
                 ["Transcription", wallet.costs.transcribe],
                 ["Read an image", wallet.costs.vision],
                 ["Each live lane in a comparison", wallet.costs.compareLane],
+                // Same number on purpose: re-mixing is one judge pass over answers already paid for,
+                // not a new price to memorise.
+                ["Combining a chosen few of them again", wallet.costs.compareLane],
                 ["Agent run (multi-file code job)", wallet.costs.agent],
               ].map(([label, n]) => (
                 <li

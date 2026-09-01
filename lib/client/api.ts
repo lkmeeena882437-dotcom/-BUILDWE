@@ -451,6 +451,10 @@ export type CompareRun = {
   message?: string;
   lanes: CompareLane[];
   synthesis: string;
+  /** Which lanes the combined answer was built from — the run uses every lane that answered. */
+  combinedFrom?: string[];
+  /** Said when the judge pass itself could not run: the lanes stand on their own. */
+  synthesisNote?: string;
   credits?: {
     perLane: number;
     held: number;
@@ -472,6 +476,8 @@ export type CompareContract = {
   minLanes: number;
   maxLanes: number;
   perLane: number;
+  /** What folding a chosen subset of answers into one costs — one lane's worth, one judge pass. */
+  mixCost?: number;
   lanes: number;
   defaults: { id: string; label: string; model: string }[];
   note?: string;
@@ -483,6 +489,54 @@ export async function fetchCompareContract(): Promise<CompareContract> {
   const j = await readJson(r);
   if (!r.ok) failWith(j, "The comparison settings could not be read.");
   return j as CompareContract;
+}
+
+/**
+ * One answer folded back into a fresh combined answer. `lanes` is the subset the reader picked,
+ * each as `{ id, reply }` straight out of the run that produced it — the models are not asked
+ * again, so this costs one judge pass and nothing else. `used` comes back from the server because
+ * "which lanes, and how much of each" is its fact, not the client's.
+ */
+export type CompareMixResult = {
+  ok: boolean;
+  action: "mix";
+  available: boolean;
+  synthesis: string;
+  message?: string;
+  /** The answers that went in, and how much of each the judge actually saw. */
+  used: { id: string; label: string; model: string; chars: number; trimmed?: boolean; note?: string }[];
+  credits?: {
+    perLane: number;
+    held: number;
+    charged: number;
+    refunded: number;
+    balance?: number;
+    lanes: { total: number; live: number; dead: number };
+  };
+};
+
+export async function compareMixApi(
+  prompt: string,
+  lanes: { id: string; reply: string }[]
+): Promise<CompareMixResult> {
+  const r = await fetch("/api/ai/compare", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "mix", prompt, lanes }),
+  });
+  const j = await readJson(r);
+  noteCredits(r, j);
+  if (!r.ok) {
+    const err = new Error(j.error || "Could not combine those answers") as Error & {
+      code?: string;
+      hint?: string;
+    };
+    if (j.code) err.code = j.code;
+    if (j.hint) err.hint = j.hint;
+    throw err;
+  }
+  return j as CompareMixResult;
 }
 
 /* ── BYOK (bring your own key) ──────────────────────────── */
