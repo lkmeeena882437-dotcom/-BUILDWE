@@ -28,7 +28,8 @@ Creators juggle ChatGPT + coding tools + image + TTS apps. BUILDWE is one worksp
 | Ads | Free-plan house-ad slots (PRO ad-free) |
 | Projects | Group chats into projects (folders) |
 | Teams | Shared team workspaces with invite links |
-| Share | Public read-only links `/s/{id}` |
+| Creations | One list for every image, clip and code answer — plus any chat answer you keep — named, pinned, shareable |
+| Share | Public read-only links `/s/{id}` — a whole chat, one creation, or one answer on its own |
 | Billing | Razorpay checkout — real only: 503 `CHECKOUT_UNAVAILABLE` until keys are set, verified from the gateway's own signature |
 | Limits | Server-side daily counters |
 | Docs & trust | `/how-it-works` `/security` `/acceptable-use` `/changelog` `/status` `/help` `/contact` + JSON-LD/sitemap |
@@ -89,8 +90,8 @@ GROQ_API_KEY=gsk_...
 | `GET /api/credits` | Balance, price list, and the limits the UI must not copy (`messageChars` …) |
 | `GET/POST/DELETE /api/projects` | Project folders |
 | `GET/POST /api/teams` | Team workspaces (create/join/invite/leave/assign) |
-| `GET/PATCH/DELETE /api/ai/generations` | Your creations — studios' history (`?type=`), the curated list (`?view=artifacts`), one whole row (`?id=`), rename/pin, delete |
-| `POST /api/share` · `GET /api/share?id=` | Public share links — for a whole chat or one creation; `action:"view"` counts an open |
+| `POST/GET/PATCH/DELETE /api/ai/generations` | Your creations — studios' history (`?type=`), the curated list (`?view=artifacts`), one whole row (`?id=`), rename/pin, delete, and `action:"save-answer"` to keep one answer of a chat as a creation |
+| `POST /api/share` · `GET /api/share?id=` | Public share links — for a whole chat, one creation, or one answer (`conversationId` + `messageId`, which snapshots that question and its reply); `action:"view"` counts an open |
 | `GET  /api/checkout/order` | What checkout is actually configured to charge (the pricing page reads it rather than restating a price) |
 | `POST /api/checkout/order` | Razorpay order (real only — 503 `CHECKOUT_UNAVAILABLE` without keys) |
 | `POST /api/checkout/verify` | Signature check → plan=pro, credits topped up from the ledger |
@@ -156,7 +157,7 @@ throwaway data dir, so they can also be run one at a time — the port is in the
 | `npm run test:pricing` | `/pricing` reads the server's checkout config; seats are refused, never clamped |
 | `npm run test:preview` | link previews and the SSRF guard |
 | `npm run test:workspace` | the one-file chat context: budget order, refusals, Apply rows |
-| `npm run test:artifacts` | creations: rename/pin/share/delete, and the public `/s/[id]` |
+| `npm run test:artifacts` | creations: rename/pin/share/delete, keeping a chat answer, and the public `/s/[id]` |
 | `npm run test:throttle` | credit refunds under 25 concurrent requests |
 | `npm run test:docs` | the API map in this file against the routes that actually exist |
 | `npm run test:durability` | store writes: atomic replace, concurrent writers, recovery from a torn file |

@@ -43,8 +43,6 @@ import {
   LayoutGrid,
   Recycle,
   SquarePen,
-  ThumbsUp,
-  ThumbsDown,
   Download,
   Layers,
   Share2,
@@ -84,6 +82,8 @@ import {
   analyzeFileApi,
   createShare,
   fetchProjects,
+  saveAnswer,
+  shareAnswer,
   createProject,
   assignProject,
   deleteProjectApi,
@@ -114,6 +114,7 @@ import { CanvasHistoryMenu, type CanvasVersion } from "@/components/workspace/Ca
 import { ProjectMoveMenu } from "@/components/workspace/ProjectMoveMenu";
 import type { PaletteRow } from "@/lib/client/palette";
 import { Sheet } from "@/components/workspace/Sheet";
+import { MessageActions } from "@/components/workspace/MessageActions";
 import dynamic from "next/dynamic";
 
 /* The creations list is opened by a click, not by a page load: ~3 kB of First Load JS for
@@ -476,6 +477,14 @@ function Dashboard() {
 
   // share
   const [shareNote, setShareNote] = useState("");
+  /* Which answer of this chat currently has a link being minted, or a save in flight: the buttons
+     show a spinner for that one message only, so twelve answers do not all go idle at once. */
+  const [sharingMsg, setSharingMsg] = useState<string | null>(null);
+  const [savingMsg, setSavingMsg] = useState<string | null>(null);
+  /* Answers promoted to creations *this session*. It is a hint for the row's label, not the source
+     of truth — the panel reads the server — and re-saving is idempotent server-side, so being
+     wrong after a reload costs a refresh rather than a duplicate. */
+  const [savedAnswers, setSavedAnswers] = useState<string[]>([]);
   /** /api/projects answers with the store's cap; 0 until the first read lands. */
   const [projNameMax, setProjNameMax] = useState(0);
   /* ── Step 11 sweep: name fields, a delete form, and per-chat composer drafts ── */
@@ -837,6 +846,62 @@ function Dashboard() {
     } finally {
       setVerifying(null);
     }
+  };
+
+  /**
+   * One answer, its own public page: the question and that reply. The chat's own share (the header
+   * button) is a different link over a different snapshot, and `/s/[id]` renders both because both
+   * are rows in the same `shares` table — that is the whole reason this is 12 lines here.
+   */
+  const shareThisAnswer = async (m: Msg) => {
+    if (!convId || sharingMsg) return;
+    setSharingMsg(m.id);
+    try {
+      const s = await shareAnswer(convId, m.id);
+      const url = `${window.location.origin}${s.url}`;
+      // Same clipboard-first, show-the-url-fallback path as the chat link: on http:// in a browser
+      // that refuses the API, the link is still usable if it is on screen.
+      try {
+        await navigator.clipboard.writeText(url);
+        setShareNote("Answer link copied to clipboard ✓");
+      } catch {
+        setShareNote(url);
+      }
+      setTimeout(() => setShareNote(""), 4500);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSharingMsg(null);
+    }
+  };
+
+  const saveThisAnswer = async (m: Msg) => {
+    if (!convId || savingMsg) return;
+    setSavingMsg(m.id);
+    try {
+      await saveAnswer(convId, m.id);
+      setSavedAnswers((ids) => (ids.includes(m.id) ? ids : [...ids, m.id]));
+      setShareNote("Saved to creations — name it, pin it or publish it from there ✓");
+      setTimeout(() => setShareNote(""), 4500);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSavingMsg(null);
+    }
+  };
+
+  const downloadAnswer = (m: Msg) => {
+    const blob = new Blob([m.content], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "buildwe-answer.txt";
+    a.click();
+  };
+
+  const rateAnswer = async (vote: "up" | "down", messageId: string) => {
+    await sendFeedback(vote, vote === "up" ? "helpful and on-topic" : "missed my message or too generic");
+    setCopied(`${vote}-${messageId}`);
+    setTimeout(() => setCopied(null), 1000);
   };
 
   const doCompare = async () => {
@@ -2890,124 +2955,46 @@ function Dashboard() {
                                 </div>
                               )}
                               {!isUser && m.content && !m.streaming && !m.recovery && (
-                                <div className="mt-1 flex gap-0.5">
-                                  <Btn variant="icon" size="sm" aria-label="Copy" onClick={() => copy(m.content, m.id)}>
-                                    {copied === m.id ? <Check className="h-3.5 w-3.5" style={{ color: "var(--accent)" }} /> : <Copy className="h-3.5 w-3.5" />}
-                                  </Btn>
-                                  <Btn
-                                    variant="icon"
-                                    size="sm"
-                                    aria-label="Regenerate"
-                                    onClick={() => {
+                                <MessageActions
+                                  handlers={{
+                                    copy: () => void copy(m.content, m.id),
+                                    copied: copied === m.id,
+                                    verify: () => void doVerify(m),
+                                    verifying: verifying === m.id,
+                                    hasVerdict: Boolean(m.verified),
+                                    share: () => void shareThisAnswer(m),
+                                    sharing: sharingMsg === m.id,
+                                    save: () => void saveThisAnswer(m),
+                                    saving: savingMsg === m.id,
+                                    saved: savedAnswers.includes(m.id),
+                                    openCreations: () => setModal("creations"),
+                                    regenerate: () => {
                                       const idx = messages.findIndex((x) => x.id === m.id);
                                       const prevUser = [...messages.slice(0, idx)].reverse().find((x) => x.role === "user");
                                       if (!prevUser || streaming) return;
                                       beat("regenerate");
                                       setMessages((ms) => ms.filter((x) => x.id !== m.id));
                                       setTimeout(() => send(prevUser.content), 30);
-                                    }}
-                                  >
-                                    <RotateCcw className="h-3.5 w-3.5" />
-                                  </Btn>
-                                  <Btn
-                                    variant="icon"
-                                    size="sm"
-                                    aria-label="Edit prompt"
-                                    onClick={() => {
+                                    },
+                                    editPrompt: () => {
                                       const idx = messages.findIndex((x) => x.id === m.id);
                                       const prevUser = [...messages.slice(0, idx)].reverse().find((x) => x.role === "user");
                                       if (!prevUser) return;
                                       setInput(prevUser.content);
                                       requestAnimationFrame(grow);
-                                    }}
-                                  >
-                                    <SquarePen className="h-3.5 w-3.5" />
-                                  </Btn>
-                                  <Btn
-                                    variant="icon"
-                                    size="sm"
-                                    aria-label="Good reply"
-                                    onClick={async () => {
-                                      await sendFeedback("up", "helpful and on-topic");
-                                      setCopied("up-" + m.id);
-                                      setTimeout(() => setCopied(null), 1000);
-                                    }}
-                                  >
-                                    <ThumbsUp className="h-3.5 w-3.5" />
-                                  </Btn>
-                                  <Btn
-                                    variant="icon"
-                                    size="sm"
-                                    aria-label="Bad reply"
-                                    onClick={async () => {
-                                      await sendFeedback("down", "missed my message or too generic");
-                                      setCopied("down-" + m.id);
-                                      setTimeout(() => setCopied(null), 1000);
-                                    }}
-                                  >
-                                    <ThumbsDown className="h-3.5 w-3.5" />
-                                  </Btn>
-                                  <span className="mx-1 h-3 w-px" style={{ background: "var(--border)" }} />
-                                  {[
-                                    ["Simplify", "Rewrite your previous answer in simple, beginner-friendly language — keep every fact."],
-                                    ["Shorten", "Rewrite your previous answer much shorter — only the essentials, keep it accurate."],
-                                    ["Expand", "Expand your previous answer with more detail and useful examples — keep it accurate."],
-                                    ["Explain", "Explain your previous answer step by step like I'm new to this topic."],
-                                    ["Example", "Give one concrete example for your previous answer."],
-                                    ["Document", "Turn your previous answer into a clean shareable document: a clear title, short intro, well-organised sections with headings, and a one-line summary at the end. Keep every fact exactly as stated."],
-                                    ["Table", "Turn your previous answer into a markdown table with clear column headers — one row per item. Keep every fact exactly as stated, and add a one-line note under the table."],
-                                    ["Report", "Turn your previous answer into a short professional report: Title, Key findings (bullets), Details, Risks or caveats, and Recommended next steps. Keep every fact exactly as stated."],
-                                  ].map(([label, instruction]) => (
-                                    <button
-                                      key={label}
-                                      type="button"
-                                      disabled={streaming}
-                                      onClick={() => send(instruction)}
-                                      className="rounded-lg px-1.5 py-1 text-[10px] font-semibold transition hover:opacity-80 disabled:opacity-40"
-                                      style={{ background: "var(--secondary)", color: "var(--muted)" }}
-                                    >
-                                      {label}
-                                    </button>
-                                  ))}
-                                  <Btn
-                                    variant="icon"
-                                    size="sm"
-                                    aria-label="Verify claims"
-                                    title="Verify — check facts against live sources"
-                                    disabled={verifying === m.id}
-                                    onClick={() => doVerify(m)}
-                                  >
-                                    {verifying === m.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-                                  </Btn>
-                                  <Btn
-                                    variant="icon"
-                                    size="sm"
-                                    aria-label="Use as prompt"
-                                    title="Use this answer as your next prompt"
-                                    onClick={() => {
+                                    },
+                                    useAsPrompt: () => {
                                       setInput(m.content.slice(0, 2000));
                                       requestAnimationFrame(grow);
                                       taRef.current?.focus();
-                                    }}
-                                  >
-                                    <SquarePen className="h-3.5 w-3.5" />
-                                  </Btn>
-                                  <Btn
-                                    variant="icon"
-                                    size="sm"
-                                    aria-label="Save answer"
-                                    title="Save this answer to a file"
-                                    onClick={() => {
-                                      const blob = new Blob([m.content], { type: "text/plain" });
-                                      const a = document.createElement("a");
-                                      a.href = URL.createObjectURL(blob);
-                                      a.download = "buildwe-answer.txt";
-                                      a.click();
-                                    }}
-                                  >
-                                    <Download className="h-3.5 w-3.5" />
-                                  </Btn>
-                                </div>
+                                    },
+                                    download: () => downloadAnswer(m),
+                                    feedback: (vote) => void rateAnswer(vote, m.id),
+                                    transform: (instruction) => void send(instruction),
+                                    blocked: streaming,
+                                    blockedNote: "Wait for this answer to finish",
+                                  }}
+                                />
                               )}
                               {!isUser && m.clarifier && !m.streaming && (
                                 <p className="mt-1 rounded-xl px-2.5 py-1.5 text-[11px]" style={{ background: "var(--info-soft)", color: "var(--info)" }}>
@@ -3576,7 +3563,16 @@ function Dashboard() {
             Every image, voice clip and code answer you have made. Name the ones worth
             keeping, pin them to the top, or send a link that shows exactly one of them.
           </p>
-          <CreationsPanel onOpenCode={openArtifactCode} onShowStudio={openArtifactStudio} />
+          <CreationsPanel
+            onOpenCode={openArtifactCode}
+            onShowStudio={openArtifactStudio}
+            onOpenChat={(conversationId) => {
+              // Back to where the answer was written: close the panel first, or the chat opens
+              // underneath a sheet that is still covering it.
+              setModal(null);
+              void openHist(conversationId);
+            }}
+          />
         </Sheet>
       )}
 

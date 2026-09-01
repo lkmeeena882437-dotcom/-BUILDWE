@@ -165,9 +165,15 @@ body.lock-scroll {
     opacity: 0;
     transform: translateY(10px);
   }
+  /* Ends on `none`, not `translateY(0)`: with `animation-fill-mode: both` the final frame is the
+     element's permanent style, and a permanent non-`none` transform turns this box into the
+     containing block for every `position: fixed` descendant — which is how a popover opened inside
+     it ends up beside the wrong thing. Found once already (bw-pop-in, step 6) and the same shape
+     was still here twice over, so the `to` frames of all three entrance animations are pinned by
+     tests/ui.mjs now. */
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 .anim-fade-up {
@@ -309,8 +315,13 @@ button:active:not(:disabled) {
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
-    filter: blur(0);
+    /* `transform: none` and `filter: none`, not `translateY(0) scale(1)` and `blur(0)`. Both are
+       visually identical at rest and both are wrong structurally: a non-`none` filter ALSO makes
+       an element a containing block for fixed descendants, so a sheet that finished animating
+       would keep displacing any menu opened inside it. `@supports not (backdrop-filter…)` above
+       is the same class of care — the blur is a decoration, not a layout input. */
+    transform: none;
+    filter: none;
   }
 }
 .anim-sheet {
@@ -324,7 +335,7 @@ button:active:not(:disabled) {
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 .anim-rise {

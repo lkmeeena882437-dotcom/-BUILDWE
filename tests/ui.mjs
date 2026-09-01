@@ -1079,5 +1079,212 @@ await run("step 12: one owner for Escape, in the right order", async () => {
   assert.ok(bar.includes('aria-label="Search history"') === false || true, "the composer keeps its own label either way");
 });
 
+await run("step 13: no entrance animation leaves a containing block behind", () => {
+  // `animation-fill-mode: both` means the animation's last frame IS the element's settled style.
+  // A settled `transform: translateY(0)` is not "no transform" — it makes the box the containing
+  // block for every `position: fixed` descendant, and a settled `filter: blur(0)` does the same.
+  // That is how a menu opened inside an animated panel ends up beside the wrong thing, which step 6
+  // already had to fix once (`.bw-pop-in`). The rule now covers every animation this file fills with
+  // `both`, so the next one cannot re-introduce it. `shimmer`/`blink` sit outside it on purpose: an
+  // infinite loop has no settled frame, and nothing opens a menu inside a skeleton.
+  const css = readFileSync(path.join(ROOT, "app", "globals.css"), "utf8");
+  const filled = [...css.matchAll(/\.([a-z0-9_-]+)\s*\{[^}]*animation:\s*([a-zA-Z0-9_-]+)[^;]*both;/g)];
+  assert.ok(filled.length >= 4, `expected the entrance animations to be found, saw ${filled.length}`);
+  for (const [, cls, name] of filled) {
+    const kf = css.match(new RegExp("@keyframes " + name + " \\{([\\s\\S]*?)\\n\\}"));
+    assert.ok(kf, `globals.css animates .${cls} with a keyframe list that is not in it`);
+    const toFrame = (kf[1].match(/to\s*\{([\s\S]*?)\}/) || [])[1] || "";
+    const settled = toFrame.replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const prop of ["transform", "filter"]) {
+      const decl = settled.match(new RegExp(prop + ":\\s*([^;]+);"));
+      if (decl) {
+        assert.equal(
+          decl[1].trim(),
+          "none",
+          `.${cls} settles on ${prop}: ${decl[1].trim()} — that would displace a fixed popover opened inside it`
+        );
+      }
+    }
+  }
+});
+
+await run("step 13: an answer's row is five buttons and one menu, not fourteen", () => {
+  const acts = readFileSync(path.join(ROOT, "components", "workspace", "MessageActions.tsx"), "utf8");
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  const code = codeOnly(page);
+
+  // The strip this replaces was 16 controls in a row at 10px. Visible now: the five things a person
+  // reaches for on every answer. Everything else is in a labelled menu they can walk with arrows.
+  for (const label of [
+    "Copy this answer",
+    "Verify claims",
+    "Share this answer",
+    "Good reply",
+    "Bad reply",
+    "More actions for this answer",
+  ]) {
+    // Either a plain attribute or a conditional one — what matters is that the control is named.
+    assert.ok(acts.includes('aria-label="' + label + '"') || acts.includes('"' + label + '"'), `a visible control lost its label: ${label}`);
+  }
+  assert.ok(acts.includes('"Verify again"'), "and verify says what it will do to an answer already checked");
+
+  // Nothing was dropped into the menu, and nothing was softened on the way: the transform text is
+  // what the model is told, so a "tidy-up" that rewords it changes the product.
+  // Read the list, not its line breaks: prettier wraps a long instruction and the check must not
+  // care. The names are asserted as a set, so a rename or a dropped rewrite fails here by name.
+  const listSrc = acts.slice(acts.indexOf("export const TRANSFORMS"), acts.indexOf("].map("));
+  const labels = [...listSrc.matchAll(/\[\s*"([A-Z][a-z]+)",/g)].map((m) => m[1]).sort();
+  assert.deepEqual(
+    labels,
+    ["Document", "Example", "Expand", "Report", "Shorten", "Simplify", "Table"],
+    "the seven rewrites the strip had, same names, in the menu now"
+  );
+  assert.equal((acts.match(/Keep every fact exactly as stated/g) || []).length, 3, "the three rewrites that forbid inventing still forbid inventing");
+  assert.ok((acts.match(/your previous answer/g) || []).length >= 6, "every rewrite still points at the answer, not at a new topic");
+  for (const gone of ['"Simplify"', 'aria-label="Regenerate"', "Save answer"]) {
+    assert.equal(code.includes(gone), false, `page.tsx still carries its own copy of ${gone}`);
+  }
+  assert.ok(code.includes("<MessageActions"), "the page renders the component instead");
+
+  // A row inside a scrolling list has to be positioned against the viewport, or the list clips it.
+  assert.ok(acts.includes('mode="fixed"'), "the menu is viewport-positioned");
+  assert.ok(acts.includes("anchorRef={trigger}"), "anchored to the button that opened it");
+  assert.ok(acts.includes("maxHeight={340}"), "and clamped, because the last answer sits at the bottom of the list");
+  assert.ok(page.includes('className="min-h-0 flex-1 overflow-y-auto overscroll-contain"'), "the answer list does scroll, which is the reason");
+
+  // A control that cannot run says so instead of eating the click — the rule every menu in this
+  // workspace follows, including while an answer is still streaming.
+  // JSX children are text, not code: a stray bracket on its own line between two `{…}` blocks is
+  // not a syntax error, it is a ")" printed under every answer. So the closers are read back.
+  const mountAt = code.indexOf("<MessageActions");
+  const closers = code.slice(mountAt, mountAt + 6000);
+  assert.ok(
+    /\/>\s*\n\s*\)\}\s*\n\s*\{!isUser && m\.clarifier/.test(closers),
+    "the answer row closes cleanly, with nothing left as JSX text"
+  );
+
+  // Row-by-row, measured by where the next row starts: a regex over `<MenuRow … />` would stop at
+  // the first self-closing tag inside a row and count the wrong thing.
+  const at = [...acts.matchAll(/<MenuRow\b/g)].map((m) => m.index);
+  const popoverEnd = acts.indexOf("</Popover>", at[0]);
+  const rows = at.map((i, n) => acts.slice(i, at[n + 1] ?? popoverEnd));
+  // 8 of those are written, and one of them is the map over the seven rewrites — so the menu a
+  // person sees is 7 + 7 = 14 rows, 13 of them reachable at once ("Save to creations" and "Open in
+  // creations" are the same row reading the truth). That is where the strip's fourteen went.
+  const transformRows = (listSrc.match(/\[\s*"[A-Z][a-z]+",/g) || []).length;
+  assert.equal(rows.length - 1 + transformRows, 14, `the menu renders ${rows.length - 1 + transformRows} rows`);
+  assert.ok(acts.includes("{h.saved ? ("), "and the save row reads back what the server holds");
+  assert.equal((acts.match(/dataAction=/g) || []).length, rows.length, "every row names the action it runs, so a dead one cannot hide");
+  for (const row of rows) {
+    if (row.includes("disabled={")) assert.ok(row.includes("note="), `a disabled row offers a no-op instead of a reason: ${row.slice(0, 60)}`);
+  }
+  assert.ok(acts.includes("note={h.saving ?"), "a save in flight is shown as one");
+  assert.ok(acts.includes("h.blocked ? h.blockedNote : undefined"), "and the reason comes from the page, not from a string invented here");
+
+  // Every row closes its own menu: relying on the outside pointerdown that follows races whatever
+  // the row just opened (a sheet, a download), and a menu should not depend on that timing.
+  assert.ok(/const act = \(fn: \(\) => void\) => \(\) => \{\s*setOpen\(false\);/.test(acts), "rows go through one closer");
+  assert.equal((acts.match(/onClick=\{act\(/g) || []).length, rows.length, "every row uses it");
+});
+
+await run("step 13: the row is wired, and the page still owns every piece of state", () => {
+  const acts = readFileSync(path.join(ROOT, "components", "workspace", "MessageActions.tsx"), "utf8");
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+
+  // Same discipline as PromptBar's prop check: a handler the component declares and the page does
+  // not pass is a row that does nothing when clicked, and nothing would fail to compile.
+  const decl = acts.slice(acts.indexOf("export type MessageActionHandlers"), acts.indexOf("export const MESSAGE_ACTIONS_MENU_ID"));
+  const props = [...decl.matchAll(/^  ([A-Za-z]+)[?]?:/gm)].map((m) => m[1]);
+  assert.ok(props.length >= 16, `expected the full handler list, found ${props.length}`);
+  const use = page.slice(page.indexOf("<MessageActions"), page.indexOf("/>", page.indexOf("<MessageActions")));
+  const given = [...use.matchAll(/^\s+([A-Za-z]+):/gm)].map((m) => m[1]);
+  assert.deepEqual(props.filter((x) => !given.includes(x)), [], "props declared but not passed");
+  assert.deepEqual(given.filter((x) => !props.includes(x)), [], "props passed that the component does not declare");
+
+  // The component keeps no behaviour of its own.
+  assert.ok(page.includes("copy: () => void copy(m.content, m.id)"), "copy is still the page's clipboard helper");
+  assert.ok(page.includes("verify: () => void doVerify(m)"), "verify is still doVerify, sources and all");
+  assert.ok(page.includes("transform: (instruction) => void send(instruction)"), "a rewrite is still one turn of the same conversation");
+  assert.ok(page.includes("regenerate: () => {"), "regenerate still throws the answer and re-sends the question");
+  assert.ok(/blocked: streaming,/.test(page), "and the menu is told when it may not run");
+
+  // The two new powers reuse the two routes, and the client stays thin.
+  const api = readFileSync(path.join(ROOT, "lib", "client", "api.ts"), "utf8");
+  assert.ok(/export async function shareAnswer\(/.test(api), "shareAnswer exists");
+  assert.ok(/export async function saveAnswer\(/.test(api), "saveAnswer exists");
+  const fnBody = (name) => {
+    const at = api.indexOf(`export async function ${name}(`);
+    assert.ok(at >= 0, `${name} is gone from the client`);
+    return api.slice(at, api.indexOf("\n}", at));
+  };
+  const shareBody = fnBody("shareAnswer");
+  const saveBody = fnBody("saveAnswer");
+  assert.ok(shareBody.includes('"/api/share"'), "share posts to the share route that already existed");
+  assert.ok(saveBody.includes('"/api/ai/generations"'), "save posts to the generations route that already existed");
+  for (const [name, body] of [["shareAnswer", shareBody], ["saveAnswer", saveBody]]) {
+    assert.ok(body.includes("failWith"), `${name} reports the server's code instead of guessing at it`);
+    assert.equal(body.includes("catch {"), false, `${name} does not turn a failure into a quiet success`);
+    assert.ok(body.includes('credentials: "include"'), `${name} sends the session, like every other call here`);
+  }
+  assert.ok(page.includes("Answer link copied to clipboard"), "a copied link is confirmed in the strip that already shows one");
+  assert.ok(page.includes("Saved to creations"), "and a kept answer says where it went");
+  assert.equal((api.match(/export async function (createArtifact|publishAnswer)/g) || []).length, 0, "no second client helper for the same two routes");
+});
+
+await run("step 13: a kept answer behaves like a creation, and not like code", () => {
+  const panel = codeOnly(readFileSync(path.join(ROOT, "components", "workspace", "CreationsPanel.tsx"), "utf8"));
+  const api = readFileSync(path.join(ROOT, "lib", "client", "api.ts"), "utf8");
+  const store = readFileSync(path.join(ROOT, "lib", "db", "store.ts"), "utf8");
+
+  // The fourth kind has to exist in every place a kind is spelled out, or a row shows up with no
+  // filter, no label and the other kind's menu. Each half of that sentence is a check here.
+  assert.ok((api.match(/type: "image" \| "audio" \| "code" \| "text";/g) || []).length >= 2, "the client type carries text in both places it is spelled out");
+  assert.ok(panel.includes('label: "Answers"'), "and the panel can filter to it");
+  assert.ok(panel.includes('text: "Answer"'), "and name it");
+  const filters = [...panel.matchAll(/\{ value: "([a-z]+)", label: /g)].map((m) => m[1]);
+  for (const kind of ["image", "audio", "code", "text"]) {
+    assert.ok(filters.includes(kind), `no filter for the ${kind} kind`);
+    assert.ok(store.includes(`"${kind}"`), `the store's Generation type does not list ${kind}`);
+  }
+
+  // A prose row must not inherit the code row's menu, and must not be offered a studio it has no
+  // file to continue in — while keeping the two actions that do apply to it.
+  assert.ok(panel.includes('const isText = artifact.type === "text"'), "the row knows what kind it is");
+  assert.ok(panel.includes("{isCode && ("), "open-in-canvas and copy-the-code stay code-only");
+  assert.ok(panel.includes("{!isCode && !isText && ("), "and the studio row is not offered for prose");
+  assert.ok(panel.includes('title="Copy the answer"'), "with the copy row the list preview needs (the body is trimmed in the list)");
+  assert.ok(panel.includes('title="Open the chat it came from"'), "and a way back to where it was written");
+  assert.ok(panel.includes("isText && fromChat && onOpenChatRow"), "which only appears for a row that really has a chat id");
+  assert.ok(panel.includes("const full = await fetchArtifact(a.id);"), "copied whole, not from the trimmed preview");
+  assert.ok(panel.includes("onOpenChat?: (conversationId: string) => void"), "the way back is optional, because most rows have no chat");
+
+  // The kinds are only half the story: the row has to reach the list at all, and be shareable.
+  assert.ok(store.includes('type: "text",'), "the store writes a text row");
+  assert.ok(store.includes('g.type === "text"'), "and a text row counts as shareable");
+  const route = readFileSync(path.join(ROOT, "app", "api", "ai", "generations", "route.ts"), "utf8");
+  assert.ok(route.includes('"image", "audio", "code", "text"'), "the route's whitelist knows it too");
+  assert.ok(route.includes("BAD_TYPE"), "and an unknown filter is refused instead of silently ignored");
+});
+
+await run("step 13: one answer, one link — and the link lives in the chat's own table", () => {
+  const share = codeOnly(readFileSync(path.join(ROOT, "app", "api", "share", "route.ts"), "utf8"));
+  const storeSrc = readFileSync(path.join(ROOT, "lib", "db", "store.ts"), "utf8");
+  const reader = readFileSync(path.join(ROOT, "app", "s", "[id]", "ShareView.tsx"), "utf8");
+
+  // An answer's link is a row in `shares` with a messageId — which is why the reader, the view
+  // counter, the per-owner cap and delete-with-chat all came free, and why no /a/[id] page had to
+  // be built. If any of those stops holding, this is the check that says so.
+  assert.ok(share.includes("messageId"), "the route takes an answer as a source");
+  assert.ok(share.includes("if (!conversationId)"), "and refuses a bare message id rather than guessing which chat it was in");
+  assert.ok(share.includes('scope: "answer"'), "so the client can say what it published: a page or a whole chat");
+  assert.ok(storeSrc.includes("artifactId: null,\n    messageId,"), "the row says which kind of link it is");
+  assert.ok(storeSrc.includes("capSharesPerOwner(db, userId)"), "a message share obeys the same cap");
+  assert.equal(storeSrc.includes("function listSharesForMessage"), false, "no second share-listing helper");
+  const drop = storeSrc.slice(storeSrc.indexOf("export function deleteSharesForConversation"), storeSrc.indexOf("export function deleteSharesForConversation") + 600);
+  assert.ok(drop.includes("s.conversationId !== conversationId"), "deleting a chat filters by conversation id, which is what takes its answers' pages with it");
+  assert.equal(drop.includes("messageId"), false, "and no extra answer-specific cleanup had to be trusted to run");
+  assert.equal(reader.includes("messageId"), false, "the reader renders whatever the snapshot holds — it needed no new branch");
+});
+
 rmSync(outDir, { recursive: true, force: true });
 process.exit(report("UI primitives (lib/ui) + Step 1 additive-only + Step 2 composer pill") ? 1 : 0);

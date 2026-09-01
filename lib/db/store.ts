@@ -125,6 +125,13 @@ export type Share = {
    */
   conversationId: string | null;
   artifactId?: string | null;
+  /**
+   * Set on a link that shares ONE answer rather than the whole conversation. The conversation
+   * id still rides along so deleting the chat deletes these too (`deleteSharesForConversation`
+   * filters by it), and re-sharing the same answer refreshes this row instead of minting a
+   * second public page for it — the same rule `createArtifactShare` follows.
+   */
+  messageId?: string | null;
   userId: string;
   title: string;
   mode: Conversation["mode"];
@@ -229,7 +236,13 @@ export type LinkPreviewRow = {
 export type Generation = {
   id: string;
   userId: string;
-  type: "image" | "audio" | "code";
+  /**
+   * `text` is an answer the owner promoted out of a chat (UI step 13). It is its own type
+   * rather than a `code` row because the menu a `code` row earns is the wrong menu for prose:
+   * "copy the code", "open in canvas", "apply to file". Nothing about the storage differs —
+   * `outputText` was already there.
+   */
+  type: "image" | "audio" | "code" | "text";
   prompt: string;
   outputUrl?: string;
   outputText?: string;
@@ -1859,6 +1872,138 @@ export function listGenerations(userId: string, type?: Generation["type"]) {
 /* ── Artifacts — the generations a user keeps and shows ──── */
 
 /** Longest title the creations panel accepts. Refused, never truncated. */
+/**
+ * The question that produced one answer, plus the answer. Both "share this" and "keep this"
+ * need the pair — an answer shown alone reads as an excerpt out of nowhere — so the rule for
+ * "the user message before it" lives here once rather than in two features that could
+ * disagree. An assistant message with no question above it is still shareable: the loop simply
+ * finds nothing, and the caller decides that a lone answer is enough.
+ *
+ * A conversation belonging to someone else returns the same `null` as a missing one, so a
+ * guessed id reads as "not found" and never as another person's data.
+ */
+export function findAnswerPair(
+  conversationId: string,
+  messageId: string,
+  userId: string
+): { conversation: Conversation; message: Message; question: Message | null } | null {
+  const c = read().conversations.find((x) => x.id === conversationId && x.userId === userId);
+  if (!c) return null;
+  const at = c.messages.findIndex((m) => m.id === messageId);
+  if (at < 0) return null;
+  const message = c.messages[at];
+  // Only BUILDWE's own writing can be shared or kept this way. Saving someone's pasted-in
+  // question as a "creation" is not a thing anybody asked for.
+  if (message.role !== "assistant") return null;
+  let question: Message | null = null;
+  for (let i = at - 1; i >= 0; i--) {
+    if (c.messages[i].role === "user") {
+      question = c.messages[i];
+      break;
+    }
+  }
+  return { conversation: c, message, question };
+}
+
+/** The shortest thing worth a row of its own: "ok", "sure!" and apologies are not creations. */
+const ANSWER_MIN_CHARS = 40;
+
+/**
+ * Promote one answer into the creations list. Idempotent by `meta.from.messageId`: pressing the
+ * button twice updates the same row (so a re-run after an edit is not a second copy in the
+ * panel), which is what `createArtifactShare` already does for links and for the same reason —
+ * a duplicate the user has to notice and delete is not a feature.
+ */
+export function saveAnswerAsArtifact(
+  conversationId: string,
+  messageId: string,
+  userId: string
+): { ok: true; artifact: Generation; created: boolean } | { ok: false; code: "ANSWER_NOT_FOUND" | "ANSWER_TOO_SHORT" } {
+  const pair = findAnswerPair(conversationId, messageId, userId);
+  if (!pair) return { ok: false, code: "ANSWER_NOT_FOUND" };
+  const body = pair.message.content.trim();
+  if (body.length < ANSWER_MIN_CHARS) return { ok: false, code: "ANSWER_TOO_SHORT" };
+
+  const db = read();
+  const from = { conversationId, messageId };
+  const existing = db.generations.find(
+    (g) =>
+      g.userId === userId &&
+      ((g.meta as { from?: { messageId?: string } } | undefined)?.from?.messageId === messageId)
+  );
+  if (existing) {
+    existing.outputText = body;
+    if (pair.question) existing.prompt = pair.question.content;
+    existing.meta = { ...(existing.meta || {}), from, conversationTitle: pair.conversation.title };
+    write(db);
+    return { ok: true, artifact: existing, created: false };
+  }
+  const row = addGeneration({
+    userId,
+    type: "text",
+    prompt: (pair.question ? pair.question.content : pair.conversation.title).slice(0, 4_000),
+    outputText: body,
+    meta: { from, conversationTitle: pair.conversation.title },
+  });
+  return { ok: true, artifact: row, created: true };
+}
+
+/** The link a given answer already has, if any — so a row can say "Shared" rather than guess. */
+export function findShareByMessage(conversationId: string, messageId: string): Share | null {
+  return read().shares.find((s) => s.conversationId === conversationId && s.messageId === messageId) || null;
+}
+
+/**
+ * A public page for ONE answer: the question and the reply, snapshotted. Everything the whole-chat
+ * share already does is inherited rather than re-made — the same `shares` table, the same
+ * `capSharesPerOwner`, the same server-rendered `/s/[id]`, the same `action:"view"` counter — and
+ * deleting the conversation deletes this too because `deleteSharesForConversation` filters by
+ * `conversationId`, which this row carries.
+ */
+export function createMessageShare(
+  conversationId: string,
+  messageId: string,
+  userId: string
+): { ok: true; share: Share } | { ok: false; code: "ANSWER_NOT_FOUND" } {
+  const pair = findAnswerPair(conversationId, messageId, userId);
+  if (!pair) return { ok: false, code: "ANSWER_NOT_FOUND" };
+  const messages = pair.question ? [pair.question, pair.message] : [pair.message];
+  const label = (pair.question?.content || pair.conversation.title)
+    .replace(/[\r\n]+/g, " ")
+    .replace(/[\[\]]/g, "")
+    .trim()
+    .slice(0, 80);
+
+  const db = read();
+  const existing = db.shares.find(
+    (s) => s.conversationId === conversationId && s.messageId === messageId
+  );
+  if (existing) {
+    existing.messages = messages;
+    existing.title = label;
+    existing.mode = pair.conversation.mode;
+    write(db);
+    return { ok: true, share: existing };
+  }
+  const s: Share = {
+    id: randomBytes(8).toString("base64url"),
+    conversationId,
+    artifactId: null,
+    messageId,
+    userId,
+    title: label,
+    mode: pair.conversation.mode,
+    messages,
+    views: 0,
+    createdAt: new Date().toISOString(),
+  };
+  db.shares.unshift(s);
+  capSharesPerOwner(db, userId);
+  write(db);
+  return { ok: true, share: s };
+}
+
+
 export const ARTIFACT_TITLE_MAX = 120;
 
 export type ArtifactPatch = { title?: string | null; pinned?: boolean };
@@ -1968,6 +2113,12 @@ export function artifactShareBody(g: Generation): string | null {
     .replace(/[\[\]]/g, "")
     .replace(/[\r\n]+/g, " ")
     .trim();
+  if (g.type === "text") {
+    // Already markdown, from a model that writes markdown: fenced it would turn a whole answer
+    // into one grey block, and the point of sharing an answer is that it reads like an answer.
+    const prose = String(g.outputText || "").trim();
+    return prose ? `**${label}**\n\n${prose}` : null;
+  }
   if (g.type === "code") {
     const code = String(g.outputText || "").trim();
     if (!code) return null;
@@ -2009,7 +2160,10 @@ export function createArtifactShare(
   const body = artifactShareBody(g);
   if (!body) return { ok: false, code: "NOTHING_TO_SHARE" };
   const title = (g.title || g.prompt || "Shared creation").slice(0, 80);
-  const mode: Conversation["mode"] = g.type === "code" ? "code" : g.type;
+  // A saved answer is a conversation-shaped thing: question, then reply. `Share.mode` is what the
+  // share page picks its framing from, and "text" is not one of its values on purpose.
+  const mode: Conversation["mode"] =
+    g.type === "code" ? "code" : g.type === "text" ? "chat" : g.type;
 
   const existing = db.shares.find((x) => x.artifactId === artifactId);
   if (existing) {

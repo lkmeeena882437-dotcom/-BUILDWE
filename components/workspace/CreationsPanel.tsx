@@ -40,6 +40,7 @@ import {
   Image as ImageIcon,
   Link2,
   Loader2,
+  MessageSquare,
   Pause,
   Pencil,
   Pin,
@@ -68,12 +69,15 @@ const FILTERS: { value: Filter; label: string }[] = [
   { value: "image", label: "Image" },
   { value: "audio", label: "Audio" },
   { value: "code", label: "Code" },
+  // An answer saved out of a chat (UI step 13) — prose you kept, not a file a studio made.
+  { value: "text", label: "Answers" },
 ];
 
 const TYPE_LABEL: Record<ArtifactItem["type"], string> = {
   image: "Image",
   audio: "Audio",
   code: "Code",
+  text: "Answer",
 };
 
 /** Only a real URL on an <img>/<a> src — the same rule the answer cards follow. */
@@ -103,11 +107,18 @@ function firstLine(text: string): string {
 export function CreationsPanel({
   onOpenCode,
   onShowStudio,
+  onOpenChat,
 }: {
   /** Put the file in the canvas (page.tsx owns the canvas, its language and its versions). */
   onOpenCode: (code: string, lang: string) => void;
   /** Jump to the studio that can continue the work. */
   onShowStudio: (type: "image" | "audio") => void;
+  /**
+   * Back to the chat a saved answer came from. Optional because the panel is also used for rows
+   * that never had a chat: a row without `meta.from` simply does not offer the action, which is
+   * honest, rather than a menu item that goes nowhere.
+   */
+  onOpenChat?: (conversationId: string) => void;
 }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
@@ -328,8 +339,9 @@ export function CreationsPanel({
             <>Nothing matches “{query}” in this filter.</>
           ) : (
             <>
-              Nothing here yet. An image, a voice clip or a code answer you make joins this
-              list on its own — there is nothing to switch on.
+              Nothing here yet. An image, a voice clip or a code answer joins this list on its
+              own, and any answer in a chat can be kept here from the row under it — there is
+              nothing to switch on.
             </>
           )}
         </div>
@@ -449,6 +461,7 @@ export function CreationsPanel({
                 onToggle={() => setMenuId(open ? null : a.id)}
                 artifact={a}
                 hasUrl={Boolean(url)}
+                onOpenChatRow={Boolean(onOpenChat)}
                 onAction={(which) => {
                   setMenuId(null);
                   switch (which) {
@@ -471,6 +484,11 @@ export function CreationsPanel({
                         }
                       })();
                       return;
+                    case "openChat": {
+                      const from = (a.meta as { from?: { conversationId?: string } } | undefined)?.from;
+                      if (from?.conversationId && onOpenChat) onOpenChat(from.conversationId);
+                      return;
+                    }
                     case "studio":
                       if (a.type === "image" || a.type === "audio") onShowStudio(a.type);
                       return;
@@ -526,6 +544,7 @@ type RowAction =
   | "openFile"
   | "openCanvas"
   | "copyCode"
+  | "openChat"
   | "copyPrompt"
   | "studio"
   | "pin"
@@ -545,17 +564,23 @@ function RowMenu({
   artifact,
   hasUrl,
   onAction,
+  onOpenChatRow,
 }: {
   open: boolean;
   onToggle: () => void;
   artifact: ArtifactItem;
   hasUrl: boolean;
   onAction: (a: RowAction) => void;
+  /** Present only when the panel was given a way back to a chat. */
+  onOpenChatRow?: boolean;
 }) {
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const isCode = artifact.type === "code";
+  const isText = artifact.type === "text";
+  const fromChat = (artifact.meta as { from?: { conversationId?: string } } | undefined)?.from?.conversationId;
   const label = artifact.title || firstLine(artifact.prompt) || "this creation";
-  const openable = isCode ? Boolean(artifact.outputText) : hasUrl;
+  // A saved answer has no file, so its body is what is openable — the same rule code follows.
+  const openable = isCode || isText ? Boolean(artifact.outputText) : hasUrl;
 
   return (
     <div
@@ -621,7 +646,23 @@ function RowMenu({
             onClick={() => onAction("copyCode")}
           />
         )}
-        {!isCode && (
+        {isText && (
+          <MenuRow
+            icon={Copy}
+            title="Copy the answer"
+            hint="Fetched whole, not the list preview"
+            onClick={() => onAction("copyCode")}
+          />
+        )}
+        {isText && fromChat && onOpenChatRow && (
+          <MenuRow
+            icon={MessageSquare}
+            title="Open the chat it came from"
+            hint="The answer stays kept here either way"
+            onClick={() => onAction("openChat")}
+          />
+        )}
+        {!isCode && !isText && (
           <MenuRow
             icon={artifact.type === "audio" ? Volume2 : ImageIcon}
             title={artifact.type === "audio" ? "Open the audio studio" : "Open the image studio"}

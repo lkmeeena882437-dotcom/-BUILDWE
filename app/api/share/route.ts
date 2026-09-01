@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { limitAi } from "@/lib/rate-limit/guard";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
-import { bumpShareViews, createArtifactShare, createShare, getShare } from "@/lib/db/store";
+import { bumpShareViews, createArtifactShare, createMessageShare, createShare, getShare } from "@/lib/db/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,13 +33,34 @@ export async function POST(req: NextRequest) {
     const session = await getSessionFromRequest(req);
     const conversationId = String(body.conversationId || "");
     const artifactId = String(body.artifactId || "");
-    // Exactly one source. A request with both would make the outcome depend on the order
-    // of two ifs, and a refresh would fight with itself over which one owns the link.
-    if (conversationId && artifactId) {
+    // A messageId narrows a chat share down to one answer, so it is only ever read alongside
+    // conversationId — on its own it says nothing about whose message it is, and the ownership
+    // scope is the pair. Exactly one source: a request with two would make the outcome depend on
+    // the order of the ifs, and the refresh would fight itself over which one owns the link.
+    const messageId = String(body.messageId || "");
+    if (artifactId && (conversationId || messageId)) {
       return NextResponse.json(
-        { error: "A share link is either a chat or one creation, not both.", code: "BAD_SHARE_SOURCE" },
+        { error: "A share link is either a chat (or one answer in it) or one creation, not both.", code: "BAD_SHARE_SOURCE" },
         { status: 400 }
       );
+    }
+    if (messageId && !conversationId) {
+      return NextResponse.json(
+        { error: "Sharing one answer also needs the chat it was written in.", code: "BAD_SHARE_SOURCE" },
+        { status: 400 }
+      );
+    }
+    if (messageId) {
+      const out = createMessageShare(conversationId, messageId, session.userId);
+      if (!out.ok) {
+        return NextResponse.json(
+          { error: "That answer is not in one of your chats.", code: out.code },
+          { status: 404 }
+        );
+      }
+      const res = NextResponse.json({ ok: true, id: out.share.id, url: `/s/${out.share.id}`, scope: "answer" });
+      attachGuestCookie(res, session.userId);
+      return res;
     }
     if (artifactId) {
       const out = createArtifactShare(artifactId, session.userId);
@@ -55,7 +76,7 @@ export async function POST(req: NextRequest) {
           { status: out.code === "ARTIFACT_NOT_FOUND" ? 404 : 409 }
         );
       }
-      const res = NextResponse.json({ ok: true, id: out.share.id, url: `/s/${out.share.id}` });
+      const res = NextResponse.json({ ok: true, id: out.share.id, url: `/s/${out.share.id}`, scope: "creation" });
       attachGuestCookie(res, session.userId);
       return res;
     }
@@ -76,6 +97,7 @@ export async function POST(req: NextRequest) {
       ok: true,
       id: share.id,
       url: `/s/${share.id}`,
+      scope: "chat",
     });
     attachGuestCookie(res, session.userId);
     return res;

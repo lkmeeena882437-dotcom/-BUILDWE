@@ -8,6 +8,7 @@ import {
   getArtifact,
   listArtifacts,
   listGenerations,
+  saveAnswerAsArtifact,
   updateArtifact,
   type Generation,
 } from "@/lib/db/store";
@@ -35,7 +36,8 @@ function shape(g: Generation, opts: { full?: boolean } = {}) {
 
 /** True when there is an output a reader could actually open. */
 function shareable(g: Generation) {
-  return g.type === "code" ? Boolean(g.outputText?.trim()) : Boolean(g.outputUrl);
+  // `text` is a saved answer: no file, so the text IS the thing worth opening.
+  return g.type === "code" || g.type === "text" ? Boolean(g.outputText?.trim()) : Boolean(g.outputUrl);
 }
 
 function json400(code: string, error: string) {
@@ -58,6 +60,63 @@ export const dynamic = "force-dynamic";
  * The `prompt` is returned so a result can be re-run (§4.3 retry).
  * PATCH renames/pins, DELETE removes the row and the public link made from it.
  */
+/**
+ * POST { action: "save-answer", conversationId, messageId }
+ *
+ * Promotes one answer out of a chat and into the creations list (UI step 13), which is where a
+ * thing you want to keep, name, pin and publish already lives. It is a POST on this route rather
+ * than a new route because it creates a row in this collection and every rule about that row —
+ * the shape, the caps, `shareable`, the title limit, sharing, deletion — is already written here.
+ *
+ * Pressing save twice is not two entries: the store refreshes the row keyed on the message id.
+ * The response says `created` so the row in the chat can differ between "Saved to creations" and
+ * the panel's own language without the client guessing from a status code.
+ */
+export async function POST(req: NextRequest) {
+  try {
+    const session = await getSessionFromRequest(req);
+    const rl = await limitAi("artifacts-write", session.userId, 60, 60_000);
+    if (!rl.ok) return NextResponse.json({ error: rl.error, hint: rl.hint }, { status: 429 });
+
+    const body = await req.json().catch(() => ({}));
+    const action = String((body as { action?: unknown }).action ?? "");
+    if (action !== "save-answer") {
+      return json400("BAD_REQUEST", "The only POST this route takes is { action: \"save-answer\", conversationId, messageId }.");
+    }
+    const conversationId = String((body as { conversationId?: unknown }).conversationId ?? "");
+    const messageId = String((body as { messageId?: unknown }).messageId ?? "");
+    if (!conversationId || !messageId) {
+      return json400("BAD_REQUEST", "A saved answer has to say which chat and which message.");
+    }
+
+    const out = saveAnswerAsArtifact(conversationId, messageId, session.userId);
+    if (!out.ok) {
+      const msg =
+        out.code === "ANSWER_TOO_SHORT"
+          ? "That answer is too short to keep as a creation."
+          : "That answer is not in one of your chats any more.";
+      return NextResponse.json(
+        { error: msg, code: out.code },
+        { status: out.code === "ANSWER_TOO_SHORT" ? 409 : 404 }
+      );
+    }
+    const share = findShareByArtifact(out.artifact.id);
+    const res = NextResponse.json({
+      ok: true,
+      created: out.created,
+      artifact: { ...shape(out.artifact), shareId: share?.id ?? null, shareable: shareable(out.artifact) },
+    });
+    attachGuestCookie(res, session.userId);
+    return res;
+  } catch (e) {
+    console.error("[bw] generations POST", e);
+    return NextResponse.json(
+      { error: "Could not save that answer.", code: "ARTIFACT_WRITE_FAILED" },
+      { status: 500 }
+    );
+  }
+}
+
 export async function GET(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
@@ -82,10 +141,16 @@ export async function GET(req: NextRequest) {
 
     const view = url.searchParams.get("view") === "artifacts" ? "artifacts" : "raw";
     const typeParam = url.searchParams.get("type");
-    const type =
-      typeParam === "image" || typeParam === "audio" || typeParam === "code"
-        ? typeParam
-        : undefined;
+    // An absent param, `""` and `all` all mean "no filter" — the client sends nothing for All, but
+    // a hand-written link should not break. Anything else that is not one of the four kinds is an
+    // error rather than a quietly ignored filter: answering with *every* row when somebody asked
+    // for images is the kind of wrong that looks like a working app, and it is the one failure mode
+    // of a shared link like `/creations?type=video` that a person will not stop to debug.
+    const KINDS = ["image", "audio", "code", "text"] as const;
+    if (typeParam !== null && typeParam !== "" && typeParam !== "all" && !KINDS.includes(typeParam as (typeof KINDS)[number])) {
+      return json400("BAD_TYPE", "A creations filter has to be one of: image, audio, code, text.");
+    }
+    const type = (KINDS as readonly string[]).includes(typeParam ?? "") ? (typeParam as (typeof KINDS)[number]) : undefined;
 
     // NOTE: a missing param yields null, and Number(null) === 0 (finite), so
     // read the raw string first — otherwise the default silently becomes 1.

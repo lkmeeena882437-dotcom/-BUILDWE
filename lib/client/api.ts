@@ -574,6 +574,26 @@ export async function analyzeFileApi(name: string, text: string) {
 
 /* ── Share links ────────────────────────────────────────── */
 
+/**
+ * One answer of a chat, as its own public page (the question and that reply — not the whole
+ * thread). `messageId` is the only difference from `createShare`, and the server keeps the rest:
+ * re-sharing the same answer refreshes the same link rather than minting another one.
+ */
+export async function shareAnswer(
+  conversationId: string,
+  messageId: string
+): Promise<{ id: string; url: string; scope: string }> {
+  const r = await fetch("/api/share", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ conversationId, messageId }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "A link could not be made for that answer.");
+  return { id: String(j.id), url: String(j.url), scope: String(j.scope || "answer") };
+}
+
 export async function createShare(conversationId: string) {
   const r = await fetch("/api/share", {
     method: "POST",
@@ -752,7 +772,7 @@ export async function saveSkills(skills: string[]) {
 
 export type GenerationItem = {
   id: string;
-  type: "image" | "audio" | "code";
+  type: "image" | "audio" | "code" | "text";
   prompt: string;
   outputUrl?: string;
   outputText?: string;
@@ -788,7 +808,7 @@ export async function fetchGenerations(
  */
 export type ArtifactItem = {
   id: string;
-  type: "image" | "audio" | "code";
+  type: "image" | "audio" | "code" | "text";
   prompt: string;
   title: string | null;
   pinned: boolean;
@@ -861,6 +881,26 @@ export async function deleteArtifact(id: string): Promise<void> {
   });
   const j = await readJson(r);
   if (!r.ok) failWith(j, "That creation could not be deleted.");
+}
+
+/**
+ * Keep one answer out of a chat in the creations list, where it can be named, pinned, shared and
+ * deleted like anything else made in a studio. Idempotent server-side, so a double click updates
+ * the same row instead of leaving a second one to notice and clean up.
+ */
+export async function saveAnswer(
+  conversationId: string,
+  messageId: string
+): Promise<{ artifact: ArtifactItem; created: boolean }> {
+  const r = await fetch("/api/ai/generations", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "save-answer", conversationId, messageId }),
+  });
+  const j = await readJson(r);
+  if (!r.ok) failWith(j, "That answer could not be saved.");
+  return { artifact: j.artifact as ArtifactItem, created: Boolean(j.created) };
 }
 
 /** Public link for one creation. Repeating it refreshes the same link, never a new one. */

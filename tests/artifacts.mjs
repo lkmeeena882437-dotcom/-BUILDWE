@@ -104,6 +104,143 @@ const store = load(storePath);
 const ALICE = store.createUser({ email: "a@t.test", password: "password-1234", name: "A" }).id;
 const BOB = store.createUser({ email: "b@t.test", password: "password-1234", name: "B" }).id;
 
+/* ── Step 13: one answer, shareable and keepable (the store's own rules) ── */
+
+const ANSWER =
+  "Photosynthesis is how a leaf turns light into sugar: chlorophyll catches the light, water is " +
+  "split, carbon dioxide is reduced to glucose, and oxygen is released as the leftover.";
+
+const chatPair = (answer = ANSWER) => [
+  { id: "u-1", role: "user", content: "Explain photosynthesis simply", createdAt: "2026-01-01T00:00:00.000Z" },
+  { id: "a-1", role: "assistant", content: answer, createdAt: "2026-01-01T00:00:05.000Z" },
+];
+
+/* A separate account, on purpose: these checks write generations and shares, and the step-10
+   checks that run after them assert exact lists for ALICE. Two blocks of one file must not be
+   able to see each other's rows — that is how a green run turns into a flaky one. */
+const KEEP = store.createUser({ email: "k@t.test", password: "password-1234", name: "K" }).id;
+const seedChat = (messages) =>
+  store.createConversation({ userId: KEEP, mode: "chat", title: "Photosynthesis", messages });
+
+await step("an answer is found by id together with the question it answered", () => {
+  const conv = seedChat([
+    ...chatPair(),
+    { id: "u-2", role: "user", content: "and at night?", createdAt: "2026-01-01T00:02:00.000Z" },
+    { id: "a-2", role: "assistant", content: "It rests.", createdAt: "2026-01-01T00:02:04.000Z" },
+  ]);
+
+  const pair = store.findAnswerPair(conv.id, "a-1", KEEP);
+  assert.ok(pair, "the row is found for its owner");
+  assert.equal(pair.message.id, "a-1");
+  assert.equal(pair.question.content, "Explain photosynthesis simply", "the nearest earlier user message");
+  assert.equal(
+    store.findAnswerPair(conv.id, "a-2", KEEP).question.id,
+    "u-2",
+    "measured per answer, not whatever the chat opened with"
+  );
+
+  assert.equal(store.findAnswerPair(conv.id, "u-1", KEEP), null, "a pasted-in question is not an answer to share");
+
+  // A lone answer (a resumed session, a chat that started mid-thread) is still the model's own
+  // writing, so it resolves — with the question reported as missing rather than invented, and the
+  // share publishing one message.
+  const answerOnly = seedChat([{ id: "a-9", role: "assistant", content: ANSWER }]);
+  const lone = store.findAnswerPair(answerOnly.id, "a-9", KEEP);
+  assert.equal(lone.question, null, "no question is guessed at");
+  assert.deepEqual(
+    store.createMessageShare(answerOnly.id, "a-9", KEEP).share.messages.map((m) => m.id),
+    ["a-9"],
+    "one message published, not a fake pair"
+  );
+
+  // The refusals that matter: a stranger holding the conversation id, and an id that is not a row.
+  assert.equal(store.findAnswerPair(conv.id, "a-1", BOB), null, "scoped to its owner, not to whoever asks");
+  assert.equal(store.findAnswerPair("conv-nope", "a-1", KEEP), null, "and a wrong id is no row at all");
+});
+
+await step("saving an answer makes one creation, and saving it again refreshes that row", () => {
+  const conv = seedChat(chatPair());
+
+  const first = store.saveAnswerAsArtifact(conv.id, "a-1", KEEP);
+  assert.ok(first.ok, `first save: ${first.code}`);
+  assert.ok(first.created, "the first save creates");
+  assert.equal(first.artifact.type, "text", "a kept answer is its own kind, not a pretend code file");
+  const row = store.getArtifact(first.artifact.id, KEEP);
+  assert.equal(row.meta.from.messageId, "a-1", "and the row says which answer it is");
+  assert.equal(row.prompt, "Explain photosynthesis simply", "the question travels with it, which is what the list shows");
+  assert.ok(!row.outputUrl, "a prose row has no file to open, so the panel must not offer one");
+
+  const again = store.saveAnswerAsArtifact(conv.id, "a-1", KEEP);
+  assert.equal(again.ok && again.created, false, "the second save is a refresh");
+  assert.equal(again.artifact.id, first.artifact.id, "the same row, not a copy of it");
+  assert.equal(
+    store.listArtifacts(KEEP, "text").filter((g) => g.meta.from?.messageId === "a-1").length,
+    1,
+    "and the list holds one"
+  );
+
+  // Guards the product needs, because both paths hang off a button a person can double-click, and
+  // both are reachable for any id a stranger could guess.
+  assert.equal(
+    store.saveAnswerAsArtifact(seedChat(chatPair("ok")).id, "a-1", KEEP).code,
+    "ANSWER_TOO_SHORT",
+    "a one-word answer is not worth a creation, and the reason is said out loud"
+  );
+  assert.equal(
+    store.saveAnswerAsArtifact(conv.id, "a-1", BOB).code,
+    "ANSWER_NOT_FOUND",
+    "a stranger gets the same message as a wrong id, so nothing is confirmed either way"
+  );
+});
+
+await step("an answer's share snapshots the pair, refreshes in place and dies with the chat", () => {
+  const conv = seedChat([
+    ...chatPair(),
+    { id: "u-2", role: "user", content: "and what does a leaf need at night", createdAt: "2026-01-01T00:05:00.000Z" },
+    { id: "a-2", role: "assistant", content: ANSWER + " At night a leaf stops making sugar and breathes.", createdAt: "2026-01-01T00:05:09.000Z" },
+  ]);
+
+  const share = store.createMessageShare(conv.id, "a-1", KEEP);
+  assert.ok(share.ok, `share: ${share.code}`);
+  assert.equal(share.share.messageId, "a-1", "the link points at one answer, so the chat id alone never renders it");
+  assert.deepEqual(
+    share.share.messages.map((m) => m.id),
+    ["u-1", "a-1"],
+    "a snapshot of the pair — the later turn is NOT in it"
+  );
+  assert.equal(share.share.title, "Explain photosynthesis simply", "the page is titled by the question it answers");
+
+  const again = store.createMessageShare(conv.id, "a-1", KEEP);
+  assert.equal(again.share.id, share.share.id, "copying the link twice refreshes one page, not two");
+  assert.equal(store.findShareByMessage(conv.id, "a-1").id, share.share.id, "and the table agrees");
+
+  const other = store.createMessageShare(conv.id, "a-2", KEEP);
+  assert.equal(other.share.messageId, "a-2", "a different answer of the same chat is its own page");
+  assert.deepEqual(other.share.messages.map((m) => m.id), ["u-2", "a-2"]);
+  assert.equal(store.createMessageShare(conv.id, "a-1", BOB).code, "ANSWER_NOT_FOUND", "and nobody else can publish it");
+
+  // Deletion is the promise a public link makes: the chat goes, so does the answer's page. Message
+  // shares ride `deleteSharesForConversation` (they carry the conversation id), which is why no
+  // second deletion path had to be written for them.
+  store.deleteConversation(conv.id, KEEP);
+  assert.equal(store.getShare(share.share.id), null, "gone with the chat, both pages of it");
+  assert.equal(store.findShareByMessage(conv.id, "a-2"), null);
+});
+
+await step("a kept answer shares as prose, not as code", () => {
+  const conv = seedChat(chatPair("Carbon cycle\nPlants take CO2 and light, and give back oxygen.\n\n```js\nfix()```"));
+  const saved = store.saveAnswerAsArtifact(conv.id, "a-1", KEEP);
+  assert.ok(saved.ok, `save: ${saved.code}`);
+  const body = store.artifactShareBody(saved.artifact);
+  assert.ok(body.startsWith("**"), "it reads as an answer with a title line, like every other kind");
+  assert.ok(body.includes("Plants take CO2 and light"), "the prose is itself");
+  assert.ok(!body.includes("**\n```\nCarbon"), "and wrapping the whole answer in one fence is how a page turns into a grey block");
+  assert.ok(body.includes("```js"), "the code the answer quoted stays quoted inside it");
+
+  const shared = store.createArtifactShare(saved.artifact.id, KEEP);
+  assert.equal(shared.share.mode, "chat", "text shares render through the chat reader, because that is the one that prints prose");
+});
+
 const gen = (userId, type, patch = {}) =>
   store.addGeneration({
     userId,
@@ -220,10 +357,10 @@ await step("deleting an artifact takes its public link with it", () => {
   assert.equal(store.getShare(share.share.id), null, "and so is the page that used to show it");
 });
 
-await step("both share creators honour one per-owner cap", () => {
+await step("every share creator honours one per-owner cap", () => {
   const srcStore = src("lib/db/store.ts");
   const uses = (srcStore.match(/capSharesPerOwner\(db, userId\)/g) || []).length;
-  assert.equal(uses, 2, "conversation shares and artifact shares call the same helper");
+  assert.equal(uses, 3, "conversation, artifact and answer shares all call the same helper — a cap honoured by two of three entry points is not a cap");
   assert.equal((srcStore.match(/function capSharesPerOwner/g) || []).length, 1, "one definition to keep honest");
 });
 
@@ -467,6 +604,108 @@ await step("the failure paths answer with a code, not an empty list", async () =
   assert.ok(badLimit.json.count <= 100, "a huge limit is clamped, not honoured");
 });
 
+await step("an answer of a chat is keepable and publishable over HTTP, and a reader sees the pair", async () => {
+  const ANSWER_TEXT =
+    "Chlorophyll catches the light; the leaf splits water, reduces CO2 to sugar, and releases the oxygen we breathe.";
+  const made = await req(BASE, "/api/history", {
+    method: "POST",
+    jar: alice,
+    body: {
+      action: "create",
+      mode: "chat",
+      title: "Leaves",
+      messages: [
+        { id: "qa1", role: "user", content: "Explain photosynthesis in one line" },
+        { id: "aa1", role: "assistant", content: ANSWER_TEXT },
+        // A later turn, which must stay private to the chat: an answer's link is that answer.
+        { id: "qa2", role: "user", content: "SECOND-QUESTION-nobody-should-see" },
+        { id: "aa2", role: "assistant", content: "SECOND-ANSWER-nobody-should-see" },
+      ],
+    },
+  });
+  assert.equal(made.status, 200, made.text.slice(0, 200));
+  const conversationId = made.json.conversation.id;
+  const saveBody = { action: "save-answer", conversationId, messageId: "aa1" };
+
+  const saved = await req(BASE, "/api/ai/generations", { method: "POST", jar: alice, body: saveBody });
+  assert.equal(saved.status, 200, saved.text.slice(0, 220));
+  assert.equal(saved.json.created, true, "the first save creates a row");
+  assert.equal(saved.json.artifact.type, "text", "as its own kind of creation");
+  assert.ok(saved.json.artifact.shareable, "and shareable, which is why the share route grew a text branch");
+  assert.equal(saved.json.artifact.title, null, "unnamed until the panel names it");
+
+  const list = await req(BASE, "/api/ai/generations?view=artifacts&limit=40&type=text", { jar: alice });
+  assert.equal(list.status, 200);
+  assert.ok(list.json.artifacts.some((a) => a.id === saved.json.artifact.id), "the filter a person clicks is the filter the route serves");
+  const bad = await req(BASE, "/api/ai/generations?view=artifacts&type=not-a-type", { jar: alice });
+  assert.equal(bad.status, 400, "an unknown type is refused, not quietly ignored — asking for images and getting every row is a wrong answer that looks right");
+  assert.equal(bad.json.code, "BAD_TYPE");
+  const allAsFilter = await req(BASE, "/api/ai/generations?view=artifacts&type=all", { jar: alice });
+  assert.equal(allAsFilter.status, 200, "`all` on a hand-written link means no filter");
+
+  // The button a person double-clicks, so the server owns idempotency, not the client.
+  const twice = await req(BASE, "/api/ai/generations", { method: "POST", jar: alice, body: saveBody });
+  assert.equal(twice.json.created, false, "the second save refreshes");
+  assert.equal(twice.json.artifact.id, saved.json.artifact.id, "on the same row");
+  const rows = (await artifacts(alice, "&type=text")).filter((a) => a.meta?.from?.messageId === "aa1");
+  assert.equal(rows.length, 1, "and one row in the list, not two");
+  assert.equal(rows[0].prompt, "Explain photosynthesis in one line", "the question is the prompt the row shows");
+
+  const short = await req(BASE, "/api/history", {
+    method: "POST",
+    jar: alice,
+    body: { action: "create", mode: "chat", title: "Tiny", messages: [{ id: "qs", role: "user", content: "hi" }, { id: "as", role: "assistant", content: "yes" }] },
+  });
+  const refused = await req(BASE, "/api/ai/generations", {
+    method: "POST",
+    jar: alice,
+    body: { action: "save-answer", conversationId: short.json.conversation.id, messageId: "as" },
+  });
+  assert.equal(refused.status, 409, "an answer of one word is refused, with a code the client can name");
+  assert.equal(refused.json.code, "ANSWER_TOO_SHORT");
+
+  const share = await req(BASE, "/api/share", { method: "POST", jar: alice, body: { conversationId, messageId: "aa1" } });
+  assert.equal(share.status, 200, share.text.slice(0, 220));
+  assert.equal(share.json.scope, "answer", "so the client knows whether it published a page or a chat");
+  assert.match(share.json.url, /^\/s\/[A-Za-z0-9_-]+$/, "the same URL shape every share has always had");
+
+  const view = await req(BASE, share.json.url);
+  assert.equal(view.status, 200);
+  assert.ok(view.text.includes("Chlorophyll catches the light"), "the answer is in the bytes a reader gets");
+  assert.ok(view.text.includes("Explain photosynthesis in one line"), "with the question it answered");
+  assert.ok(!view.text.includes("SECOND-QUESTION"), "and nothing else from that chat — not one later message");
+  assert.ok(!view.text.includes("SECOND-ANSWER"), "not one later answer either");
+
+  const reshare = await req(BASE, "/api/share", { method: "POST", jar: alice, body: { conversationId, messageId: "aa1" } });
+  assert.equal(reshare.json.id, share.json.id, "copying the link twice refreshes one page");
+
+  const mixed = await req(BASE, "/api/share", { method: "POST", jar: alice, body: { artifactId: saved.json.artifact.id, messageId: "aa1" } });
+  assert.equal(mixed.status, 400, "one link, one source — a creation and an answer is two pages");
+  assert.equal(mixed.json.code, "BAD_SHARE_SOURCE");
+  const homeless = await req(BASE, "/api/share", { method: "POST", jar: alice, body: { messageId: "aa1" } });
+  assert.equal(homeless.status, 400, "an answer id without its chat is not a lookup anybody should guess at");
+
+  const stranger = await req(BASE, "/api/share", { method: "POST", jar: bob, body: { conversationId, messageId: "aa1" } });
+  assert.equal(stranger.status, 404, "a stranger with the ids gets the same answer as a wrong id");
+  const strangerSave = await req(BASE, "/api/ai/generations", { method: "POST", jar: bob, body: saveBody });
+  assert.equal(strangerSave.status, 404, "and cannot keep it either");
+  const anonSave = await req(BASE, "/api/ai/generations", { method: "POST", body: saveBody });
+  assert.equal(anonSave.status, 404, "no cookie, no reach");
+
+  await req(BASE, "/api/ai/generations", { method: "POST", jar: alice, body: { action: "save-answer", conversationId, messageId: "aa2" } });
+  const otherAnswer = await req(BASE, "/api/share", { method: "POST", jar: alice, body: { conversationId, messageId: "aa2" } });
+  assert.notEqual(otherAnswer.json.id, share.json.id, "a different answer of the same chat is a different page");
+
+  await req(BASE, `/api/history?id=${conversationId}`, { method: "DELETE", jar: alice });
+  assert.equal((await req(BASE, share.json.url)).status, 404, "deleting the chat takes the answer's page with it");
+  assert.equal((await req(BASE, otherAnswer.json.url)).status, 404, "both of them — no second cleanup path was needed");
+  const kept = await artifacts(alice, "&type=text");
+  assert.ok(
+    kept.some((a) => a.id === saved.json.artifact.id),
+    "a kept answer survives its chat going away — that is what keeping it meant"
+  );
+});
+
 await step("the panel is the real client surface, and it cannot reach the store", () => {
   const card = src("components/workspace/CreationsPanel.tsx");
   assert.ok(card.includes('"use client"'), "a client component, so its audio element is legal");
@@ -482,12 +721,19 @@ await step("the panel is the real client surface, and it cannot reach the store"
 
   const page = src("app/page.tsx");
   assert.ok(page.includes('{modal === "creations" && ('), "opened from the shell, in the shared Sheet");
-  assert.ok(page.includes("<CreationsPanel onOpenCode={openArtifactCode} onShowStudio={openArtifactStudio} />"));
+  // The props it is mounted with, not the line breaks between them: this check exists to catch a
+  // panel that is rendered but not wired, and pinning formatting would only catch re-indentation.
+  const mount = (page.match(/<CreationsPanel[\s\S]{0,600}?\/>/) || [""])[0];
+  for (const prop of ["onOpenCode={openArtifactCode}", "onShowStudio={openArtifactStudio}", "onOpenChat={"]) {
+    assert.ok(mount.includes(prop), `the panel is mounted with ${prop}`);
+  }
   assert.ok(
     page.includes("if (codePanel.trim()) pushCanvasVersion(codePanel, codeLang);"),
     "opening a code artifact over the canvas keeps a version first"
   );
-  assert.ok((page.match(/setModal\("creations"\)/g) || []).length === 2, "the sidebar row and the drawer row");
+  // Three, counted exactly rather than "at least", so a fourth way in has to be named here too:
+  // the sidebar row, the drawer row, and the answer row's "Open in creations".
+  assert.ok((page.match(/setModal\("creations"\)/g) || []).length === 3, "sidebar row, drawer row, and a saved answer's menu row");
 
   const api = src("lib/client/api.ts");
   for (const fn of ["fetchArtifacts", "fetchArtifact", "updateArtifact", "deleteArtifact", "shareArtifact"]) {
