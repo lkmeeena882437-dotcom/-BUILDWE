@@ -684,6 +684,19 @@ await run("Step 6: the flyout is an address book for surfaces that already exist
   assert.ok(fly.includes('aria-label={collapsed ? "Account menu" : undefined}'), "the trigger names itself when there is no text next to it");
   assert.ok(page.includes('aria-label="Settings"') && page.includes('title={sidebarOpen ? undefined : "Settings"}'), "so does the settings row beside it");
   assert.ok(/@media \(pointer: coarse\) \{\s*\.bw-side-row \{\s*min-height: 40px/.test(css), "and both grow to 40px on touch");
+
+  // Custom properties inherit from the DOM, not from the surface a panel paints, so a dark
+  // menu opened in the light theme used to resolve --err to its light value: #c0392b on a
+  // near-black panel, ~3:1, on the one row (Log out) that has to be legible. The fix is one
+  // pair of literals on :root that both `.dark` and `.bw-pop--dark` adopt - so the guard is
+  // "each colour is written once", not "the panel mentions a hex".
+  const darkPanel = css.slice(css.indexOf(".bw-pop--dark {"), css.indexOf(".bw-pop--dark {") + 600);
+  assert.ok(darkPanel.includes("--ok: var(--ok-on-dark)"), "the dark panel adopts the dark-surface ok colour");
+  assert.ok(darkPanel.includes("--err: var(--err-on-dark)"), "and the dark-surface error colour");
+  assert.ok(css.includes(".dark {\n  --ok: var(--ok-on-dark);"), "the dark theme takes the same two values, so they cannot drift");
+  for (const hex of ["#4caf76", "#e57368"]) {
+    assert.equal((css.match(new RegExp(hex, "g")) || []).length, 1, `${hex} must be defined once, in the alias`);
+  }
 });
 
 rmSync(outDir, { recursive: true, force: true });

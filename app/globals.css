@@ -251,14 +251,20 @@ body.lock-scroll {
   --ease: cubic-bezier(0.2, 0.8, 0.3, 1);
   --shadow-1: 0 1px 2px rgb(20 17 15 / 0.05);
   --shadow-2: 0 8px 28px rgb(20 17 15 / 0.12);
+  /* Status colours as they must read on a *dark surface*. `.dark` adopts these as its
+     palette and `.bw-pop--dark` re-declares them, so a dark menu opened in the light theme
+     does not paint `--err`'s light value (#c0392b, ~3:1 on near-black) on a near-black
+     panel. One pair of literals, two consumers — the alternative is a hex in each place. */
+  --ok-on-dark: #4caf76;
+  --err-on-dark: #e57368;
 }
 
 .dark {
-  --ok: #4caf76;
+  --ok: var(--ok-on-dark);
   --ok-soft: #14301f;
   --warn: #e0b34c;
   --warn-soft: #33290f;
-  --err: #e57368;
+  --err: var(--err-on-dark);
   --err-soft: #39190f;
   --info: #7ca7f0;
   --info-soft: #16233d;
@@ -428,6 +434,11 @@ button:active:not(:disabled) {
   background: var(--surface-dark);
   border-color: var(--surface-dark-border);
   color: var(--surface-dark-fg);
+  /* Custom properties inherit down the DOM, not from the surface that is painted — so
+     without these two lines a danger row or a status badge inside a dark menu resolves
+     against the *page* theme and gets the light palette's darker ink. */
+  --ok: var(--ok-on-dark);
+  --err: var(--err-on-dark);
 }
 
 .bw-pop--light {
