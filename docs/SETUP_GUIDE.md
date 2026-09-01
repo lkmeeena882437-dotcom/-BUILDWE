@@ -18,9 +18,9 @@ bhi save ho sakta hai. Isliye:
 ### Groq key ko turant rotate karo
 
 1. https://console.groq.com/keys kholo
-2. Jo key `gsk_Eh3g...` se shuru hoti hai — usko **Delete** karo
+2. Jo bhi Groq key chat, email, ya git me paste hui ho — usko **Delete** karo
 3. **Create API Key** dabao → nayi key banegi
-4. Nayi key **kahin chat me mat bhejna** — seedha hosting ke env me daalna
+4. Nayi key **kahin chat me mat bhejna** — seedha `.env.local` / Vercel env me daalna
    (niche Step 2 me bataya hai)
 
 **Maine aapki bheji hui key kahin bhi file me save nahi ki hai.** Repo bilkul
@@ -58,8 +58,7 @@ bilkul wahi kaam jo Redis karta.
 
 ### ✅ Step 1 — Supabase set up karo (5 minute, free)
 
-1. https://supabase.com/dashboard/project/yienzcyfmmvawbxzdptb kholo
-   *(aapka project pehle se bana hua hai)*
+1. https://supabase.com/dashboard kholo → apna BUILDWE project select karo
 
 2. Left menu me **SQL Editor** → **New query**
 
@@ -79,7 +78,7 @@ bilkul wahi kaam jo Redis karta.
 
    | Kya | Kahan milega | Dikhta kaisa hai |
    |---|---|---|
-   | Project URL | Settings → API → Project URL | `https://yienzcyfmmvawbxzdptb.supabase.co` |
+   | Project URL | Settings → API → Project URL | `https://<your-project-ref>.supabase.co` |
    | service_role key | Settings → API → Project API keys → **service_role** (Reveal dabao) | `eyJhbGci...` (lamba) |
 
    ⚠️ **`anon` key nahi — `service_role` key.** Dono dikhti hain, `service_role`
@@ -99,7 +98,7 @@ Variables** me ye daalo:
 
 ```
 GROQ_API_KEY               = <nayi key jo abhi banaoge>
-NEXT_PUBLIC_SUPABASE_URL   = https://yienzcyfmmvawbxzdptb.supabase.co
+NEXT_PUBLIC_SUPABASE_URL   = https://<your-project-ref>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY  = <Settings → API → service_role>
 SESSION_SECRET             = <koi bhi 40+ character ki random string>
 BYOK_ENCRYPTION_SECRET     = <alag 40+ character ki random string>

@@ -17,7 +17,7 @@ Inke bina platform adhura rahega.
 | # | Variable | Value | Kya hoga |
 |---|---|---|---|
 | 1 | `GROQ_API_KEY` | `gsk_...` (nayi wali) | **AI live** — chat + code kaam karenge |
-| 2 | `NEXT_PUBLIC_SUPABASE_URL` | `https://yienzcyfmmvawbxzdptb.supabase.co` | Database + rate limit + storage |
+| 2 | `NEXT_PUBLIC_SUPABASE_URL` | `https://<your-project-ref>.supabase.co` | Database + rate limit + storage |
 | 3 | `SUPABASE_SERVICE_ROLE_KEY` | `eyJhbGci...` (Settings → API → **service_role**) | Wahi ↑ |
 | 4 | `SESSION_SECRET` | `openssl rand -base64 48` | **Login security** |
 | 5 | `BYOK_ENCRYPTION_SECRET` | `openssl rand -base64 48` (**alag** string) | User ki keys encrypt |
@@ -142,8 +142,8 @@ Vercel me ye 6 lines (values apni bharna):
 
 ```
 GROQ_API_KEY=gsk_yahan_nayi_key
-NEXT_PUBLIC_SUPABASE_URL=https://yienzcyfmmvawbxzdptb.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGci_yahan_service_role
+NEXT_PUBLIC_SUPABASE_URL=https://<your-project-ref>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<service_role JWT — never commit this>
 SESSION_SECRET=yahan_48_char_random
 BYOK_ENCRYPTION_SECRET=yahan_alag_48_char_random
 NEXT_PUBLIC_APP_URL=https://buildwe.online

@@ -262,6 +262,46 @@ await check("C2: share page escapes quotes and kills javascript: links", async (
   assert.ok(robots && /noindex/.test(robots[1]), "a shared conversation is public, not indexable");
 });
 
+await check("gitignore keeps real env files out of git", async () => {
+  const gi = readFileSync(new URL("../.gitignore", import.meta.url), "utf8");
+  assert.ok(/^\.env$/m.test(gi), ".env must be ignored");
+  assert.ok(/^\.env\.\*$/m.test(gi), ".env.* must be ignored (covers .env.production, .env.development)");
+  assert.ok(/^!\.env\.example$/m.test(gi), ".env.example must stay tracked");
+  assert.ok(/^\.vercel$/m.test(gi), "Vercel CLI dumps must stay out");
+});
+
+await check("tracked sources do not contain live tenant ids or key prefixes", async () => {
+  // Banned strings are base64 so this file cannot re-introduce them.
+  const banned = [
+    Buffer.from("eWllbnpjeWZtbXZhd2J4emRwdGI=", "base64").toString("utf8"),
+    Buffer.from("Z3NrX0VoM2c=", "base64").toString("utf8"),
+  ];
+  const { readdirSync, readFileSync, statSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const rootDir = new URL("..", import.meta.url);
+  const skip = new Set(["node_modules", ".git", ".next", "tmp", "coverage", "out", "data"]);
+  const hits = [];
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      if (skip.has(name)) continue;
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!/\.(md|ts|tsx|js|mjs|json|yml|yaml|example|sql)$/i.test(name) && name !== ".env.example") {
+        continue;
+      }
+      const text = readFileSync(full, "utf8");
+      for (const needle of banned) {
+        if (text.includes(needle)) hits.push(`${full.slice(rootDir.pathname.length)} contains a redacted secret`);
+      }
+    }
+  };
+  walk(rootDir.pathname.replace(/\/$/, "") || rootDir.pathname);
+  assert.deepEqual(hits, [], hits.join("; "));
+});
+
 await check("history answers, and never lies with an empty list", async () => {
   const r = await req("/api/history", { method: "GET" });
   assert.ok(
