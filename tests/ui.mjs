@@ -27,7 +27,8 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -54,6 +55,9 @@ function codeOnly(src) {
 
 const outDir = mkdtempSync(path.join(tmpdir(), "bw-ui-"));
 const SRC = path.join(ROOT, "lib", "ui", "placement.ts");
+/* For the compiled-component render in step 14: require CJS *from the repo*, so `clsx` and
+   `react/jsx-runtime` resolve the way the app resolves them. */
+const load = createRequire(path.join(ROOT, "noop.cjs"));
 try {
   execFileSync(
     "npx",
@@ -758,7 +762,12 @@ await run("Step 6b: headers organise the list, the chips still decide what is in
   assert.ok(page.includes("groupHistory(filteredHistory, { projects, teams })"), "groups are built over the already-filtered list");
   assert.ok(!/groupHistory\(\s*history\b/.test(code), "never over the raw list, or a header would become a second filter");
   assert.equal((page.match(/filteredHistory\.map/g) || []).length, 1, "the mobile drawer keeps its flat list - a sheet is not a rail");
-  assert.ok(page.includes("{!filteredHistory.length && ("), "and 'No history yet' still means empty, not 'everything is folded'");
+  // Step 14 moved this guarantee into an owner: "is the list empty" is asked once, of the filtered
+  // list, and both surfaces read the same answer. Still the point — emptiness is about the filter,
+  // never about folding a group.
+  assert.ok(page.includes("if (filteredHistory.length) return null;"), "the empty state is decided from the filtered list");
+  assert.ok(page.slice(page.indexOf("const emptyChats = "), page.indexOf("/* theme */")).includes("filteredHistory"), "by one owner, not per call site");
+  assert.equal((page.match(/\{emptyChats && \(/g) || []).length, 2, "the rail and the drawer both ask it, so neither can drift");
 
   assert.ok(page.includes("useState<string[]>([])"), "which groups are folded is component state, not a hidden store");
   assert.ok(!/localStorage|sessionStorage/.test(page.slice(page.indexOf("foldedGroups"), page.indexOf("foldedGroups") + 400)), "and it is deliberately not persisted across reloads");
@@ -1284,6 +1293,131 @@ await run("step 13: one answer, one link — and the link lives in the chat's ow
   assert.ok(drop.includes("s.conversationId !== conversationId"), "deleting a chat filters by conversation id, which is what takes its answers' pages with it");
   assert.equal(drop.includes("messageId"), false, "and no extra answer-specific cleanup had to be trusted to run");
   assert.equal(reader.includes("messageId"), false, "the reader renders whatever the snapshot holds — it needed no new branch");
+});
+
+await run("step 14: empty states are one component, on three surfaces, and say which empty it is", () => {
+  const art = readFileSync(path.join(ROOT, "components", "workspace", "EmptyState.tsx"), "utf8");
+  const artCode = codeOnly(art);
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  const code = codeOnly(page);
+  const panel = codeOnly(readFileSync(path.join(ROOT, "components", "workspace", "CreationsPanel.tsx"), "utf8"));
+
+  // Art, not assets: an empty state is only visible when there is no data, so a PNG would be a
+  // network request that fires exactly when the app is at its least able to show something.
+  for (const banned of ["<img", "url(", "background-image", "fetch(", "new Image"]) {
+    assert.equal(art.includes(banned), false, `EmptyState reaches for ${banned}`);
+  }
+  const imports = [...art.matchAll(/^import .* from "([^"]+)";/gm)].map((m) => m[1]);
+  assert.deepEqual(
+    imports.filter((i) => i !== "@/lib/ui/Btn"),
+    [],
+    `the component pulls in ${JSON.stringify(imports)}; only the shared button is allowed`
+  );
+  assert.ok(art.includes("<Btn"), "and its action is that button, not a fourth button style");
+  assert.ok(/<svg[\s\S]*?aria-hidden="true"[\s\S]*?focusable="false"/.test(artCode), "the drawing is decoration, not a figure to announce");
+
+  // The dark variant must not inherit the page's light tokens: this is the step-6 lesson, restated
+  // where someone would otherwise re-invent it.
+  assert.ok(art.includes("dark ? \"var(--surface-dark-border)\""), "a dark panel reads the dark surface's border");
+  assert.ok(art.includes("dark ? \"var(--surface-dark-muted)\""), "and its text colour");
+  assert.equal(/rgba\(255,255,255/.test(artCode), false, "no hand-tuned white alphas in a themed component");
+
+  // Three surfaces, one component: the sidebar, the drawer (which had no empty state at all) and the
+  // files tab, plus the creations panel. A `marker` names each one in the DOM, which is what the
+  // other suites assert on.
+  for (const marker of ["sidebar-empty", "drawer-empty", "project-files-empty"]) {
+    assert.ok(code.includes(`marker="${marker}"`), `page.tsx lost its ${marker} call site`);
+  }
+  assert.ok(panel.includes('marker="creations-empty"'), "the panel rides the same component");
+  assert.ok(art.includes("data-empty={marker}"), "which renders as the DOM marker the suites read");
+  assert.equal(code.includes("No history yet"), false, "the sidebar's old one-size sentence is gone, not kept beside the new one");
+
+  // The copy is written by the surfaces, and each of the three truths gets its own fix — or an
+  // honest reason for having none.
+  const owner = page.slice(page.indexOf("const emptyChats = "), page.indexOf("/* theme */", page.indexOf("const emptyChats = ")));
+  assert.ok(owner.length > 300 && owner.length < 2400, `the emptiness owner is ${owner.length} chars, which is not a small decision`);
+  assert.ok(owner.includes("if (filteredHistory.length) return null;"), "something to show means no empty state anywhere");
+  assert.ok(owner.includes("search.trim()") && owner.includes('onClick: () => setSearch("")'), "a missed search says so, and clears itself");
+  assert.ok(owner.includes("activeTeam") && owner.includes("activeProject"), "and a filter chip's emptiness is named after the chip");
+  assert.ok(owner.includes("setActiveProject(null);") && owner.includes("setActiveTeam(null);"), "with a way back to all chats");
+  assert.equal((owner.match(/action: \{/g) || []).length, 2, "the no-chats-at-all case offers no button: the composer is already focused and a New chat row there would be a no-op");
+  assert.ok(/return \{\s*title: "Your chats land here"/.test(owner), "which is the case that ends without an action");
+  assert.equal((code.match(/<EmptyState/g) || []).length, (code.match(/marker="/g) || []).length, "every call site says which surface it is");
+});
+
+await run("step 14: the empty state renders, and the drawing is markup rather than a promise", async () => {
+  // Source assertions can be satisfied by a component that throws on its first render. So compile
+  // the real file and render it, the way the placement maths and the store are exercised: emit into
+  // `node_modules/.cache` (inside the repo, so `clsx` and `react/jsx-runtime` resolve, and outside
+  // every snapshot), then render with the app's own react-dom.
+  const renderDir = path.join(ROOT, "node_modules", ".cache", "bw-empty-render");
+  mkdirSync(renderDir, { recursive: true });
+  const artSrc = readFileSync(path.join(ROOT, "components", "workspace", "EmptyState.tsx"), "utf8");
+  assert.ok(artSrc.includes('from "@/lib/ui/Btn"'), "the component imports the shared button by the app's alias");
+  // tsc maps `paths` for typechecking and never rewrites them at emit, so the alias is swapped for a
+  // relative specifier in the *copy* under test — the source of both files is otherwise untouched,
+  // and `clsx` / `react/jsx-runtime` resolve because the temp dir sits inside the repo's node_modules.
+  writeFileSync(path.join(renderDir, "Btn.tsx"), readFileSync(path.join(ROOT, "lib", "ui", "Btn.tsx"), "utf8"));
+  writeFileSync(path.join(renderDir, "EmptyState.tsx"), artSrc.replace('from "@/lib/ui/Btn"', 'from "./Btn"'));
+  execFileSync(
+    "npx",
+    [
+      "tsc",
+      // Both files, or tsc compiles the import for types and emits only the file it was given.
+      path.join(renderDir, "EmptyState.tsx"),
+      path.join(renderDir, "Btn.tsx"),
+      "--outDir", renderDir,
+      "--target", "es2022",
+      "--module", "commonjs",
+      "--moduleResolution", "node",
+      "--jsx", "react-jsx",
+      "--esModuleInterop",
+      "--strict",
+      "--skipLibCheck",
+    ],
+    { cwd: ROOT, stdio: "pipe" }
+  );
+  if (!existsSync(path.join(renderDir, "EmptyState.js"))) {
+    console.error("tsc produced no EmptyState.js");
+    process.exit(1);
+  }
+  const { EmptyState } = load(path.join(renderDir, "EmptyState.js"));
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  assert.equal(typeof EmptyState, "function", "the compiled module exports the component");
+
+  const html = renderToStaticMarkup(
+    EmptyState({
+      art: "chats",
+      marker: "sidebar-empty",
+      title: "Your chats land here",
+      children: "Send a message below.",
+      action: { label: "Clear search", onClick() {} },
+    })
+  );
+  assert.ok(html.includes('data-empty="sidebar-empty"'), "the marker reaches the DOM");
+  assert.ok(html.includes("<svg") && html.includes("</svg>"), "an inline svg, not an <img> to fail");
+  assert.ok(html.includes('aria-hidden="true"'), "decorative, as promised");
+  assert.ok(/<(rect|path)/.test(html), "and it has strokes in it");
+  assert.ok(html.includes("Your chats land here") && html.includes("Send a message below."), "both lines of copy render");
+  assert.ok(html.includes("<button") && html.includes("Clear search"), "the action is a real button");
+  assert.equal(html.includes("<img"), false, "no asset request anywhere in the markup");
+
+  // The three drawings are three drawings: same frame, different strokes.
+  const strokes = (art) => (renderToStaticMarkup(EmptyState({ art, title: "t" })).match(/<(rect|path)\b/g) || []).length;
+  const [a, b, c] = [strokes("chats"), strokes("creations"), strokes("files")];
+  assert.ok(a >= 3 && b >= 6 && c >= 2, `each variant draws something (${a}/${b}/${c})`);
+  assert.ok(b > a && b !== c, "the creations row really is the busiest of the three, not one shared blob");
+  assert.equal(renderToStaticMarkup(EmptyState({ art: "files", title: "x" })).includes("<Btn"), false, "and no leftover component name in the output");
+
+  // A surface on the dark panel gets the dark tokens, and the copy is escaped like everything else.
+  const darkHtml = renderToStaticMarkup(EmptyState({ art: "files", title: "No files yet", dark: true, compact: true, children: "y" }));
+  assert.ok(darkHtml.includes("var(--surface-dark-muted)"), "dark text colour comes from the surface, not the page");
+  assert.equal(darkHtml.includes("rounded-2xl border"), false, "compact drops the card frame the rail has no room for");
+  const escaped = renderToStaticMarkup(EmptyState({ art: "chats", title: "<script>alert(1)</script>", children: "<img src=x onerror=1>" }));
+  assert.ok(escaped.includes("&lt;script&gt;"), "a title from user data is escaped");
+  assert.equal(escaped.includes("<script>"), false, "and cannot open a tag");
+
+  rmSync(renderDir, { recursive: true, force: true });
 });
 
 rmSync(outDir, { recursive: true, force: true });

@@ -115,6 +115,7 @@ import { ProjectMoveMenu } from "@/components/workspace/ProjectMoveMenu";
 import type { PaletteRow } from "@/lib/client/palette";
 import { Sheet } from "@/components/workspace/Sheet";
 import { MessageActions } from "@/components/workspace/MessageActions";
+import { EmptyState } from "@/components/workspace/EmptyState";
 import dynamic from "next/dynamic";
 
 /* The creations list is opened by a click, not by a page load: ~3 kB of First Load JS for
@@ -543,6 +544,44 @@ function Dashboard() {
     () => groupHistory(filteredHistory, { projects, teams }),
     [filteredHistory, projects, teams]
   );
+
+  /* One list, two surfaces (the sidebar and the phone drawer), so one answer to "what does empty
+     mean here" — and it has to be the *right* answer. A single fixed sentence over a search that
+     matched nothing tells a person their work is gone, which is the one thing an empty state must
+     never imply. Null when there is something to show, so both call sites render nothing. */
+  const emptyChats = (() => {
+    if (filteredHistory.length) return null;
+    const q = search.trim();
+    if (q) {
+      return {
+        title: "No chat matches that search",
+        body: `Nothing titled or saying “${q.slice(0, 40)}”.`,
+        action: { label: "Clear search", onClick: () => setSearch("") },
+      };
+    }
+    const scope = activeTeam
+      ? teams.find((t) => t.id === activeTeam)?.name
+      : activeProject
+        ? projects.find((x) => x.id === activeProject)?.name
+        : null;
+    if (scope) {
+      return {
+        title: `Nothing in “${scope}” yet`,
+        body: "Chats you start while it is selected get filed here.",
+        action: {
+          label: "Show all chats",
+          onClick: () => {
+            setActiveProject(null);
+            setActiveTeam(null);
+          },
+        },
+      };
+    }
+    return {
+      title: "Your chats land here",
+      body: "Send a message below — this list fills up as soon as you have an answer.",
+    };
+  })();
 
   /* theme */
   useEffect(() => {
@@ -2581,8 +2620,16 @@ function Dashboard() {
                     </div>
                   );
                 })}
-                {!filteredHistory.length && (
-                  <p className="px-2 py-8 text-center text-[11px]" style={{ color: "var(--soft)" }}>No history yet</p>
+                {emptyChats && (
+                  <EmptyState
+                    art="chats"
+                    compact
+                    marker="sidebar-empty"
+                    title={emptyChats.title}
+                    action={emptyChats.action}
+                  >
+                    {emptyChats.body}
+                  </EmptyState>
                 )}
               </div>
             </>
@@ -3333,10 +3380,13 @@ function Dashboard() {
                         {projFilesBusy && !projFiles.length ? (
                           <p className="text-[12px] text-white/45">Loading files…</p>
                         ) : !projFiles.length ? (
-                          <p className="text-[12px] text-white/45">
-                            No files yet. Write something in the canvas, name it above and hit
-                            <strong className="text-white/70"> Save canvas</strong>.
-                          </p>
+                          /* The shared empty state, told to expect a dark surface: its tokens are the
+                             panel's, not the page's, which is the difference between reading as part
+                             of this panel and reading as a light card dropped on top of one. */
+                          <EmptyState art="files" compact dark marker="project-files-empty" title="No files in this project yet">
+                            Write something in the canvas, name it above and hit
+                            <strong style={{ color: "var(--surface-dark-fg)" }}> Save canvas</strong>.
+                          </EmptyState>
                         ) : (
                           <ul className="flex flex-col gap-1">
                             {projFiles.map((f) => (
@@ -3505,6 +3555,17 @@ function Dashboard() {
             </div>
             <div className="p-3"><Btn className="w-full" onClick={newChat}><Plus className="h-4 w-4" /> New chat</Btn></div>
             <div className="min-h-0 flex-1 overflow-y-auto px-2">
+              {emptyChats && (
+                <EmptyState
+                  art="chats"
+                  compact
+                  marker="drawer-empty"
+                  title={emptyChats.title}
+                  action={emptyChats.action}
+                >
+                  {emptyChats.body}
+                </EmptyState>
+              )}
               {filteredHistory.map((h) => (
                 <button key={h.id} type="button" onClick={() => openHist(h.id)} className="mb-0.5 flex w-full rounded-xl px-3 py-2.5 text-left text-sm" style={h.id === convId ? { background: "var(--secondary)" } : undefined}>
                   <span className="truncate font-medium">{h.title}</span>

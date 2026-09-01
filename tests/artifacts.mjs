@@ -711,7 +711,10 @@ await step("the panel is the real client surface, and it cannot reach the store"
   assert.ok(card.includes('"use client"'), "a client component, so its audio element is legal");
   assert.ok(!card.includes("@/lib/db"), "it talks to the API and never imports the store");
   assert.ok(card.includes("data-creations-error"), "a failed read says it failed, with a retry");
-  assert.ok(card.includes("data-creations-empty"), "and an empty list is its own honest state");
+  // The empty state is a shared component now (step 14), so the marker is asserted along the whole
+  // path rather than as a literal in this file: the panel passes the name, the component renders it.
+  assert.ok(card.includes('marker="creations-empty"'), "and an empty list is its own honest state");
+  assert.ok(src("components/workspace/EmptyState.tsx").includes("data-empty={marker}"), "which reaches the DOM as data-empty");
   assert.ok(
     card.includes("disabled={!artifact.shareable && !artifact.shareId}"),
     "a row with nothing to open offers no share button"

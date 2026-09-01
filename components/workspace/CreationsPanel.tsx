@@ -31,6 +31,7 @@
  * - No grid/gallery toggle. Two layouts is two sets of bugs, and a list is the one that
  *   can show a title, a prompt, a date and a menu without cutting any of them off.
  */
+import { EmptyState } from "@/components/workspace/EmptyState";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
@@ -330,21 +331,19 @@ export function CreationsPanel({
       )}
 
       {!loading && !error && !shown.length && (
-        <div
-          data-creations-empty
-          className="mt-4 rounded-2xl border p-4 text-xs"
-          style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+        /* Which emptiness it is, in its own words: rows exist but none match the search is a
+           different problem from an account that has made nothing, and the first one has a fix the
+           panel can offer. `marker` renders `data-empty`, the handle the suite asserts on. */
+        <EmptyState
+          art="creations"
+          marker="creations-empty"
+          title={items?.length ? `Nothing matches “{query.trim()}”` : "Nothing here yet"}
+          action={items?.length ? { label: "Clear the search", onClick: () => setQuery("") } : undefined}
         >
-          {items?.length ? (
-            <>Nothing matches “{query}” in this filter.</>
-          ) : (
-            <>
-              Nothing here yet. An image, a voice clip or a code answer joins this list on its
-              own, and any answer in a chat can be kept here from the row under it — there is
-              nothing to switch on.
-            </>
-          )}
-        </div>
+          {items?.length
+            ? "That phrase is not in any title, prompt or answer inside this filter."
+            : "An image, a voice clip or a code answer joins this list on its own, and any answer in a chat can be kept here from the row under it — there is nothing to switch on."}
+        </EmptyState>
       )}
 
       <ul className="mt-3 space-y-1.5">
