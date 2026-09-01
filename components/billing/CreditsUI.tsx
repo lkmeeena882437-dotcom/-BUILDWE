@@ -52,6 +52,8 @@ type WalletState = {
   welcomeAt: string | null;
   plan: string;
   proMonthly: number;
+  /** Seats on the paid plan; 1 for a personal PRO or a free account. */
+  proSeats: number;
   signedIn: boolean;
   loaded: boolean;
   error: string;
@@ -73,6 +75,7 @@ const state: WalletState = {
   welcomeAt: null,
   plan: "free",
   proMonthly: 1000,
+  proSeats: 1,
   signedIn: false,
   loaded: false,
   error: "",
@@ -107,6 +110,7 @@ export async function loadWallet(): Promise<void> {
         state.welcomeAt = j.welcomeAt || null;
         state.plan = String(j.plan || "free");
         state.proMonthly = Number(j.proMonthly ?? state.proMonthly);
+        state.proSeats = Math.max(1, Number(j.proSeats ?? state.proSeats));
         state.ledger = Array.isArray(j.ledger) ? j.ledger : [];
         state.signedIn = Boolean(j.signedIn);
         state.loaded = true;

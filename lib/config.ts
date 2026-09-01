@@ -102,6 +102,14 @@ export const RAZORPAY = {
   currency: env("RAZORPAY_PRO_CURRENCY", "INR"),
   planName: env("RAZORPAY_PRO_PLAN_NAME", "BUILDWE PRO"),
   planId: env("RAZORPAY_PRO_PLAN_ID"),
+  /**
+   * How many seats one Business order may buy. The multiplier itself is applied
+   * server-side (lib/payments/razorpay.ts owns the arithmetic) so a browser can
+   * neither pick its price nor its entitlement; this exists only to bound it, and
+   * it is served to the UI rather than copied there, so the stepper can never
+   * offer a number the order endpoint would refuse.
+   */
+  seatsMax: envInt("RAZORPAY_PRO_SEATS_MAX", 10),
 } as const;
 
 /**

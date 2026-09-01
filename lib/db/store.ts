@@ -26,6 +26,12 @@ export type User = {
   provider?: "email" | "google" | "github";
   oauthId?: string;
   emailVerified?: boolean;
+  /**
+   * Seats paid for on a Business order. Absent or 1 means a personal PRO, which is
+   * what every account created before this field had — hence optional, and read
+   * through `planSeatsOf` rather than defaulted at each call site.
+   */
+  planSeats?: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -128,6 +134,12 @@ export type Payment = {
   kind?: "pro" | "pack";
   packId?: string;
   credits?: number;
+  /**
+   * PRO orders only: the seat multiplier that was charged. The verify path reads
+   * *this* (our ledger) to work out what should have been paid, never the client,
+   * so a forged `seats` in a verify request cannot buy three seats for the price of one.
+   */
+  seats?: number;
   paymentId?: string;
   amount: number;
   /** What the payment gateway reported as actually captured, in the smallest
@@ -662,7 +674,10 @@ export function updateUser(
   patch: Partial<
     Pick<
       User,
-      "name" | "plan" | "skills" | "byok" | "emailVerified" | "provider" | "oauthId"
+      // An allow-list, and `planSeats` joins it for the same reason `plan` is in it
+      // rather than being free-for-all: only the two paths that have confirmed money at
+      // the gateway (checkout verify, and the signed webhook) may set either.
+      "name" | "plan" | "planSeats" | "skills" | "byok" | "emailVerified" | "provider" | "oauthId"
     >
   >
 ) {
@@ -1451,6 +1466,12 @@ export function grantWelcomeCredits(userId: string, amount: number) {
  * one grant per calendar month per account, whichever request happens to
  * arrive first.
  */
+/** The seat multiplier on this account's paid plan. 1 for guests and for every pre-seats account. */
+export function planSeatsOf(userId: string): number {
+  const n = Math.floor(findUserById(userId)?.planSeats || 1);
+  return n > 1 ? n : 1;
+}
+
 export function maybeGrantProMonthly(userId: string, plan: Plan, amount: number) {
   if (plan !== "pro" || amount <= 0) return { granted: 0, balance: getBalance(userId) };
   const period = new Date().toISOString().slice(0, 7);

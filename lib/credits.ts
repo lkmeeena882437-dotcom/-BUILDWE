@@ -29,6 +29,7 @@ import {
   grantWelcomeCredits,
   listCreditLedger,
   maybeGrantProMonthly,
+  planSeatsOf,
   refundCredits,
   spendCredits,
 } from "@/lib/db/store";
@@ -239,7 +240,12 @@ export function topUpCredits(args: { userId: string; credits: number; refId: str
 
 /** Everything the wallet UI and the pricing page need, from one read. */
 export function creditSummary(userId: string, plan: Plan) {
-  maybeGrantProMonthly(userId, plan, CREDITS.proMonthly);
+  // Business multiplies the monthly grant by the seats that were paid for, and it is
+  // done here because this is the one function both the wallet UI and the pricing page
+  // read — a per-seat number invented in a component would disagree with the grant.
+  const seats = plan === "pro" ? planSeatsOf(userId) : 1;
+  const monthly = CREDITS.proMonthly * seats;
+  maybeGrantProMonthly(userId, plan, monthly);
   ensureWelcome(userId);
   const wallet = getWallet(userId);
   return {
@@ -250,7 +256,9 @@ export function creditSummary(userId: string, plan: Plan) {
     welcome: CREDITS.welcome,
     welcomeAt: wallet.welcomeAt || null,
     plan,
-    proMonthly: CREDITS.proMonthly,
+    proMonthly: monthly,
+    /** The multiplier behind `proMonthly`, so the UI can say "1,000 × 3 seats". */
+    proSeats: seats,
     costs: {
       ...CREDITS.cost,
       packs: CREDITS.packs.map((p) => ({

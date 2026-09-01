@@ -27,6 +27,8 @@ export type CheckoutOrder = {
   amount: number;
   currency: string;
   receipt: string;
+  /** Only on a Business order: the multiplier this order was created to charge. */
+  seats?: number;
 };
 
 export type VerifyPayload = {
@@ -42,7 +44,46 @@ export type VerifyResult = {
   amountPaid?: number;
   currency?: string;
   paymentId?: string;
+  /**
+   * Seats as the *gateway* recorded them, read off the order we created. The grant
+   * uses this instead of anything the client sends, which is what lets a 3-seat
+   * payment buy 3 seats and nothing else.
+   */
+  seats?: number;
 };
+
+/** The smallest legitimate Business order. Below this there is nothing to sell. */
+export const SEATS_MIN = 1;
+
+/** Bound the multiplier from config, never from a copy in a component. */
+export function seatsMax(): number {
+  return Math.max(SEATS_MIN, Math.floor(RAZORPAY.seatsMax) || SEATS_MIN);
+}
+
+/**
+ * What a seat multiplier is, in one place: 1 when nothing was asked for, refused
+ * when the caller asked for something that cannot be honoured. Returning the
+ * error rather than clamping is deliberate — a UI that offers 40 seats has a bug,
+ * and silently selling 10 instead of 40 is the kind of quiet disagreement between
+ * the button and the ledger that this file has been cleaned of twice already.
+ */
+export function normalizeSeats(raw: unknown): { seats: number; error?: string } {
+  if (raw === undefined || raw === null || raw === "") return { seats: SEATS_MIN };
+  const s = typeof raw === "string" ? raw.trim() : raw;
+  const n = typeof s === "number" ? s : Number(String(s));
+  if (!Number.isFinite(n) || !Number.isInteger(n)) {
+    return { seats: SEATS_MIN, error: "Seats must be a whole number." };
+  }
+  if (n < SEATS_MIN || n > seatsMax()) {
+    return { seats: SEATS_MIN, error: `Seats must be between ${SEATS_MIN} and ${seatsMax()}.` };
+  }
+  return { seats: n };
+}
+
+/** The one arithmetic rule: a Business order is the PRO price × its seats. */
+export function proAmountPaise(seats: number): number {
+  return RAZORPAY.amountPaise * Math.max(SEATS_MIN, Math.floor(seats) || 1);
+}
 
 export function getCheckoutPublicConfig() {
   return {
@@ -50,6 +91,9 @@ export function getCheckoutPublicConfig() {
     amountPaise: RAZORPAY.amountPaise,
     currency: RAZORPAY.currency,
     planName: RAZORPAY.planName,
+    /** Business tier bounds, straight from the server that enforces them. */
+    seatsMax: seatsMax(),
+    seatsMin: SEATS_MIN,
     /** Display helper */
     displayAmount:
       RAZORPAY.currency === "INR"
@@ -113,13 +157,22 @@ async function createOrderFor(
   };
 }
 
-/** Server: create a REAL Razorpay order. Throws instead of faking one. */
-export async function createProOrder(userId: string): Promise<CheckoutOrder> {
-  return createOrderFor(userId, {
-    amountPaise: RAZORPAY.amountPaise,
+/**
+ * Server: create a REAL Razorpay order. Throws instead of faking one.
+ *
+ * `seats` multiplies the amount *here*, at the only place the gateway is told what
+ * to charge, and rides along in the order's own notes. Verify then reads the seat
+ * count back out of Razorpay's order rather than out of the browser, so the money
+ * and the entitlement cannot be argued apart by whoever holds the network tab.
+ */
+export async function createProOrder(userId: string, seats = SEATS_MIN): Promise<CheckoutOrder> {
+  const n = Math.max(SEATS_MIN, Math.floor(seats) || 1);
+  const order = await createOrderFor(userId, {
+    amountPaise: proAmountPaise(n),
     receiptPrefix: "bw_pro",
-    product: "buildwe_pro",
+    product: n > SEATS_MIN ? `buildwe_pro:seats:${n}` : "buildwe_pro",
   });
+  return n > SEATS_MIN ? { ...order, seats: n } : order;
 }
 
 /**
@@ -216,11 +269,13 @@ export async function verifyProPayment(
     return { ok: false, error: "This order belongs to another account." };
   }
 
+  const seats = normalizeSeats(notes.seats ?? String(notes.product || "").split(":")[2]).seats;
   return {
     ok: true,
     amountPaid: paid,
     currency: String(order.currency || RAZORPAY.currency),
     paymentId,
+    seats,
   };
 }
 

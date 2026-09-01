@@ -7,6 +7,8 @@ import {
   createProOrder,
   getCheckoutPublicConfig,
   livePayments,
+  proAmountPaise,
+  normalizeSeats,
 } from "@/lib/payments/razorpay";
 import { addPayment } from "@/lib/db/store";
 import { CREDITS, creditPack } from "@/lib/config";
@@ -64,8 +66,19 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+    // Seats: the Business multiplier. Refused before any gateway call when the number
+    // is not one we would honour, so nobody is ever charged for an entitlement the
+    // server would not grant.
+    const seats = normalizeSeats(body?.seats);
+    if (seats.error) {
+      return NextResponse.json(
+        { error: seats.error, code: "BAD_SEATS", seatsMax: getCheckoutPublicConfig().seatsMax },
+        { status: 400 }
+      );
+    }
+
     const productLabel = pack ? pack.label : RAZORPAY.planName;
-    const productPaise = pack ? pack.paise : RAZORPAY.amountPaise;
+    const productPaise = pack ? pack.paise : proAmountPaise(seats.seats);
 
     // The only answer when there is no gateway configured, in every environment.
     // It used to be possible to trade a "demo" order for a UI walk-through; that
@@ -85,7 +98,7 @@ export async function POST(req: NextRequest) {
 
     const order = pack
       ? await createPackOrder(session.userId, pack)
-      : await createProOrder(session.userId);
+      : await createProOrder(session.userId, seats.seats);
     const pub = getCheckoutPublicConfig();
 
     try {
@@ -96,7 +109,7 @@ export async function POST(req: NextRequest) {
         currency: order.currency,
         status: "created",
         kind: pack ? "pack" : "pro",
-        ...(pack ? { packId: pack.id, credits: pack.credits } : {}),
+        ...(pack ? { packId: pack.id, credits: pack.credits } : { seats: seats.seats }),
       });
     } catch {
       /* best effort */
@@ -108,8 +121,12 @@ export async function POST(req: NextRequest) {
       planName: productLabel,
       displayAmount: pack
         ? formatPackPrice(pack.paise)
-        : pub.displayAmount,
-      ...(pack ? { kind: "pack", packId: pack.id, credits: pack.credits } : {}),
+        : formatPackPrice(productPaise),
+      /** A Business order also reports its unit price, so the receipt the UI draws
+       *  says "₹500 × 3" and not a number it invented. */
+      ...(pack
+        ? { kind: "pack", packId: pack.id, credits: pack.credits }
+        : { kind: "pro", seats: seats.seats, unitAmount: formatPackPrice(RAZORPAY.amountPaise) }),
     });
     attachGuestCookie(res, session.userId);
     return res;

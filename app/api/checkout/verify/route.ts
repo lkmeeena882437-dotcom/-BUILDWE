@@ -8,6 +8,7 @@ import {
   updateUser,
 } from "@/lib/db/store";
 import { RAZORPAY, creditPack } from "@/lib/config";
+import { proAmountPaise } from "@/lib/payments/razorpay";
 import { topUpCredits } from "@/lib/credits";
 
 export const runtime = "nodejs";
@@ -97,7 +98,7 @@ export async function POST(req: NextRequest) {
     const isPack = pay.kind === "pack";
     const expectedPaise = isPack
       ? creditPack(pay.packId || "")?.paise ?? pay.amount
-      : RAZORPAY.amountPaise;
+      : proAmountPaise(pay.seats || 1);
     if (pay.amount < expectedPaise) {
       // A short-priced order should not exist; refuse rather than honour it.
       return NextResponse.json(
@@ -198,16 +199,25 @@ export async function POST(req: NextRequest) {
     }
 
     try {
-      updateUser(session.userId, { plan: "pro" });
+      // The seat count comes from the order as the gateway recorded it, never from
+      // this request's body. Absent (a personal PRO order, or any order made before
+      // seats existed) means 1, which is what those accounts paid for.
+      const seats = result.seats && result.seats > 1 ? result.seats : pay.seats || 1;
+      updateUser(session.userId, { plan: "pro", planSeats: seats });
     } catch (e) {
       console.error("[bw] checkout verify persist", e);
     }
 
+    const grantedSeats = pay.seats && pay.seats > 1 ? pay.seats : 1;
     return NextResponse.json({
       ok: true,
       plan: "pro",
+      seats: grantedSeats,
       upgraded: true,
-      message: "Payment verified — PRO activated.",
+      message:
+        grantedSeats > 1
+          ? `Payment verified — PRO active for ${grantedSeats} seats.`
+          : "Payment verified — PRO activated.",
     });
   } catch (e) {
     console.error("[bw] checkout verify", e);

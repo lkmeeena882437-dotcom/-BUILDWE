@@ -10,6 +10,7 @@ import {
   updateUser,
 } from "@/lib/db/store";
 import { creditPack } from "@/lib/config";
+import { normalizeSeats } from "@/lib/payments/razorpay";
 import { topUpCredits } from "@/lib/credits";
 
 export const runtime = "nodejs";
@@ -145,7 +146,16 @@ export async function POST(req: NextRequest) {
       }
 
       // Idempotent: re-delivery of the same event is harmless.
-      if (user.plan !== "pro") updateUser(userId, { plan: "pro" });
+      // Seats ride in the order's own notes; a `subscription.charged` event carries
+      // none, and must not quietly shrink an account that already paid for four.
+      const noteSeats = normalizeSeats(entity?.notes?.seats);
+      const fields =
+        noteSeats.error || noteSeats.seats <= 1
+          ? { plan: "pro" as const }
+          : { plan: "pro" as const, planSeats: noteSeats.seats };
+      if (user.plan !== "pro" || (noteSeats.seats > 1 && user.planSeats !== noteSeats.seats)) {
+        updateUser(userId, fields);
+      }
 
       if (existing) {
         if (existing.status !== "paid") {
@@ -173,8 +183,9 @@ export async function POST(req: NextRequest) {
     }
 
     if (kind === "subscription.cancelled" || kind === "subscription.halted") {
-      // Subscription ended — return the account to Free.
-      if (userId && findUserById(userId)) updateUser(userId, { plan: "free" });
+      // Subscription ended — return the account to Free. The seat count goes with it,
+      // so a later single-seat renewal cannot inherit the old multiplier.
+      if (userId && findUserById(userId)) updateUser(userId, { plan: "free", planSeats: 1 });
       return NextResponse.json({ ok: true, downgraded: true });
     }
 
