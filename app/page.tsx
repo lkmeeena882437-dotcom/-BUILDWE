@@ -20,7 +20,6 @@ import {
   Settings,
   Sparkles,
   ChevronRight,
-  ChevronLeft,
   X,
   Menu,
   Zap,
@@ -49,7 +48,6 @@ import {
   Download,
   Layers,
   Share2,
-  FolderPlus,
   FolderOpen,
   Eye,
   KeyRound,
@@ -112,6 +110,9 @@ import {
 } from "@/lib/client/api";
 import { ImageStudio, type StudioImage } from "@/components/workspace/ImageStudio";
 import { AudioStudio } from "@/components/workspace/AudioStudio";
+import { CanvasHistoryMenu, type CanvasVersion } from "@/components/workspace/CanvasHistoryMenu";
+import { ProjectMoveMenu } from "@/components/workspace/ProjectMoveMenu";
+import { Sheet } from "@/components/workspace/Sheet";
 import dynamic from "next/dynamic";
 
 /* The creations list is opened by a click, not by a page load: ~3 kB of First Load JS for
@@ -324,64 +325,6 @@ function extractCode(text: string) {
   return blocks;
 }
 
-function Sheet({
-  children,
-  onClose,
-  title,
-  wide,
-}: {
-  children: React.ReactNode;
-  onClose: () => void;
-  title?: string;
-  wide?: boolean;
-}) {
-  useEffect(() => {
-    const k = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", k);
-    document.body.classList.add("lock-scroll");
-    return () => {
-      window.removeEventListener("keydown", k);
-      document.body.classList.remove("lock-scroll");
-    };
-  }, [onClose]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
-      <button type="button" className="absolute inset-0 bg-black/35" aria-label="Close" onClick={onClose} />
-      <div
-        role="dialog"
-        aria-modal
-        className={clsx(
-          "relative z-10 max-h-[90dvh] w-full overflow-y-auto rounded-t-3xl border p-5 shadow-2xl sm:rounded-3xl",
-          wide ? "max-w-lg" : "max-w-md"
-        )}
-        style={{
-          borderColor: "var(--border)",
-          background: "var(--card)",
-          color: "var(--ink)",
-          paddingBottom: "calc(18px + var(--safe-b))",
-        }}
-      >
-        <div className="mb-3 flex justify-center sm:hidden">
-          <span className="h-1 w-10 rounded-full" style={{ background: "var(--border)" }} />
-        </div>
-        {title && (
-          <div className="mb-4 flex items-center gap-2">
-            <button type="button" onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-xl" style={{ color: "var(--muted)" }} aria-label="Back">
-              <ChevronLeft className="h-5 w-5" />
-            </button>
-            <h2 className="flex-1 text-base font-semibold tracking-tight">{title}</h2>
-            <button type="button" onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-xl" style={{ color: "var(--muted)" }} aria-label="Close">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        )}
-        {children}
-      </div>
-    </div>
-  );
-}
-
 function Dashboard() {
   const [view, setView] = useState<"home" | "app">("home");
   const [mode, setMode] = useState<Mode>("chat");
@@ -502,16 +445,13 @@ function Dashboard() {
     verified: boolean;
   } | null>(null);
   const agentAbort = useRef<AbortController | null>(null);
-  const [canvasVersions, setCanvasVersions] = useState<
-    { ts: number; code: string; lang: string }[]
-  >([]);
+  const [canvasVersions, setCanvasVersions] = useState<CanvasVersion[]>([]);
   const [canvasActionBusy, setCanvasActionBusy] = useState<string | null>(null);
   const [canvasConsole, setCanvasConsole] = useState<{
     kind: "run" | "test" | "note";
     ok: boolean;
     text: string;
   } | null>(null);
-  const [verMenu, setVerMenu] = useState(false);
 
   // response style (human-language controls)
   const [depth, setDepth] = useState<"short" | "balanced" | "detailed" | "deep">("balanced");
@@ -522,7 +462,22 @@ function Dashboard() {
 
   // share
   const [shareNote, setShareNote] = useState("");
-  const [projMenu, setProjMenu] = useState(false);
+  /** /api/projects answers with the store's cap; 0 until the first read lands. */
+  const [projNameMax, setProjNameMax] = useState(0);
+  /* ── Step 11 sweep: name fields, a delete form, and per-chat composer drafts ── */
+  const [newProjOpen, setNewProjOpen] = useState(false);
+  const [newProjName, setNewProjName] = useState("");
+  const [newTeamName, setNewTeamName] = useState("");
+  const [deleteArmed, setDeleteArmed] = useState(false);
+  const [deleteSecret, setDeleteSecret] = useState("");
+  const [deleteErr, setDeleteErr] = useState("");
+  /**
+   * One unsent message per conversation, in memory only. A draft that survives switching
+   * chats is the difference between "my text is still where I left it" and a half-written
+   * message landing in the wrong thread; persisting it to storage would outlive a reload
+   * with no way to tell the reader which chat it belonged to, so it does not.
+   */
+  const draftsRef = useRef(new Map<string, string>());
   const [verifying, setVerifying] = useState<string | null>(null);
 
   // BYOK
@@ -658,6 +613,7 @@ function Dashboard() {
     try {
       const p = await fetchProjects();
       setProjects(p.projects || []);
+      setProjNameMax(p.nameMax || 0);
     } catch {
       /* */
     }
@@ -784,6 +740,8 @@ function Dashboard() {
   };
 
   const newChat = () => {
+    // The half-written message stays with the chat it was written in.
+    draftsRef.current.set(convId || "__new", input);
     setConvId(null);
     setMessages([]);
     setInput("");
@@ -801,6 +759,7 @@ function Dashboard() {
   };
 
   const openHist = async (id: string) => {
+    draftsRef.current.set(convId || "__new", input);
     try {
       const c = await loadConversation(id);
       setConvId(c.id);
@@ -823,6 +782,11 @@ function Dashboard() {
       setCanvasTab("code");
       setView("app");
       setDrawer(false);
+      // What was typed for *this* chat comes back, and the file the previous chat was
+      // reading does not travel with the person: the chip is about this project's files,
+      // and a stale one would spend the context budget on a file nobody meant to send.
+      setInput(draftsRef.current.get(c.id) || "");
+      setChatCtxPath(null);
       const last = [...(c.messages || [])].reverse().find((m: { role: string }) => m.role === "assistant");
       if (last) {
         const blocks = extractCode(last.content);
@@ -878,6 +842,19 @@ function Dashboard() {
     setComparePrompt(input.trim() || lastUser.slice(0, 500));
     setCompareResult(null);
     setModal("compare");
+  };
+
+  /**
+   * Go back to a saved version without losing the one on screen. The list used to be
+   * one-way: picking version 4 replaced the canvas and the content you were looking at was
+   * simply not in the list any more, so a mis-click had no way back except undo-by-memory.
+   */
+  const restoreCanvasVersion = (v: CanvasVersion) => {
+    if (v.code === codePanel) return;
+    if (codePanel.trim()) pushCanvasVersion(codePanel, codeLang);
+    setCodePanel(v.code);
+    setCodeLang(v.lang);
+    beat("canvas_version_restore");
   };
 
   const pushCanvasVersion = (code: string, lang: string) => {
@@ -1049,7 +1026,6 @@ function Dashboard() {
   };
 
   const doAssignProject = async (projectId: string | null) => {
-    setProjMenu(false);
     if (!convId) {
       setActiveProject(projectId);
       return;
@@ -1064,22 +1040,26 @@ function Dashboard() {
     }
   };
 
-  const doNewProject = async () => {
-    setProjMenu(false);
-    const name = window.prompt("Project name? (e.g. Startup site, DSA prep)");
-    if (!name?.trim()) return;
+  /**
+   * Create a project from whatever the field holds. It rethrows after reporting, because
+   * the two callers keep their input on failure and clear it on success — a `window.prompt`
+   * could not do the first half, which is why a failed name used to vanish.
+   */
+  const doNewProject = async (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
     try {
-      const { project } = await createProject(name.trim());
+      const { project } = await createProject(trimmed);
       const item: ProjectItem = { ...project, createdAt: new Date().toISOString() };
       setProjects((ps) => [...ps, item]);
       await doAssignProject(item.id);
     } catch (e) {
       setError((e as Error).message);
+      throw e;
     }
   };
 
   const doAssignTeam = async (teamId: string | null) => {
-    setProjMenu(false);
     if (!convId) {
       setActiveTeam(teamId);
       setActiveProject(null);
@@ -1096,14 +1076,16 @@ function Dashboard() {
     }
   };
 
-  const doNewTeam = async () => {
-    const name = window.prompt("Team name? (e.g. Studio crew, College project)");
-    if (!name?.trim()) return;
+  const doNewTeam = async (name?: string) => {
+    const trimmed = (name ?? "").trim();
+    if (!trimmed) return;
     try {
-      const { team } = await createTeam(name.trim());
+      const { team } = await createTeam(trimmed);
       setTeams((ts) => [...ts, team]);
+      setNewTeamName("");
       setTeamNote(`Team “${team.name}” created — invite friends with the code below.`);
     } catch (e) {
+      // The field keeps its text on failure: the name is the thing worth retrying.
       setTeamNote((e as Error).message);
     }
   };
@@ -1435,6 +1417,7 @@ function Dashboard() {
     setView("app");
     setMode("code");
     setInput("");
+    draftsRef.current.delete(convId || "__new");
     if (taRef.current) taRef.current.style.height = "48px";
     beat("agent_run");
 
@@ -1545,6 +1528,7 @@ function Dashboard() {
     setError("");
     setView("app");
     setInput("");
+    draftsRef.current.delete(convId || "__new");
     if (taRef.current) taRef.current.style.height = "48px";
 
     let resolved: Mode = mode;
@@ -1875,17 +1859,27 @@ function Dashboard() {
     setModal(null);
   };
 
-  const doDeleteAccount = async () => {
-    const user = me?.user;
-    const isOauth = (user as unknown as { provider?: string })?.provider === "google" ||
-      (user as unknown as { provider?: string })?.provider === "github";
-    const answer = window.prompt(
-      isOauth
-        ? `This PERMANENTLY deletes your account, chats, projects, teams, and keys. Type DELETE to confirm:`
-        : `This PERMANENTLY deletes your account, chats, projects, teams, and keys.\nEnter your password to confirm:`
-    );
-    if (!answer) return;
+  /**
+   * Account deletion, inside the app rather than in a browser dialog.
+   *
+   * This used to ask for the account **password** with `window.prompt`, which is wrong on
+   * three counts at once: a prompt renders what you type in plain text, it sits outside the
+   * app's focus management (and outside `Sheet`, whose job is exactly that), and some
+   * embedded browsers refuse `prompt` outright and return null — so the button did nothing
+   * at all, with no message anywhere. Here the field is a real `type="password"`, a refusal
+   * is reported where the person is looking, and an OAuth account — which has no password to
+   * give — still has to write the word.
+   */
+  const oauthOnly =
+    (me?.user as unknown as { provider?: string } | undefined)?.provider === "google" ||
+    (me?.user as unknown as { provider?: string } | undefined)?.provider === "github";
+
+  const doDeleteAccount = async (answer: string) => {
+    const value = answer.trim();
+    if (!value || authBusy) return;
+    const isOauth = oauthOnly;
     setAuthBusy(true);
+    setDeleteErr("");
     try {
       const r = await fetch("/api/auth/delete", {
         method: "POST",
@@ -1902,10 +1896,14 @@ function Dashboard() {
       setTeams([]);
       setProjects([]);
       setModal(null);
+      setDeleteArmed(false);
+      setDeleteSecret("");
       await refreshMe();
       setTeamNote("Account deleted. We're sorry to see you go.");
     } catch (e) {
-      window.alert((e as Error).message);
+      // The strip in the sheet, not window.alert: an alert steals focus, cannot be styled,
+      // and is gone the moment it is dismissed — with no way to read the reason again.
+      setDeleteErr((e as Error).message);
     } finally {
       setAuthBusy(false);
     }
@@ -2231,12 +2229,61 @@ function Dashboard() {
                   <button
                     type="button"
                     aria-label="New project"
-                    onClick={doNewProject}
+                    aria-expanded={newProjOpen}
+                    onClick={() => setNewProjOpen((v) => !v)}
                     className="rounded-full px-2 py-1 text-[10px] font-semibold"
                     style={{ background: "var(--secondary)", color: "var(--muted)" }}
                   >
                     <Plus className="mr-0.5 inline h-2.5 w-2.5" />Project
                   </button>
+                  {/* The name is asked for in the row it belongs to, not in a browser dialog:
+                      the field keeps what was typed when the server says no, which a
+                      window.prompt cannot do — it closes and the name is gone. */}
+                  {newProjOpen && (
+                    <span className="mt-1 flex w-full items-center gap-1.5">
+                      <input
+                        autoFocus
+                        value={newProjName}
+                        onChange={(e) => setNewProjName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            setNewProjOpen(false);
+                          }
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void doNewProject(newProjName)
+                              .then(() => {
+                                setNewProjName("");
+                                setNewProjOpen(false);
+                              })
+                              .catch(() => {});
+                          }
+                        }}
+                        {...(projNameMax ? { maxLength: projNameMax } : {})}
+                        aria-label="New project name"
+                        placeholder="Startup site, DSA prep…"
+                        className="h-7 min-w-0 flex-1 rounded-full border px-2 text-[11px] outline-none"
+                        style={{ borderColor: "var(--border)", background: "var(--bg)", color: "var(--ink)" }}
+                      />
+                      <button
+                        type="button"
+                        disabled={!newProjName.trim()}
+                        onClick={() =>
+                          void doNewProject(newProjName)
+                            .then(() => {
+                              setNewProjName("");
+                              setNewProjOpen(false);
+                            })
+                            .catch(() => {})
+                        }
+                        className="rounded-full px-2 py-1 text-[10px] font-semibold disabled:opacity-40"
+                        style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+                      >
+                        Add
+                      </button>
+                    </span>
+                  )}
                 </div>
                 <div className="mt-1.5 flex flex-wrap gap-1">
                   <button
@@ -2431,54 +2478,17 @@ function Dashboard() {
             </div>
             <div className="hidden truncate text-[11px] sm:block" style={{ color: "var(--muted)" }}>{meta.headline}{modelTag ? ` · ${modelTag}` : ""}</div>
           </div>
-          <div className="relative">
-            <Btn
-              variant="icon"
-              size="sm"
-              aria-label="Move to project"
-              onClick={() => setProjMenu((v) => !v)}
-              style={convProjectId ? { background: "var(--accent-soft)", color: "var(--accent)" } : undefined}
-            >
-              <FolderOpen className="h-4 w-4" />
-            </Btn>
-            {projMenu && (
-              <>
-                <button type="button" className="fixed inset-0 z-40 cursor-default" aria-label="Close menu" onClick={() => setProjMenu(false)} />
-                <div className="absolute right-0 z-50 mt-2 w-52 overflow-hidden rounded-2xl border shadow-lg" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
-                  <div className="px-3 pb-1 pt-2.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Move chat to</div>
-                  <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: !convProjectId ? "var(--accent)" : "var(--ink)" }} onClick={() => doAssignProject(null)}>
-                    <FolderOpen className="h-3.5 w-3.5" /> No project
-                  </button>
-                  {projects.map((p) => (
-                    <button key={p.id} type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: convProjectId === p.id ? "var(--accent)" : "var(--ink)" }} onClick={() => doAssignProject(p.id)}>
-                      <FolderOpen className="h-3.5 w-3.5" /> <span className="truncate">{p.name}</span>
-                    </button>
-                  ))}
-                  <button type="button" className="flex w-full items-center gap-2 border-t px-3 py-2.5 text-left text-sm font-medium" style={{ borderColor: "var(--border)", color: "var(--accent)" }} onClick={doNewProject}>
-                    <FolderPlus className="h-3.5 w-3.5" /> New project
-                  </button>
-                  <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Shared with team</div>
-                  {teams.length ? (
-                    <>
-                      <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: !convTeamId ? "var(--muted)" : "var(--ink)" }} onClick={() => doAssignTeam(null)}>
-                        <FolderOpen className="h-3.5 w-3.5" /> Not shared
-                      </button>
-                      {teams.map((t) => (
-                        <button key={t.id} type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: convTeamId === t.id ? "var(--accent)" : "var(--ink)" }} onClick={() => doAssignTeam(t.id)}>
-                          <Users className="h-3.5 w-3.5" /> <span className="truncate">{t.name}</span>
-                          <span className="ml-auto text-[9px]" style={{ color: "var(--soft)" }}>{t.memberCount}</span>
-                        </button>
-                      ))}
-                    </>
-                  ) : (
-                    <button type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm" style={{ color: "var(--accent)" }} onClick={() => { setProjMenu(false); setModal("teams"); }}>
-                      <UserPlus className="h-3.5 w-3.5" /> Create / join a team
-                    </button>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
+          <ProjectMoveMenu
+            projects={projects.map((p) => ({ id: p.id, name: p.name }))}
+            teams={teams.map((t) => ({ id: t.id, name: t.name, memberCount: t.memberCount }))}
+            projectId={convProjectId}
+            teamId={convTeamId}
+            nameMax={projNameMax}
+            onAssignProject={doAssignProject}
+            onAssignTeam={doAssignTeam}
+            onCreateProject={doNewProject}
+            onOpenTeams={() => setModal("teams")}
+          />
           {convId && !!messages.length && (
             <Btn variant="icon" size="sm" aria-label="Share chat" title="Copy public share link" onClick={doShare}>
               <Share2 className="h-4 w-4" />
@@ -3014,39 +3024,11 @@ function Dashboard() {
                         <span className="rounded bg-white/15 px-1 text-[9px]">{projFiles.length}</span>
                       )}
                     </button>
-                    {canvasVersions.length > 1 && (
-                      <div className="relative ml-1">
-                        <button
-                          type="button"
-                          onClick={() => setVerMenu((v) => !v)}
-                          className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-white/45 hover:bg-white/10"
-                        >
-                          <RotateCcw className="h-3 w-3" /> History · {canvasVersions.length}
-                        </button>
-                        {verMenu && (
-                          <>
-                            <button type="button" className="fixed inset-0 z-40 cursor-default" aria-label="Close history" onClick={() => setVerMenu(false)} />
-                            <div className="absolute left-0 z-50 mt-2 max-h-56 w-56 overflow-y-auto rounded-2xl border border-white/10 bg-[#1e1b18] p-1.5 shadow-lg">
-                              {canvasVersions.map((v, vi) => (
-                                <button
-                                  key={v.ts}
-                                  type="button"
-                                  onClick={() => {
-                                    setCodePanel(v.code);
-                                    setCodeLang(v.lang);
-                                    setVerMenu(false);
-                                  }}
-                                  className="flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-left text-[11px] text-white/80 hover:bg-white/10"
-                                >
-                                  <span>{v.code === codePanel ? "Current" : `Version ${canvasVersions.length - vi}`}</span>
-                                  <span className="text-white/40">{new Date(v.ts).toLocaleTimeString()}</span>
-                                </button>
-                              ))}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    )}
+                    <CanvasHistoryMenu
+                      versions={canvasVersions}
+                      currentCode={codePanel}
+                      onRestore={restoreCanvasVersion}
+                    />
                   </div>
                   <div className="flex items-center gap-1">
                     {/* The agent is the headline action: it plans, writes files,
@@ -3554,7 +3536,17 @@ function Dashboard() {
       )}
 
       {modal === "settings" && (
-        <Sheet onClose={() => setModal(null)} title="Settings">
+        <Sheet
+          onClose={() => {
+            setModal(null);
+            // Armed state is deliberately not kept: coming back to the sheet should not
+            // leave a half-typed password sitting in a destructive form.
+            setDeleteArmed(false);
+            setDeleteSecret("");
+            setDeleteErr("");
+          }}
+          title="Settings"
+        >
           <div className="space-y-1">
             <button type="button" onClick={() => setModal(loggedIn ? "profile" : "auth")} className="mb-2 flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left" style={{ borderColor: "var(--border)", background: "var(--secondary)" }}>
               <span className="flex h-10 w-10 items-center justify-center rounded-full text-xs font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{(me?.name || "G")[0]}</span>
@@ -3603,9 +3595,79 @@ function Dashboard() {
               {loggedIn ? (
                 <>
                   <button type="button" onClick={doLogout} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-red-600"><LogOut className="h-4 w-4" /> Log out</button>
-                  <button type="button" onClick={doDeleteAccount} disabled={authBusy} className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-[12px] font-medium" style={{ color: "var(--err)" }}>
-                    <AlertTriangle className="h-3.5 w-3.5" /> {authBusy ? "Deleting…" : "Delete account (permanent)"}
-                  </button>
+                  {deleteArmed ? (
+                    <div
+                      className="mt-1 rounded-2xl border p-3"
+                      style={{ borderColor: "var(--err)", background: "var(--secondary)" }}
+                      role="group"
+                      aria-label="Confirm account deletion"
+                    >
+                      <p className="text-[12px]" style={{ color: "var(--ink)" }}>
+                        This deletes your account, chats, projects, teams and keys. There is
+                        no undo and no grace period.
+                      </p>
+                      <input
+                        autoFocus
+                        type={oauthOnly ? "text" : "password"}
+                        value={deleteSecret}
+                        onChange={(e) => setDeleteSecret(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            setDeleteArmed(false);
+                            setDeleteSecret("");
+                            setDeleteErr("");
+                          }
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void doDeleteAccount(deleteSecret);
+                          }
+                        }}
+                        autoComplete={oauthOnly ? "off" : "current-password"}
+                        {...(oauthOnly ? { maxLength: 8 } : {})}
+                        aria-label={oauthOnly ? "Type DELETE to confirm" : "Your password to confirm"}
+                        placeholder={oauthOnly ? "Type DELETE" : "Your password"}
+                        className="mt-2 h-10 w-full rounded-xl border px-3 text-sm outline-none"
+                        style={{ borderColor: "var(--border)", background: "var(--bg)", color: "var(--ink)" }}
+                      />
+                      {!!deleteErr && (
+                        <p className="mt-1.5 text-[11px]" style={{ color: "var(--err)" }} role="alert">
+                          {deleteErr}
+                        </p>
+                      )}
+                      <div className="mt-2 flex gap-2">
+                        <Btn
+                          size="sm"
+                          disabled={!deleteSecret.trim() || authBusy}
+                          onClick={() => void doDeleteAccount(deleteSecret)}
+                          style={{ background: "var(--err)", color: "#fff" }}
+                        >
+                          {authBusy ? "Deleting…" : "Yes, delete my account"}
+                        </Btn>
+                        <Btn
+                          size="sm"
+                          variant="ghost"
+                          disabled={authBusy}
+                          onClick={() => {
+                            setDeleteArmed(false);
+                            setDeleteSecret("");
+                            setDeleteErr("");
+                          }}
+                        >
+                          Cancel
+                        </Btn>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setDeleteArmed(true)}
+                      className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-[12px] font-medium"
+                      style={{ color: "var(--err)" }}
+                    >
+                      <AlertTriangle className="h-3.5 w-3.5" /> Delete account (permanent)
+                    </button>
+                  )}
                 </>
               ) : (
                 <button type="button" onClick={() => setModal("auth")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><LogIn className="h-4 w-4 opacity-70" /> Log in</button>
@@ -3733,8 +3795,28 @@ function Dashboard() {
 
           {teamNote && <p className="mt-2 text-xs" style={{ color: "var(--accent)" }}>{teamNote}</p>}
 
-          <div className="mt-4 flex gap-2">
-            <Btn size="sm" disabled={!loggedIn} onClick={doNewTeam}><Plus className="h-3.5 w-3.5" /> Create team</Btn>
+          <div className="mt-4 border-t pt-3" style={{ borderColor: "var(--border)" }}>
+            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--soft)" }}>Create a team</div>
+            <div className="flex gap-2">
+              <input
+                value={newTeamName}
+                onChange={(e) => setNewTeamName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void doNewTeam(newTeamName);
+                  }
+                }}
+                aria-label="New team name"
+                placeholder="Studio crew, College project…"
+                className="h-10 flex-1 rounded-2xl border px-3 text-sm outline-none"
+                style={{ borderColor: "var(--border)", background: "var(--bg)" }}
+              />
+              <Btn size="sm" disabled={!loggedIn || !newTeamName.trim()} onClick={() => void doNewTeam(newTeamName)}>
+                <Plus className="h-3.5 w-3.5" /> Create
+              </Btn>
+            </div>
+            {!loggedIn && <p className="mt-1.5 text-[11px]" style={{ color: "var(--soft)" }}>Sign in first — a team is a place your chats live, so it needs an account.</p>}
           </div>
 
           <div className="mt-3 border-t pt-3" style={{ borderColor: "var(--border)" }}>
@@ -3862,10 +3944,22 @@ function AuthSheet(props: {
             <span className="h-px flex-1" style={{ background: "var(--border)" }} /> or use email <span className="h-px flex-1" style={{ background: "var(--border)" }} />
           </div>
 
-          <div className="mb-4 flex rounded-2xl border p-1" style={{ borderColor: "var(--border)" }}>
-            {(["login", "register"] as const).map((t) => (
-              <button key={t} type="button" onClick={() => props.setTab(t)} className="flex-1 rounded-xl py-2 text-sm font-medium capitalize" style={props.tab === t ? { background: "var(--ink)", color: "var(--bg)" } : { color: "var(--muted)" }}>{t === "login" ? "log in" : "sign up"}</button>
-            ))}
+          <div className="mb-4">
+            {/* Same control as the settings sheet's theme picker and /pricing's audience
+                toggle: it marks the choice with aria-selected, moves the sliding pill on
+                font load and resize, and takes ArrowLeft/Right. The hand-rolled pair it
+                replaced said "log in"/"sign up" in lowercase text and nothing else. */}
+            <SegmentedControl
+              ariaLabel="Log in or create an account"
+              size="md"
+              full
+              value={props.tab}
+              onChange={props.setTab}
+              items={[
+                { value: "login", label: "Log in" },
+                { value: "register", label: "Sign up" },
+              ]}
+            />
           </div>
           <form onSubmit={props.onSubmit} className="space-y-3">
             {props.tab === "register" && (

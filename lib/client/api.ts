@@ -587,10 +587,20 @@ export async function createShare(conversationId: string) {
 
 /* ── Projects ───────────────────────────────────────────── */
 
-export async function fetchProjects() {
+export async function fetchProjects(): Promise<{
+  projects: { id: string; name: string; createdAt: string }[];
+  /** The store's own cap on a project name; 0 when the server did not say. */
+  nameMax: number;
+}> {
   const r = await fetch("/api/projects", { credentials: "include" });
   const j = await readJson(r);
-  return j as { projects: { id: string; name: string; createdAt: string }[] };
+  // Throws rather than answering with an empty list: the caller keeps whatever chips it
+  // already has, which is the honest state during a bad read.
+  if (!r.ok) throw new Error(String(j.error || "Could not load your projects."));
+  return {
+    projects: (j.projects || []) as { id: string; name: string; createdAt: string }[],
+    nameMax: Number(j.nameMax) || 0,
+  };
 }
 
 export async function createProject(name: string) {

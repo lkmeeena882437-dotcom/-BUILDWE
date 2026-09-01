@@ -366,13 +366,13 @@ try {
     const bar = readFileSync(path.join(ROOT, "components", "workspace", "PromptBar.tsx"), "utf8");
     // Hand-rolled menus that fake dismissal with a full-screen invisible <button>:
     // page.tsx had three (project, style, history). The style one came into the composer
-    // in Step 2, and Step 5 replaced it with <Popover> — so 2 remain, both in page.tsx,
-    // and Step 11 owns them. The count is deliberately a number and not a `<=`, because
-    // "additive" means this can only ever go down by a step that says so here.
+    // in Step 2, Step 5 replaced it with <Popover>, and Step 11 took the last two — into
+    // components, so the page's own import budget did not grow. The count is deliberately
+    // a number and not a `<=`: an overlay may only appear with a step that says so here.
     const overlays =
       (page.match(/fixed inset-0 z-40 cursor-default/g) || []).length +
       (bar.match(/fixed inset-0 z-40 cursor-default/g) || []).length;
-    assert.equal(overlays, 2, "only page.tsx's two remaining menus may still hand-roll an overlay");
+    assert.equal(overlays, 0, "no hand-rolled overlay is left in the shell or the composer");
     assert.equal((bar.match(/fixed inset-0/g) || []).length, 0, "the composer owns no overlay of any kind");
     // page.tsx may reach into lib/ui for exactly two things: Btn (shared with the pill)
     // and SegmentedControl, which Step 6 added because the settings sheet's theme picker
@@ -798,6 +798,111 @@ await run("Step 6b: headers organise the list, the chips still decide what is in
 
   assert.ok(css.includes('.bw-side-group__head[aria-expanded="true"] .bw-side-group__chev'), "the chevron turns off the ARIA state, not a second class");
   assert.ok(css.indexOf(".bw-side-group__head") < css.lastIndexOf("@media (prefers-reduced-motion"), "and reduced motion still wins over the turn");
+});
+
+/* ── 11. the sweep: the last two overlays, and what they were hiding ──────── */
+
+await run("step 11: both menus are popovers on the shared primitive, in components", async () => {
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  const move = readFileSync(path.join(ROOT, "components", "workspace", "ProjectMoveMenu.tsx"), "utf8");
+  const hist = readFileSync(path.join(ROOT, "components", "workspace", "CanvasHistoryMenu.tsx"), "utf8");
+
+  for (const [name, file] of [["the project menu", move], ["the version menu", hist]]) {
+    assert.ok(file.includes('from "@/lib/ui"'), `${name} builds on the shared menu primitives`);
+    assert.ok(file.includes("menuTriggerProps(open,"), `${name} wires its trigger the way every other menu does`);
+    assert.ok(file.includes("<Popover"), `${name} is a Popover, so Escape and focus return come free`);
+  }
+  // The two surfaces differ, and the difference is a deliberate attribute rather than
+  // inheritance: the canvas panel is dark, the chat header is not.
+  assert.ok(move.includes("dark={false}"), "the project menu asks for the light surface by name");
+  assert.ok(/\n\s+dark\n/.test(hist), "the version menu asks for the dark one");
+
+  assert.ok(!page.includes("projMenu") && !page.includes("verMenu"), "the shell keeps neither flag any more");
+  assert.ok(page.includes("<ProjectMoveMenu") && page.includes("<CanvasHistoryMenu"), "and holds only the two call sites");
+
+  // The version chip used to render with one entry, where "History · 1" is an invitation to
+  // open an empty menu; the guard moved with it.
+  assert.ok(hist.includes("if (versions.length < 2) return null;"), "one version is not a history");
+  // The point of moving this menu at all: going back used to swallow the content on screen.
+  assert.ok(
+    page.includes("if (codePanel.trim()) pushCanvasVersion(codePanel, codeLang);"),
+    "restoring a version snapshots the canvas first, so the step is reversible"
+  );
+  assert.ok(
+    hist.includes("disabled={isCurrent}") && hist.includes('note="Already showing this one"'),
+    "and the row you are already on says so instead of doing nothing"
+  );
+});
+
+await run("step 11: no browser dialog is left in the workspace", async () => {
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  // A call-shaped pattern on purpose: the file's comments still name window.prompt, because
+  // "why is there no dialog here" is the next reader's question, and a prose-blind stripper
+  // would let a real call back in through a {/* */} block.
+  assert.equal(/window\.(prompt|alert)\s*\(/.test(page), false, "a native dialog cannot come back quietly");
+  assert.ok(page.includes('type={oauthOnly ? "text" : "password"}'), "the delete confirm masks a password");
+  assert.ok(page.includes('autoComplete={oauthOnly ? "off" : "current-password"}'), "and asks the password manager to stay out of it");
+  assert.ok(page.includes("setDeleteArmed(false);\n            setDeleteSecret(\"\");"), "closing the sheet clears the half-typed secret");
+  for (const file of ["ProjectMoveMenu.tsx", "CanvasHistoryMenu.tsx"]) {
+    const src = readFileSync(path.join(ROOT, "components", "workspace", file), "utf8");
+    assert.equal(/window\.(prompt|alert)\s*\(/.test(src), false, `${file} does not reach for a dialog either`);
+  }
+});
+
+await run("step 11: a project name limit is read from the server, never copied", async () => {
+  const store = readFileSync(path.join(ROOT, "lib", "db", "store.ts"), "utf8");
+  const route = readFileSync(path.join(ROOT, "app", "api", "projects", "route.ts"), "utf8");
+  const api = readFileSync(path.join(ROOT, "lib", "client", "api.ts"), "utf8");
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  const move = readFileSync(path.join(ROOT, "components", "workspace", "ProjectMoveMenu.tsx"), "utf8");
+
+  assert.ok(store.includes("export const PROJECT_NAME_MAX = 40;"), "one owner in the store");
+  assert.equal((store.match(/slice\(0, PROJECT_NAME_MAX\)/g) || []).length, 2, "create and rename both read it");
+  assert.equal(/name: name\.trim\(\)\.slice\(0, 40\)/.test(store), false, "and no literal is left behind");
+  assert.ok(route.includes("nameMax: PROJECT_NAME_MAX"), "the answer carries it");
+  assert.ok(api.includes("nameMax: Number(j.nameMax) || 0"), "the client keeps 0 as 'the server did not say'");
+  assert.ok(page.includes("nameMax={projNameMax}"), "the page passes what it received");
+  assert.ok(
+    move.includes("{...(nameMax ? { maxLength: nameMax } : {})}"),
+    "the field enforces it only when it was told to, instead of guessing"
+  );
+  assert.ok(
+    page.includes("{...(projNameMax ? { maxLength: projNameMax } : {})}"),
+    "and the sidebar's own field does the same"
+  );
+});
+
+await run("step 11: a half-written message stays with its chat", async () => {
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  assert.equal((page.match(/draftsRef\.current\.set\(convId \|\| "__new", input\);/g) || []).length, 2, "stashed on both ways of leaving a chat");
+  assert.equal((page.match(/draftsRef\.current\.delete\(convId \|\| "__new"\);/g) || []).length, 2, "cleared by both ways of consuming it");
+  assert.ok(page.includes('setInput(draftsRef.current.get(c.id) || "");'), "and put back when that chat is opened again");
+  assert.ok(
+    /setInput\(draftsRef\.current\.get\(c\.id\) \|\| ""\);\n\s*setChatCtxPath\(null\);/.test(page),
+    "the context chip travels with the same switch, so it is cleared rather than inherited"
+  );
+});
+
+await run("step 11: the auth sheet's tabs are the shared control", async () => {
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  assert.ok(page.includes('ariaLabel="Log in or create an account"'), "one SegmentedControl, named");
+  assert.equal(page.includes('(["login", "register"] as const).map('), false, "no second two-button tab strip in the app");
+  assert.ok(page.includes("<SegmentedControl\n              ariaLabel=\"Log in or create an account\""), "with its own props on their own lines, so a diff reads");
+});
+
+await run("step 11: the sheet holds the keyboard", async () => {
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  const sheet = readFileSync(path.join(ROOT, "components", "workspace", "Sheet.tsx"), "utf8");
+  assert.ok(page.includes('from "@/components/workspace/Sheet"'), "the shell imports the one dialog surface");
+  assert.equal(page.includes("function Sheet({"), false, "and no longer keeps a private copy of it");
+
+  assert.ok(sheet.includes("aria-labelledby={titleId}") && sheet.includes("<h2 id={titleId}"), "the dialog is named by the title it renders");
+  assert.ok(sheet.includes("title: string;"), "and a tenth call site cannot forget the name — the type refuses");
+  assert.ok(sheet.includes("node?.focus({ preventScroll: true })"), "opening moves the caret into the panel, not onto a control");
+  assert.ok(sheet.includes("if (back && document.contains(back)) back.focus("), "closing hands focus back to whatever opened it");
+  assert.ok(sheet.includes('if (e.key !== "Tab" || !node) return;'), "Tab cycles inside the panel while it is open");
+  assert.ok(sheet.includes("closeRef.current();"), "one listener for the sheet's life, so a re-render cannot steal the caret mid-word");
+  assert.ok(sheet.includes('document.body.classList.add("lock-scroll")'), "the page behind still does not scroll");
 });
 
 rmSync(outDir, { recursive: true, force: true });

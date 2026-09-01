@@ -997,12 +997,20 @@ export function listProjects(userId: string) {
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+/**
+ * One owner's project names are kept short because they live in sidebar chips, not
+ * because 40 is a storage limit. It is exported, and `/api/projects` answers with it, so
+ * the input that enforces it reads the number from the server instead of copying it and
+ * drifting the day somebody edits one of them.
+ */
+export const PROJECT_NAME_MAX = 40;
+
 export function createProject(userId: string, name: string) {
   const db = read();
   const p: Project = {
     id: uid("proj"),
     userId,
-    name: name.trim().slice(0, 40) || "New project",
+    name: name.trim().slice(0, PROJECT_NAME_MAX) || "New project",
     createdAt: new Date().toISOString(),
   };
   db.projects.push(p);
@@ -1014,7 +1022,7 @@ export function renameProject(id: string, userId: string, name: string) {
   const db = read();
   const p = db.projects.find((x) => x.id === id && x.userId === userId);
   if (!p) return null;
-  p.name = name.trim().slice(0, 40) || p.name;
+  p.name = name.trim().slice(0, PROJECT_NAME_MAX) || p.name;
   write(db);
   return p;
 }

@@ -4,6 +4,7 @@ import {
   createProject,
   deleteProject,
   listProjects,
+  PROJECT_NAME_MAX,
   renameProject,
   setConversationProject,
 } from "@/lib/db/store";
@@ -15,11 +16,19 @@ export async function GET(req: NextRequest) {
   try {
     const session = await getSessionFromRequest(req);
     const projects = listProjects(session.userId);
-    const res = NextResponse.json({ projects });
+    // nameMax travels with the list so the field that creates a project enforces the
+    // store's own number instead of repeating a literal that can drift from it.
+    const res = NextResponse.json({ projects, nameMax: PROJECT_NAME_MAX });
     attachGuestCookie(res, session.userId);
     return res;
-  } catch {
-    return NextResponse.json({ projects: [] });
+  } catch (e) {
+    console.error("[bw] projects GET", e);
+    // An empty list here is not a graceful degradation, it is a false statement: the
+    // client would clear chips for projects that are still on the server.
+    return NextResponse.json(
+      { error: "Could not load your projects.", code: "PROJECTS_UNAVAILABLE" },
+      { status: 503 }
+    );
   }
 }
 

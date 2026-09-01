@@ -73,3 +73,17 @@ jobs:
         run: npm run test:throttle
       - name: store durability across processes
         run: npm run test:durability
+      - name: credit ledger — what each feature costs, what a failure gives back
+        run: npm run test:credits
+      - name: shared UI primitives and the refactors' invariants
+        run: npm run test:ui
+      - name: pricing page and checkout seats
+        run: npm run test:pricing
+      - name: link previews and the SSRF guard
+        run: npm run test:preview
+      - name: one-file chat context
+        run: npm run test:workspace
+      - name: creations and public shares
+        run: npm run test:artifacts
+      - name: the README's API map against the routes that exist
+        run: npm run test:docs
