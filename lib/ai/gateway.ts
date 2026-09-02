@@ -33,6 +33,12 @@ export const TIMEOUTS = {
   audio: 45_000,
   /** web search */
   search: 9_000,
+  /**
+   * Confirming a generated image URL really serves an image. Short on purpose:
+   * this runs after the picture is made, so a slow check would add latency to a
+   * request that already succeeded.
+   */
+  imageVerify: 12_000,
 } as const;
 
 /**

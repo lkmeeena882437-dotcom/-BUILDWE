@@ -583,6 +583,9 @@ export async function generateImage(opts: {
     // Surfaced so the UI can tell the user their pick was unavailable
     // instead of silently handing them a different model's output.
     fellBack: result.fellBack,
+    // Whether the picture is known to exist. The route refunds on false —
+    // a constructed URL is not evidence of a generated image.
+    verified: result.verified,
   };
 }
 

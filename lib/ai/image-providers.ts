@@ -33,6 +33,17 @@ export type ImageResult = {
   modelId: string;
   /** true when a requested model was unavailable and we used another */
   fellBack: boolean;
+  /**
+   * True when we have actual evidence the picture exists: bytes returned by the
+   * vendor, or a URL we fetched and confirmed is an image.
+   *
+   * This is not decoration. Pollinations is a *constructed* hot-link — building
+   * the string performs no network call — so `url` was always truthy and the
+   * route's `if (!result.url)` refund check could never fire for it. A
+   * Pollinations outage therefore charged the user a credit and handed the
+   * browser a URL that renders as a broken image, with no refund and no error.
+   */
+  verified: boolean;
 };
 
 /* ── Aspect → pixel size ──────────────────────────────────── */
@@ -66,6 +77,18 @@ export function availableImageProviders(): string[] {
 
 /* ── Adapters ─────────────────────────────────────────────── */
 
+/**
+ * Base for the keyless image provider. Overridable with AI_BASE_URL_POLLINATIONS
+ * exactly like the LLM vendors in `provider-registry.ts` — same convention, so a
+ * proxy (or an offline test fixture) can stand in without a code change.
+ */
+function pollinationsBase(): string {
+  const override = process.env.AI_BASE_URL_POLLINATIONS;
+  return override && /^https?:\/\//.test(override)
+    ? override.replace(/\/$/, "")
+    : "https://image.pollinations.ai";
+}
+
 function pollinationsUrl(prompt: string, aspect: string, modelId: string): string {
   const { w, h } = aspectToSize(aspect);
   const seed = Math.floor(Math.random() * 1_000_000);
@@ -73,7 +96,44 @@ function pollinationsUrl(prompt: string, aspect: string, modelId: string): strin
   const q = encodeURIComponent(clean);
   // Pollinations only knows a couple of model names; anything else maps to flux.
   const model = modelId === "turbo" ? "turbo" : "flux";
-  return `https://image.pollinations.ai/prompt/${q}?width=${w}&height=${h}&seed=${seed}&nologo=true&enhance=true&model=${model}`;
+  return `${pollinationsBase()}/prompt/${q}?width=${w}&height=${h}&seed=${seed}&nologo=true&enhance=true&model=${model}`;
+}
+
+/**
+ * Confirm a hot-linked URL actually serves an image before we charge for it.
+ *
+ * Only used for providers whose "result" is a URL we constructed rather than
+ * bytes a vendor handed back. A HEAD is enough and costs almost nothing; some
+ * CDNs refuse HEAD, so a 405/501 is treated as "can't tell" and we fall back to
+ * a ranged GET rather than condemning a working image.
+ */
+export async function verifyImageUrl(url: string): Promise<boolean> {
+  const looksImage = (res: Response) =>
+    res.ok && (res.headers.get("content-type") || "").toLowerCase().startsWith("image/");
+  try {
+    const head = await fetchWithTimeout(
+      url,
+      { method: "HEAD", cache: "no-store" },
+      TIMEOUTS.imageVerify,
+      "image-verify"
+    );
+    if (looksImage(head)) return true;
+    // HEAD unsupported → ask for a single byte instead of the whole picture.
+    if (head.status !== 405 && head.status !== 501 && head.status !== 403) return false;
+  } catch {
+    /* fall through to the ranged GET */
+  }
+  try {
+    const res = await fetchWithTimeout(
+      url,
+      { method: "GET", headers: { Range: "bytes=0-0" }, cache: "no-store" },
+      TIMEOUTS.imageVerify,
+      "image-verify"
+    );
+    return looksImage(res);
+  } catch {
+    return false;
+  }
 }
 
 /** fal.ai — hosted FLUX variants. Returns a hosted image URL. */
@@ -365,50 +425,63 @@ export async function generateImageMulti(opts: {
   let fellBack = false;
   for (const model of chain) {
     if (model.provider === "pollinations") {
-      return {
-        url: pollinationsUrl(opts.prompt, opts.aspect, model.id),
-        provider: "pollinations",
-        modelId: model.id,
-        fellBack,
-      };
+      // Constructed hot-link: nothing has been generated yet. Confirm the
+      // picture really renders, otherwise treat it like any other dead vendor
+      // and keep walking the chain.
+      const url = pollinationsUrl(opts.prompt, opts.aspect, model.id);
+      if (await verifyImageUrl(url)) {
+        return {
+          url,
+          provider: "pollinations",
+          modelId: model.id,
+          fellBack,
+          verified: true,
+        };
+      }
+      fellBack = true;
+      continue;
     }
     if (model.provider === "fal") {
       const url = await falImage(opts.prompt, opts.aspect, model.id);
-      if (url) return { url, provider: "fal", modelId: model.id, fellBack };
+      if (url) return { url, provider: "fal", modelId: model.id, fellBack, verified: true };
       fellBack = true;
       continue;
     }
     if (model.provider === "huggingface") {
       const url = await hfImage(opts.prompt, model.id);
-      if (url) return { url, provider: "huggingface", modelId: model.id, fellBack };
+      if (url) return { url, provider: "huggingface", modelId: model.id, fellBack, verified: true };
       fellBack = true;
       continue;
     }
     if (model.provider === "openai") {
       const url = await openaiImage(opts.prompt, opts.aspect, model.id);
-      if (url) return { url, provider: "openai", modelId: model.id, fellBack };
+      if (url) return { url, provider: "openai", modelId: model.id, fellBack, verified: true };
       fellBack = true;
       continue;
     }
     if (model.provider === "stability") {
       const url = await stabilityImage(opts.prompt, opts.aspect, model.id);
-      if (url) return { url, provider: "stability", modelId: model.id, fellBack };
+      if (url) return { url, provider: "stability", modelId: model.id, fellBack, verified: true };
       fellBack = true;
       continue;
     }
     if (model.provider === "goapi") {
       const url = await goapiMidjourney(opts.prompt, opts.aspect);
-      if (url) return { url, provider: "goapi", modelId: model.id, fellBack };
+      if (url) return { url, provider: "goapi", modelId: model.id, fellBack, verified: true };
       fellBack = true;
       continue;
     }
   }
 
-  // Last resort: Pollinations always works, no key needed.
+  // Last resort: the keyless default, still only reported as real if it renders.
+  // `verified: false` is what lets the route refund instead of charging for a
+  // broken image — the honest outcome when every vendor is down.
+  const last = pollinationsUrl(opts.prompt, opts.aspect, "flux");
   return {
-    url: pollinationsUrl(opts.prompt, opts.aspect, "flux"),
+    url: last,
     provider: "pollinations",
     modelId: "flux",
     fellBack: chain.length > 0,
+    verified: await verifyImageUrl(last),
   };
 }

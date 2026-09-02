@@ -85,6 +85,8 @@ jobs:
         run: npm run test:workspace
       - name: creations and public shares
         run: npm run test:artifacts
+      - name: image generation end to end (refund, fallback, isolation)
+        run: npm run test:image
       - name: chat model chain — reachability, routing, fallback cooldown
         run: npm run test:chat-model
       - name: the README's API map against the routes that exist
