@@ -26,6 +26,7 @@ import {
   generateImage,
   generateAudioPlan,
 } from "@/lib/ai/providers";
+import { transcribeAudio } from "@/lib/ai/stt";
 
 export type FeatureCapability = Exclude<Capability, "router"> | "agent";
 
@@ -87,3 +88,5 @@ export const brandFor = publicModelLabel;
 export const runChat = streamChatOrCode;
 export const runImage = generateImage;
 export const runAudio = generateAudioPlan;
+/** Speech-to-text. Catalog-routed since update 18, like every other capability. */
+export const runStt = transcribeAudio;

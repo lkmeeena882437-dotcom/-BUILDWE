@@ -97,6 +97,9 @@ jobs:
 
       - name: web search end to end (parsing, sources, fallback, secrets)
         run: npm run test:search
+
+      - name: AI provider and routing system (catalog routing, STT, credits)
+        run: npm run test:routing
       - name: chat model chain — reachability, routing, fallback cooldown
         run: npm run test:chat-model
       - name: the README's API map against the routes that exist
