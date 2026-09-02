@@ -216,6 +216,65 @@ async function hfImage(prompt: string, modelId: string): Promise<string | null> 
 }
 
 /** OpenAI DALL·E 3 — returns a hosted URL. body differs from the chat API. */
+/**
+ * Gemini native image generation ("Nano Banana" in Google's consumer naming).
+ *
+ * Same generateContent endpoint the chat wire uses, with an IMAGE response
+ * modality; the picture comes back as inline base64, which we hand on as a data
+ * URL so the existing verify/persist path treats it like any other result.
+ *
+ * The nickname lives in the UI, the model ID lives here — Nano Banana Pro is
+ * gemini-3-pro-image, Nano Banana 2 is gemini-3.1-flash-image, Lite is
+ * gemini-3.1-flash-lite-image.
+ */
+async function googleImage(
+  prompt: string,
+  modelId: string
+): Promise<string | null> {
+  const key = AI_KEYS.google;
+  if (!keyOk(key)) return null;
+
+  const base = (
+    process.env.AI_BASE_URL_GOOGLE_IMAGE ||
+    "https://generativelanguage.googleapis.com/v1beta/models"
+  ).replace(/\/$/, "");
+
+  try {
+    const res = await fetchWithTimeout(
+      `${base}/${encodeURIComponent(modelId)}:generateContent`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": key as string,
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt.slice(0, 2000) }] }],
+          generationConfig: { responseModalities: ["IMAGE", "TEXT"] },
+        }),
+      },
+      TIMEOUTS.complete,
+      "image"
+    );
+    if (!res.ok) return null;
+
+    const data = (await res.json()) as {
+      candidates?: { content?: { parts?: { inlineData?: { mimeType?: string; data?: string } }[] } }[];
+    };
+    for (const part of data?.candidates?.[0]?.content?.parts || []) {
+      const b64 = part?.inlineData?.data;
+      if (b64) {
+        const mime = part.inlineData?.mimeType || "image/png";
+        return `data:${mime};base64,${b64}`;
+      }
+    }
+    return null;
+  } catch (e) {
+    console.error("[bw] google image", (e as Error)?.message);
+    return null;
+  }
+}
+
 async function openaiImage(
   prompt: string,
   aspect: string,
@@ -450,6 +509,12 @@ export async function generateImageMulti(opts: {
     if (model.provider === "huggingface") {
       const url = await hfImage(opts.prompt, model.id);
       if (url) return { url, provider: "huggingface", modelId: model.id, fellBack, verified: true };
+      fellBack = true;
+      continue;
+    }
+    if (model.provider === "google") {
+      const url = await googleImage(opts.prompt, model.id);
+      if (url) return { url, provider: "google", modelId: model.id, fellBack, verified: true };
       fellBack = true;
       continue;
     }

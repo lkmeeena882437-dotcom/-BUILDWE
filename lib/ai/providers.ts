@@ -45,18 +45,24 @@ export type ChatMessage = {
   content: string;
 };
 
+/**
+ * Last-resort ids used only when the catalog yields nothing at all.
+ *
+ * Groq shut down llama-3.1-8b-instant and llama-3.3-70b-versatile on
+ * 2026-08-16 (and qwen3-32b / llama-4-scout earlier), so the previous entries
+ * here were all dead ids — a "fallback" that could only ever 400. These are the
+ * replacements Groq names in its own deprecation notice.
+ */
 const GROQ_CHAT_MODELS = [
-  "llama-3.3-70b-versatile",
-  "llama-3.1-8b-instant",
-  "llama-3.1-70b-versatile",
-  "gemma2-9b-it",
+  "openai/gpt-oss-120b",
+  "openai/gpt-oss-20b",
+  "qwen/qwen3.6-27b",
 ];
 
 const GROQ_CODE_MODELS = [
-  "llama-3.3-70b-versatile",
-  "llama-3.1-70b-versatile",
-  "llama-3.1-8b-instant",
-  "gemma2-9b-it",
+  "openai/gpt-oss-120b",
+  "qwen/qwen3.6-27b",
+  "openai/gpt-oss-20b",
 ];
 
 export type ProviderKeys = {

@@ -86,13 +86,13 @@ export const PROVIDER_CONFIG: Record<ProviderId, ProviderConfig> = {
     adapters: { chat: "llm", code: "llm", stt: "stt", vision: "vision" },
     keyEnv: "GROQ_API_KEY",
     byokField: "groq",
-    priority: 1,
+    priority: 2,
   },
   pollinations: {
     id: "pollinations",
     adapters: { image: "image", audio: "audio" },
     keyEnv: null,
-    priority: 2,
+    priority: 4,
   },
   openrouter: {
     id: "openrouter",
@@ -103,10 +103,10 @@ export const PROVIDER_CONFIG: Record<ProviderId, ProviderConfig> = {
   },
   google: {
     id: "google",
-    adapters: { chat: "llm", code: "llm" },
+    adapters: { chat: "llm", code: "llm", image: "image" },
     keyEnv: "GOOGLE_API_KEY",
     byokField: "google",
-    priority: 4,
+    priority: 1,
   },
   openai: {
     id: "openai",
@@ -181,7 +181,7 @@ export const PROVIDER_CONFIG: Record<ProviderId, ProviderConfig> = {
     adapters: { stt: "stt" },
     keyEnv: "DEEPGRAM_API_KEY",
     byokField: "deepgram",
-    priority: 15,
+    priority: 5,
   },
   playht: {
     id: "playht",
@@ -246,7 +246,7 @@ export function requiredKeyEnv(provider: string): string | null {
 export const MODEL_CATALOG: CatalogModel[] = [
   // ── Router (internal) ───────────────────────────────────
   {
-    id: "llama-3.1-8b-instant",
+    id: "openai/gpt-oss-20b",
     label: "BUILDWE Router",
     provider: "groq",
     capability: "router",
@@ -264,8 +264,8 @@ export const MODEL_CATALOG: CatalogModel[] = [
    * id is a 400 from the real provider, not a silent fallback.
    */
   {
-    id: "llama-3.3-70b-versatile",
-    label: "Llama 3.3 70B",
+    id: "openai/gpt-oss-120b",
+    label: "GPT-OSS 120B",
     provider: "groq",
     capability: "chat",
     tiers: ["free", "pro"],
@@ -277,8 +277,8 @@ export const MODEL_CATALOG: CatalogModel[] = [
     notes: "Free default — strong all-rounder on the fastest inference we have",
   },
   {
-    id: "llama-3.2-3b-instruct",
-    label: "Llama 3.2 3B",
+    id: "qwen/qwen3.6-27b",
+    label: "Qwen 3.6 27B",
     provider: "groq",
     capability: "chat",
     tiers: ["free"],
@@ -289,8 +289,8 @@ export const MODEL_CATALOG: CatalogModel[] = [
     notes: "Third compare seat: fast and cheap, so the lane is not a third copy of the 70B answer",
   },
   {
-    id: "llama-3.1-8b-instant",
-    label: "Llama 3.1 8B Instant",
+    id: "openai/gpt-oss-20b",
+    label: "GPT-OSS 20B",
     provider: "groq",
     capability: "chat",
     tiers: ["free"],
@@ -299,18 +299,6 @@ export const MODEL_CATALOG: CatalogModel[] = [
     latency: "fast",
     strengths: ["simple-qa", "low-latency"],
     notes: "Auto-picked for short/simple questions to keep cost near zero",
-  },
-  {
-    id: "openai/gpt-oss-120b",
-    label: "GPT-OSS 120B",
-    provider: "groq",
-    capability: "chat",
-    tiers: ["free", "pro"],
-    quality: 5,
-    cost: 2,
-    latency: "fast",
-    strengths: ["reasoning", "instruction-following", "open-weight"],
-    notes: "Open-weight flagship served on fast inference",
   },
   {
     id: "moonshotai/kimi-k2-instruct",
@@ -334,6 +322,54 @@ export const MODEL_CATALOG: CatalogModel[] = [
     latency: "medium",
     strengths: ["step-by-step", "maths", "logic"],
     notes: "Reasoning-tuned — auto-picked for complex analytical prompts",
+  },
+  {
+    id: "gemini-3.7-flash",
+    label: "Gemini 3.7 Flash",
+    provider: "google",
+    capability: "chat",
+    tiers: ["free", "pro", "byok"],
+    quality: 5,
+    cost: 2,
+    latency: "fast",
+    strengths: ["general", "reasoning", "long-context", "multimodal"],
+    notes: "Primary chat route when a Google key is configured",
+  },
+  {
+    id: "gemini-3.6-flash",
+    label: "Gemini 3.6 Flash",
+    provider: "google",
+    capability: "chat",
+    tiers: ["free", "pro", "byok"],
+    quality: 4,
+    cost: 2,
+    latency: "fast",
+    strengths: ["general", "long-context", "summarisation"],
+    notes: "First Gemini fallback when 3.7 is unavailable",
+  },
+  {
+    id: "groq/compound",
+    label: "Groq Compound",
+    provider: "groq",
+    capability: "chat",
+    tiers: ["free", "pro"],
+    quality: 4,
+    cost: 2,
+    latency: "fast",
+    strengths: ["tool-use", "web-reasoning", "synthesis"],
+    notes: "Agentic/tool-capable Groq route used for web-search synthesis",
+  },
+  {
+    id: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    label: "Nemotron 3 Ultra",
+    provider: "openrouter",
+    capability: "chat",
+    tiers: ["free", "pro", "byok"],
+    quality: 5,
+    cost: 1,
+    latency: "slow",
+    strengths: ["long-context", "deep-reasoning", "orchestration"],
+    notes: "OpenRouter free tier — last chat fallback before offline",
   },
   {
     id: "gemini-2.0-flash",
@@ -407,20 +443,8 @@ export const MODEL_CATALOG: CatalogModel[] = [
     notes: "2M-token context — routed for very large documents/PDFs",
   },
   {
-    id: "llama-3.1-70b-versatile",
-    label: "Llama 3.1 70B",
-    provider: "groq",
-    capability: "chat",
-    tiers: ["free", "pro"],
-    quality: 4,
-    cost: 2,
-    latency: "fast",
-    strengths: ["general", "reasoning", "hindi-english"],
-    notes: "Fast open-weight reasoning on Groq LPU",
-  },
-  {
-    id: "llama-3.1-405b-reasoning",
-    label: "Llama 3.1 405B",
+    id: "minimaxai/minimax-m2.7",
+    label: "MiniMax M2.7",
     provider: "groq",
     capability: "chat",
     tiers: ["pro"],
@@ -445,8 +469,8 @@ export const MODEL_CATALOG: CatalogModel[] = [
 
   /* ── Code ─────────────────────────────────────────────── */
   {
-    id: "qwen-2.5-coder-32b",
-    label: "Qwen2.5 Coder 32B",
+    id: "qwen/qwen3.6-27b",
+    label: "Qwen 3.6 27B (Code)",
     provider: "groq",
     capability: "code",
     tiers: ["free", "pro"],
@@ -470,8 +494,44 @@ export const MODEL_CATALOG: CatalogModel[] = [
     notes: "Preferred for agent runs — follows multi-step tool plans well",
   },
   {
-    id: "llama-3.3-70b-versatile",
-    label: "Llama 3.3 70B (Code)",
+    id: "gemini-3.7-flash",
+    label: "Gemini 3.7 Flash (Code)",
+    provider: "google",
+    capability: "code",
+    tiers: ["free", "pro", "byok"],
+    quality: 5,
+    cost: 2,
+    latency: "fast",
+    strengths: ["codegen", "refactor", "tool-use", "long-context"],
+    notes: "Primary code/agent route when a Google key is configured",
+  },
+  {
+    id: "gemini-3.6-flash",
+    label: "Gemini 3.6 Flash (Code)",
+    provider: "google",
+    capability: "code",
+    tiers: ["free", "pro", "byok"],
+    quality: 4,
+    cost: 2,
+    latency: "fast",
+    strengths: ["codegen", "explain-code", "long-context"],
+    notes: "Gemini code fallback",
+  },
+  {
+    id: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    label: "Nemotron 3 Ultra (Code)",
+    provider: "openrouter",
+    capability: "code",
+    tiers: ["free", "pro", "byok"],
+    quality: 5,
+    cost: 1,
+    latency: "slow",
+    strengths: ["long-context", "agent", "orchestration"],
+    notes: "OpenRouter free tier — code/agent fallback",
+  },
+  {
+    id: "openai/gpt-oss-20b",
+    label: "GPT-OSS 20B (Code)",
     provider: "groq",
     capability: "code",
     tiers: ["free", "pro"],
@@ -566,6 +626,48 @@ export const MODEL_CATALOG: CatalogModel[] = [
   },
 
   /* ── Image ────────────────────────────────────────────── */
+  /*
+   * Gemini image models. "Nano Banana" is Google's consumer nickname; the API
+   * ids below are what the endpoint actually accepts. Paid rows are pro/byok —
+   * a provider offering a free consumer tier is not the same as free API
+   * inference, so they are not marked free.
+   */
+  {
+    id: "gemini-3-pro-image",
+    label: "Nano Banana Pro",
+    provider: "google",
+    capability: "image",
+    tiers: ["pro", "byok"],
+    quality: 5,
+    cost: 4,
+    latency: "medium",
+    strengths: ["photoreal", "text-in-image", "layout", "4k"],
+    notes: "Gemini 3 Pro Image — professional assets and complex layouts",
+  },
+  {
+    id: "gemini-3.1-flash-image",
+    label: "Nano Banana 2",
+    provider: "google",
+    capability: "image",
+    tiers: ["pro", "byok"],
+    quality: 5,
+    cost: 3,
+    latency: "fast",
+    strengths: ["general", "editing", "text-in-image", "4k"],
+    notes: "Gemini 3.1 Flash Image — default generalist image route",
+  },
+  {
+    id: "gemini-3.1-flash-lite-image",
+    label: "Nano Banana 2 Lite",
+    provider: "google",
+    capability: "image",
+    tiers: ["pro", "byok"],
+    quality: 4,
+    cost: 2,
+    latency: "fast",
+    strengths: ["low-latency", "high-volume", "drafts"],
+    notes: "Gemini 3.1 Flash Lite Image — cheapest/fastest Gemini image lane",
+  },
   {
     id: "flux",
     label: "FLUX",
@@ -929,7 +1031,7 @@ export function pickModel(opts: {
 
   const usable = pool.length ? pool : tierPool;
   if (!usable.length) {
-    return MODEL_CATALOG.find((m) => m.id === "llama-3.1-8b-instant")!;
+    return MODEL_CATALOG.find((m) => m.id === "openai/gpt-oss-20b")!;
   }
 
   const kind = detectTaskKind(prompt);

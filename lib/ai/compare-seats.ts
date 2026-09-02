@@ -39,9 +39,9 @@ export const MAX_LANES = 6;
  * list is asserted against the catalog by `tests/tools.mjs` instead of being trusted.
  */
 export const DEFAULT_SEAT_IDS = [
-  "llama-3.3-70b-versatile",
-  "llama-3.1-8b-instant",
-  "llama-3.2-3b-instruct",
+  "openai/gpt-oss-120b",
+  "openai/gpt-oss-20b",
+  "qwen/qwen3.6-27b",
 ];
 
 /** Chat rows, in catalog order. The only ids a lane may take. */

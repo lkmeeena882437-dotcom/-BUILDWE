@@ -62,7 +62,10 @@ export const AI_KEYS = {
   openrouter: env("OPENROUTER_API_KEY"),
   openai: env("OPENAI_API_KEY"),
   anthropic: env("ANTHROPIC_API_KEY"),
-  google: env("GOOGLE_API_KEY"),
+  // Google's own docs and the Gemini quickstart use GEMINI_API_KEY, while this
+  // deployment has always used GOOGLE_API_KEY. Accept either so an operator
+  // copying Google's instructions does not end up with a silently dead provider.
+  google: env("GOOGLE_API_KEY") || env("GEMINI_API_KEY"),
   hf: env("HF_TOKEN"),
   fal: env("FAL_KEY"),
   mistral: env("MISTRAL_API_KEY"),

@@ -161,10 +161,24 @@ await run("fallback order is catalog priority, cross-vendor first", () => {
 });
 
 await run("the same model id can serve two features without a second provider config", () => {
-  const both = CAT.MODEL_CATALOG.filter((m) => m.id === "llama-3.3-70b-versatile");
-  assert.ok(both.some((m) => m.capability === "chat") && both.some((m) => m.capability === "code"));
-  assert.equal(both[0].provider, both[1].provider);
-  assert.equal(CAT.PROVIDER_CONFIG[both[0].provider].id, "groq");
+  // Pinning a literal id made this fail the moment that model was retired,
+  // even though the property under test — one id, two capabilities, one
+  // provider config — still held. Find any id that serves both instead.
+  const byId = new Map();
+  for (const m of CAT.MODEL_CATALOG) {
+    if (!byId.has(m.id)) byId.set(m.id, []);
+    byId.get(m.id).push(m);
+  }
+  const shared = [...byId.values()].filter(
+    (rows) =>
+      rows.some((m) => m.capability === "chat") && rows.some((m) => m.capability === "code")
+  );
+  assert.ok(shared.length, "at least one id must serve both chat and code");
+  for (const rows of shared) {
+    const providers = new Set(rows.map((m) => m.provider));
+    assert.equal(providers.size, 1, `${rows[0].id} must not span two providers`);
+    assert.ok(CAT.PROVIDER_CONFIG[rows[0].provider], "and its provider must be configured once");
+  }
 });
 
 await run("/api/ai/models projection never ships keys, env names, or private endpoints", () => {

@@ -100,6 +100,10 @@ jobs:
 
       - name: AI provider and routing system (catalog routing, STT, credits)
         run: npm run test:routing
+
+      - name: core provider activation (live model ids, availability, fallback)
+        run: npm run test:providers
+
       - name: chat model chain — reachability, routing, fallback cooldown
         run: npm run test:chat-model
       - name: the README's API map against the routes that exist

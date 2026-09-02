@@ -118,7 +118,7 @@ const SPECS: Record<string, ProviderSpec> = {
     label: "Google",
     wire: "google",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/models",
-    envKey: () => process.env.GOOGLE_API_KEY || undefined,
+    envKey: () => AI_KEYS.google,
     byokField: "google",
   },
   mistral: {
