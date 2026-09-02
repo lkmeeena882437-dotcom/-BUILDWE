@@ -94,6 +94,9 @@ jobs:
 
       - name: coding agent end to end (tools, fallback, credits, isolation)
         run: npm run test:agent-e2e
+
+      - name: web search end to end (parsing, sources, fallback, secrets)
+        run: npm run test:search
       - name: chat model chain — reachability, routing, fallback cooldown
         run: npm run test:chat-model
       - name: the README's API map against the routes that exist
