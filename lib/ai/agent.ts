@@ -43,6 +43,11 @@ import {
 import { completeVia, type ProviderKeys } from "@/lib/ai/provider-registry";
 import { chainFor } from "@/lib/ai/adapter";
 import {
+  isCoolingDown,
+  noteModelFailure,
+  noteModelSuccess,
+} from "@/lib/ai/model-chain";
+import {
   parseToolCall,
   type AgentToolCall,
   type AgentToolName,
@@ -402,6 +407,19 @@ function buildContextBlock(files: ProjectFile[], canvasCode?: string, canvasLang
 
 /* ── The loop ─────────────────────────────────────────────── */
 
+/**
+ * Move models that are currently benched to the back of the chain.
+ *
+ * Same policy the chat path uses: a benched model is never removed (an all-cold
+ * chain must still be attempted rather than reporting "no model available"),
+ * it just stops being tried first.
+ */
+function orderByHealth(chain: string[]): string[] {
+  const hot = chain.filter((id) => !isCoolingDown(id));
+  const cold = chain.filter((id) => isCoolingDown(id));
+  return [...hot, ...cold];
+}
+
 export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
   const { userId, projectId, goal, plan, userKeys, onEvent } = input;
   const startedAt = Date.now();
@@ -459,15 +477,31 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
     onEvent({ type: "step", n: steps, total: AGENT_LIMITS.maxSteps, label: "Thinking" });
 
     // Ask the model for the next action, walking the provider chain on failure.
+    //
+    // Two budget rules that were missing here (chat got them in update 12):
+    //
+    //  1. A model that just failed is recorded, so the NEXT step does not lead
+    //     with it again. Without this a dead primary cost a 45s timeout on
+    //     every one of the 8 steps — six minutes of waiting for a run whose
+    //     wall budget is two.
+    //  2. The wall clock is checked between attempts, not only at the top of
+    //     the loop. Four dead models at 45s each is 180s, so a single step
+    //     could overrun the 120s budget before anything re-checked it.
     let reply: string | null = null;
-    for (const model of chain) {
+    const stepChain = orderByHealth(chain);
+    for (const model of stepChain) {
+      if (Date.now() - startedAt > AGENT_LIMITS.maxWallMs) break;
       reply = await completeVia(
         model,
         transcript,
         { maxTokens: 4096, temperature: 0.3 },
         userKeys
       );
-      if (reply) break;
+      if (reply) {
+        noteModelSuccess(model);
+        break;
+      }
+      noteModelFailure(model);
     }
 
     if (!reply) {
