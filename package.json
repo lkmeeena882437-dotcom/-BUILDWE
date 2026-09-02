@@ -8,7 +8,7 @@
     "start": "next start -H 0.0.0.0 -p 3000",
     "lint": "next lint",
     "test:security": "node tests/security.mjs",
-    "test": "npm run test:security && npm run test:markdown && npm run test:ui && npm run test:auth && npm run test:tools && npm run test:pricing && npm run test:preview && npm run test:workspace && npm run test:artifacts && npm run test:throttle && npm run test:docs && npm run test:conversations && npm run test:agent && npm run test:adapter && npm run test:catalog && npm run test:chat-model && npm run test:image",
+    "test": "npm run test:security && npm run test:markdown && npm run test:ui && npm run test:auth && npm run test:tools && npm run test:pricing && npm run test:preview && npm run test:workspace && npm run test:artifacts && npm run test:throttle && npm run test:docs && npm run test:conversations && npm run test:agent && npm run test:adapter && npm run test:catalog && npm run test:chat-model && npm run test:image && npm run test:voice",
     "test:adapter": "node tests/adapter.mjs",
     "test:catalog": "node tests/catalog.mjs",
     "test:markdown": "node tests/markdown-xss.mjs",
@@ -26,7 +26,8 @@
     "test:conversations": "node tests/conversations-remote.mjs",
     "test:agent": "node tests/agent.mjs",
     "test:chat-model": "node tests/chat-model.mjs",
-    "test:image": "node tests/image.mjs"
+    "test:image": "node tests/image.mjs",
+    "test:voice": "node tests/voice.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

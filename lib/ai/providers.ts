@@ -33,6 +33,7 @@ import {
   withRetry,
 } from "@/lib/ai/gateway";
 import { availableProvidersFor } from "@/lib/ai/provider-config";
+import { audioFromBytes, audioFromDataUrl } from "@/lib/ai/audio-verify";
 import {
   buildChatChain,
   noteModelFailure,
@@ -627,10 +628,18 @@ export async function generateAudioPlan(opts: {
       model: "BUILDWE Voice Studio",
       provider: "buildwe",
       live: true,
+      // Verified by `lib/ai/audio-verify.ts`: real bytes, real container. The
+      // route bills on this rather than on "a string came back".
+      verified: true,
+      mime: mp3.mime,
+      bytes: mp3.bytes,
       charCount: speak.length,
     };
   }
 
+  // No vendor produced audio. The browser's own speech engine can still read
+  // the text, but that is NOT an AI generation — it is the user's device — so
+  // it is reported as offline and unverified, and the route refunds it.
   return {
     type: "browser-tts" as const,
     text: speak,
@@ -640,6 +649,7 @@ export async function generateAudioPlan(opts: {
     model: "BUILDWE Voice",
     provider: "buildwe",
     live: false,
+    verified: false,
     charCount: speak.length,
   };
 }
@@ -696,6 +706,9 @@ const ELEVENLABS_VOICE_IDS: Record<string, string> = {
   chen: "VR6AewLTigWG4xSOukaG",
 };
 
+/** What every TTS adapter returns once its bytes have been verified as audio. */
+type TtsClip = { dataUrl: string; estMs: number; mime: string; bytes: number };
+
 /**
  * ElevenLabs TTS — POST /v1/text-to-speech/{voice}. Returns MP3 bytes as a
  * data URL. Voice ids are BUILDWE's own mapped to ElevenLabs preset ids.
@@ -704,7 +717,7 @@ async function elevenLabsTTS(
   script: string,
   voice: string,
   speed: number
-): Promise<{ dataUrl: string; estMs: number } | null> {
+): Promise<TtsClip | null> {
   const key = AI_KEYS.elevenlabs;
   if (!key || key.startsWith("your_") || key.includes("REPLACE")) return null;
   const voiceId = ELEVENLABS_VOICE_IDS[voice] || "21m00Tcm4TlvDq8ikWAM";
@@ -730,9 +743,9 @@ async function elevenLabsTTS(
       "elevenlabs"
     );
     if (!res.ok) return null;
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 1000) return null;
-    return { dataUrl: `data:audio/mpeg;base64,${buf.toString("base64")}`, estMs: Math.round(buf.length / 24) };
+    // One shared definition of "this is audio" — a big HTML error body used to
+    // clear the old length-only check.
+    return audioFromBytes(Buffer.from(await res.arrayBuffer()));
   } catch (e) {
     console.error("[bw] elevenlabs tts", (e as Error)?.message);
     return null;
@@ -749,7 +762,7 @@ async function openAITTS(
   script: string,
   voice: string,
   speed: number
-): Promise<{ dataUrl: string; estMs: number } | null> {
+): Promise<TtsClip | null> {
   const key = AI_KEYS.openai;
   if (!key || key.startsWith("your_") || key.includes("REPLACE")) return null;
   const voiceId = TTS_VOICE_MAP[voice] || "alloy";
@@ -768,9 +781,7 @@ async function openAITTS(
       }),
     }, TIMEOUTS.audio, "openai-tts");
     if (!res.ok) return null;
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 1000) return null;
-    return { dataUrl: `data:audio/mpeg;base64,${buf.toString("base64")}`, estMs: Math.round(buf.length / 24) };
+    return audioFromBytes(Buffer.from(await res.arrayBuffer()));
   } catch (e) {
     console.error("[bw] openai tts", (e as Error)?.message);
     return null;
@@ -779,15 +790,27 @@ async function openAITTS(
   }
 }
 
+/**
+ * Base for the keyless TTS host. Overridable with AI_BASE_URL_POLLINATIONS_TEXT,
+ * matching the AI_BASE_URL_* convention used by the LLM registry and the image
+ * provider, so a proxy or an offline test fixture can stand in unchanged.
+ */
+function pollinationsTextBase(): string {
+  const override = process.env.AI_BASE_URL_POLLINATIONS_TEXT;
+  return override && /^https?:\/\//.test(override)
+    ? override.replace(/\/$/, "")
+    : "https://text.pollinations.ai";
+}
+
 async function pollinationsTTS(
   script: string,
   voice: string,
   speed: number
-): Promise<{ dataUrl: string; estMs: number } | null> {
+): Promise<TtsClip | null> {
   const mapped = TTS_VOICE_MAP[voice] || "alloy";
   try {
     const res = await fetchWithTimeout(
-      "https://text.pollinations.ai/openai",
+      `${pollinationsTextBase()}/openai`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -809,12 +832,13 @@ async function pollinationsTTS(
     if (res.ok) {
       const raw = await res.text();
       const m = raw.match(DATA_AUDIO_RE);
+      // This endpoint is a *chat* model asked for audio, so the reply may be
+      // prose containing a token that merely looks like a data URL. Decode and
+      // verify the container before calling it a clip; previously this path had
+      // no check at all and shipped 3-byte "MP3"s as billable successes.
       if (m) {
-        const b64 = m[1];
-        return {
-          dataUrl: `data:audio/mpeg;base64,${b64}`,
-          estMs: Math.round((b64.length * 3) / 4 / 24),
-        };
+        const ok = audioFromDataUrl(`data:audio/mpeg;base64,${m[1]}`);
+        if (ok) return ok;
       }
     }
   } catch {
@@ -824,7 +848,7 @@ async function pollinationsTTS(
   if (encodeURIComponent(script).length >= 1400) return null;
   try {
     const res = await fetchWithTimeout(
-      `https://text.pollinations.ai/${encodeURIComponent(
+      `${pollinationsTextBase()}/${encodeURIComponent(
         `Read this script aloud exactly, nothing else:\n\n${script}`
       )}?model=openai-audio&voice=${mapped}`,
       { method: "GET" },
@@ -834,20 +858,14 @@ async function pollinationsTTS(
     if (!res.ok) return null;
     const ct = res.headers.get("content-type") || "";
     if (ct.includes("audio")) {
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length > 1000) {
-        return {
-          dataUrl: `data:audio/mpeg;base64,${buf.toString("base64")}`,
-          estMs: Math.round(buf.length / 24),
-        };
-      }
+      const ok = audioFromBytes(Buffer.from(await res.arrayBuffer()));
+      if (ok) return ok;
+      return null;
     }
     const m = (await res.text()).match(DATA_AUDIO_RE);
     if (m) {
-      return {
-        dataUrl: `data:audio/mpeg;base64,${m[1]}`,
-        estMs: Math.round((m[1].length * 3) / 4 / 24),
-      };
+      const ok = audioFromDataUrl(`data:audio/mpeg;base64,${m[1]}`);
+      if (ok) return ok;
     }
   } catch {
     return null;
@@ -865,7 +883,15 @@ export async function synthesizeSpeech(opts: {
   voice: string;
   speed: number;
   plan?: Plan;
-}): Promise<{ dataUrl: string; estMs: number } | null> {
+}): Promise<{
+  dataUrl: string;
+  estMs: number;
+  mime: string;
+  bytes: number;
+  /** Which catalog model actually produced the clip. */
+  modelId: string;
+  provider: string;
+} | null> {
   const script = opts.text.trim().slice(0, 3500);
   if (!script) return null;
 
@@ -879,16 +905,17 @@ export async function synthesizeSpeech(opts: {
 
   for (const model of chain) {
     try {
-      if (model.provider === "elevenlabs") {
-        const hit = await elevenLabsTTS(script, opts.voice, opts.speed);
-        if (hit) return hit;
-      } else if (model.provider === "openai") {
-        const hit = await openAITTS(script, opts.voice, opts.speed);
-        if (hit) return hit;
-      } else if (model.provider === "pollinations") {
-        const hit = await pollinationsTTS(script, opts.voice, opts.speed);
-        if (hit) return hit;
-      }
+      const hit =
+        model.provider === "elevenlabs"
+          ? await elevenLabsTTS(script, opts.voice, opts.speed)
+          : model.provider === "openai"
+            ? await openAITTS(script, opts.voice, opts.speed)
+            : model.provider === "pollinations"
+              ? await pollinationsTTS(script, opts.voice, opts.speed)
+              : null;
+      // Only verified audio ends the walk. A vendor that returned junk is a
+      // failure like any other, so the chain continues to the next model.
+      if (hit) return { ...hit, modelId: model.id, provider: model.provider };
     } catch (e) {
       console.error("[bw] tts fail", model.provider, (e as Error)?.message);
     }
