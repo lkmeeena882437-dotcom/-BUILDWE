@@ -41,8 +41,7 @@ import {
   type ProjectFile,
 } from "@/lib/db/store";
 import { completeVia, type ProviderKeys } from "@/lib/ai/provider-registry";
-import { modelChain } from "@/lib/ai/models-catalog";
-import { availableProviders } from "@/lib/ai/provider-registry";
+import { chainFor } from "@/lib/ai/adapter";
 import {
   parseToolCall,
   type AgentToolCall,
@@ -414,12 +413,11 @@ export async function runAgent(input: AgentRunInput): Promise<AgentRunResult> {
     filesChanged: new Set<string>(),
   };
 
-  const live = availableProviders(userKeys);
-  const chain = modelChain({
+  const chain = chainFor({
     capability: "code",
     plan,
     prompt: goal,
-    availableProviders: live,
+    userKeys,
     max: 4,
   }).map((m) => m.id);
 

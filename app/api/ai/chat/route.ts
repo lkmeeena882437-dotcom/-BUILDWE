@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { limitAi } from "@/lib/rate-limit/guard";
 
-import { streamChatOrCode } from "@/lib/ai/providers";
+import { runChat as streamChatOrCode } from "@/lib/ai/adapter";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import {
   composeSearchAnswer,

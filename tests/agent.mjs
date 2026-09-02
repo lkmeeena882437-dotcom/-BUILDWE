@@ -25,6 +25,12 @@ await run("write_file actually checks whether the store accepted the file", () =
   assert.ok(src.includes("create_file is the same tool"), "the prompt names the alias the parser accepts");
 });
 
+await run("the agent route imports getProject — a missing import is a crash on projectId", () => {
+  const route = readFileSync(path.join(ROOT, "app", "api", "ai", "agent", "route.ts"), "utf8");
+  assert.match(route, /import \{[^}]*getProject/);
+  assert.ok(route.includes("getProject(projectId, session.userId)"));
+});
+
 const outDir = mkdtempSync(path.join(tmpdir(), "bw-agent-"));
 try {
   try {

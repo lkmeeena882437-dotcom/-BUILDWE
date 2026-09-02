@@ -5,7 +5,7 @@ import { limitAi } from "@/lib/rate-limit/guard";
 import { runAgent, type AgentEvent } from "@/lib/ai/agent";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { creditGate, refundArtifact, getBalance } from "@/lib/credits";
-import { findUserById, listProjects, createProject } from "@/lib/db/store";
+import { findUserById, getProject, listProjects, createProject } from "@/lib/db/store";
 import { bump } from "@/lib/metrics/metrics";
 import { userProviderKeys } from "@/lib/ai/byok";
 import { INPUT_LIMITS } from "@/lib/ai/gateway";

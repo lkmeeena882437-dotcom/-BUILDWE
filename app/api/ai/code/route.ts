@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { limitAi } from "@/lib/rate-limit/guard";
 
-import { streamChatOrCode } from "@/lib/ai/providers";
+import { runChat as streamChatOrCode } from "@/lib/ai/adapter";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { understandPrompt } from "@/lib/ai/understanding";
 import { qualityGate } from "@/lib/ai/quality";
@@ -11,12 +11,11 @@ import {
   appendMessages,
   createConversation,
   ensureConversationAccess,
-  findUserById,
   listProjectFiles,
   uid,
 } from "@/lib/db/store";
 import { formatProjectContext, parseContextInput } from "@/lib/ai/workspace-context";
-import { decryptSecret } from "@/lib/crypto";
+import { userProviderKeys } from "@/lib/ai/byok";
 import { INPUT_LIMITS, toUserFacingError } from "@/lib/ai/gateway";
 
 export const runtime = "nodejs";
@@ -107,13 +106,9 @@ export async function POST(req: NextRequest) {
       .filter((s: string) => s.startsWith("avoid:"))
       .map((s: string) => s.slice(6));
 
-    // BYOK — the user's own keys take precedence
-    const owner = findUserById(session.userId);
-    const byok = owner?.byok || {};
-    const userKeys = {
-      groq: byok.groq ? decryptSecret(byok.groq) : undefined,
-      openrouter: byok.openrouter ? decryptSecret(byok.openrouter) : undefined,
-    };
+    // Same resolver chat and the agent use — a code run that decrypted only two
+    // vendors would ignore a key the user just saved for another one.
+    const userKeys = userProviderKeys(session.userId);
 
     // Prompt Understanding Layer (Update #1) — same benefits for Code
     const understood = understandPrompt(String(userText));

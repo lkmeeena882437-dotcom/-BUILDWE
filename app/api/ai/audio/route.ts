@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { limitAi } from "@/lib/rate-limit/guard";
 
-import { generateAudioPlan } from "@/lib/ai/providers";
+import { runAudio as generateAudioPlan } from "@/lib/ai/adapter";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { addGeneration, uid } from "@/lib/db/store";
 import { INPUT_LIMITS } from "@/lib/ai/gateway";
@@ -123,6 +123,7 @@ export async function POST(req: NextRequest) {
       ...plan,
       // Prefer the hosted URL so the client caches a real file, not base64.
       ...(storedUrl ? { audioUrl: storedUrl, stored: true } : {}),
+      provider: "buildwe",
       credits: creditReceipt(session.userId, gate.hold),
     });
     attachGuestCookie(res, session.userId);

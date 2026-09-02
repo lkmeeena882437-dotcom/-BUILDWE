@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { limitAi } from "@/lib/rate-limit/guard";
 
-import { generateImage } from "@/lib/ai/providers";
+import { runImage as generateImage } from "@/lib/ai/adapter";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { addGeneration, uid } from "@/lib/db/store";
 import { INPUT_LIMITS } from "@/lib/ai/gateway";

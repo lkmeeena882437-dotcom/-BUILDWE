@@ -619,6 +619,18 @@ export async function generateImage(opts: {
   };
 }
 
+function keyUsable(v?: string): boolean {
+  return Boolean(v && !v.startsWith("your_") && !v.includes("REPLACE"));
+}
+
+/** Audio vendors that can actually be called right now. Pollinations is keyless. */
+export function availableAudioProviders(userKeys?: ProviderKeys): string[] {
+  const out = ["pollinations"];
+  if (keyUsable(userKeys?.openai || AI_KEYS.openai)) out.push("openai");
+  if (keyUsable(userKeys?.elevenlabs || AI_KEYS.elevenlabs)) out.push("elevenlabs");
+  return out;
+}
+
 export async function generateAudioPlan(opts: {
   text: string;
   voice: string;
@@ -638,6 +650,7 @@ export async function generateAudioPlan(opts: {
     text: speak,
     voice: opts.voice,
     speed: opts.speed,
+    plan: opts.plan,
   });
   if (mp3) {
     return {
@@ -649,7 +662,7 @@ export async function generateAudioPlan(opts: {
       voice: opts.voice,
       speed: opts.speed,
       model: "BUILDWE Voice Studio",
-      provider: "pollinations",
+      provider: "buildwe",
       live: true,
       charCount: speak.length,
     };
@@ -663,7 +676,7 @@ export async function generateAudioPlan(opts: {
     speed: opts.speed,
     model: "BUILDWE Voice",
     provider: "buildwe",
-    live: true,
+    live: false,
     charCount: speak.length,
   };
 }
@@ -696,6 +709,30 @@ const TTS_VOICE_MAP: Record<string, string> = {
 
 const DATA_AUDIO_RE = /data:audio\/[a-z0-9]+;base64,([A-Za-z0-9+/=]+)/;
 
+/** BUILDWE voice ids → ElevenLabs premade voice ids. OpenAI names are not valid here. */
+const ELEVENLABS_VOICE_IDS: Record<string, string> = {
+  nova: "EXAVITQu4vr4xnSDxMaL",
+  atlas: "pNInz6obpgDQGcFmaJgB",
+  luna: "MF3mGyEYCl7XYWbV9V6O",
+  ember: "TxGEqnHWrfWFTfGW9XjX",
+  river: "yoZ06a0pjB7iEbrgsRBS",
+  aanya: "EXAVITQu4vr4xnSDxMaL",
+  arjun: "pNInz6obpgDQGcFmaJgB",
+  kiara: "MF3mGyEYCl7XYWbV9V6O",
+  vihaan: "VR6AewLTigWG4xSOukaG",
+  meera: "EXAVITQu4vr4xnSDxMaL",
+  kabir: "TxGEqnHWrfWFTfGW9XjX",
+  saanvi: "MF3mGyEYCl7XYWbV9V6O",
+  ananya: "EXAVITQu4vr4xnSDxMaL",
+  dev: "pNInz6obpgDQGcFmaJgB",
+  isha: "EXAVITQu4vr4xnSDxMaL",
+  sofia: "MF3mGyEYCl7XYWbV9V6O",
+  luca: "ErXwobaYiN019PkySvjV",
+  amira: "21m00Tcm4TlvDq8ikWAM",
+  yuki: "MF3mGyEYCl7XYWbV9V6O",
+  chen: "VR6AewLTigWG4xSOukaG",
+};
+
 /**
  * ElevenLabs TTS — POST /v1/text-to-speech/{voice}. Returns MP3 bytes as a
  * data URL. Voice ids are BUILDWE's own mapped to ElevenLabs preset ids.
@@ -707,7 +744,7 @@ async function elevenLabsTTS(
 ): Promise<{ dataUrl: string; estMs: number } | null> {
   const key = AI_KEYS.elevenlabs;
   if (!key || key.startsWith("your_") || key.includes("REPLACE")) return null;
-  const voiceId = TTS_VOICE_MAP[voice] || "21m00Tcm4TlvDq8ikWAM";
+  const voiceId = ELEVENLABS_VOICE_IDS[voice] || "21m00Tcm4TlvDq8ikWAM";
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 45_000);
   try {
@@ -779,48 +816,22 @@ async function openAITTS(
   }
 }
 
-/**
- * Key-free TTS via Pollinations `openai-audio`.
- * GET when the script is short; POST /openai for longer scripts.
- * Returns a data URL the browser can play/download directly.
- *
- * When a premium TTS key is configured (ElevenLabs → OpenAI → PlayHT), those
- * are tried first so the catalog's "PRO default" models are actually reachable;
- * otherwise (and as the universal fallback) Pollinations keeps the free path
- * working with zero configuration.
- */
-export async function synthesizeSpeech(opts: {
-  text: string;
-  voice: string;
-  speed: number;
-}): Promise<{ dataUrl: string; estMs: number } | null> {
-  const script = opts.text.trim().slice(0, 3500);
-  if (!script) return null;
-  const voice = TTS_VOICE_MAP[opts.voice] || "alloy";
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 45_000);
-
-  // Premium adapters first (they exist only if a key is configured).
+async function pollinationsTTS(
+  script: string,
+  voice: string,
+  speed: number
+): Promise<{ dataUrl: string; estMs: number } | null> {
+  const mapped = TTS_VOICE_MAP[voice] || "alloy";
   try {
-    const premium: { dataUrl: string; estMs: number } | null =
-      (await elevenLabsTTS(script, voice, opts.speed)) ||
-      (await openAITTS(script, voice, opts.speed));
-    if (premium) return premium;
-  } catch {
-    /* fall through to Pollinations */
-  }
-
-  try {
-    // 1) POST /openai — handles long scripts cleanly
-    try {
-      const res = await fetch("https://text.pollinations.ai/openai", {
+    const res = await fetchWithTimeout(
+      "https://text.pollinations.ai/openai",
+      {
         method: "POST",
-        signal: ctrl.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "openai-audio",
-          voice,
-          speed: opts.speed,
+          voice: mapped,
+          speed,
           messages: [
             {
               role: "user",
@@ -828,56 +839,96 @@ export async function synthesizeSpeech(opts: {
             },
           ],
         }),
-      });
-      if (res.ok) {
-        const raw = await res.text();
-        const m = raw.match(DATA_AUDIO_RE);
-        if (m) {
-          const b64 = m[1];
-          return {
-            dataUrl: `data:audio/mpeg;base64,${b64}`,
-            estMs: Math.round((b64.length * 3) / 4 / 24), // ~24KB/s mp3
-          };
-        }
-      }
-    } catch {
-      /* fall through to GET */
-    }
-
-    // 2) GET path — short scripts
-    if (encodeURIComponent(script).length < 1400) {
-      const res = await fetch(
-        `https://text.pollinations.ai/${encodeURIComponent(
-          `Read this script aloud exactly, nothing else:\n\n${script}`
-        )}?model=openai-audio&voice=${voice}`,
-        { signal: ctrl.signal }
-      );
-      if (res.ok) {
-        const ct = res.headers.get("content-type") || "";
-        if (ct.includes("audio")) {
-          const buf = Buffer.from(await res.arrayBuffer());
-          if (buf.length > 1000) {
-            return {
-              dataUrl: `data:audio/mpeg;base64,${buf.toString("base64")}`,
-              estMs: Math.round(buf.length / 24),
-            };
-          }
-        }
-        // JSON body with embedded data URL
-        const m = (await res.text()).match(DATA_AUDIO_RE);
-        if (m) {
-          return {
-            dataUrl: `data:audio/mpeg;base64,${m[1]}`,
-            estMs: Math.round((m[1].length * 3) / 4 / 24),
-          };
-        }
+      },
+      TIMEOUTS.audio,
+      "pollinations-tts"
+    );
+    if (res.ok) {
+      const raw = await res.text();
+      const m = raw.match(DATA_AUDIO_RE);
+      if (m) {
+        const b64 = m[1];
+        return {
+          dataUrl: `data:audio/mpeg;base64,${b64}`,
+          estMs: Math.round((b64.length * 3) / 4 / 24),
+        };
       }
     }
+  } catch {
+    /* try the short GET path */
+  }
 
-    return null;
+  if (encodeURIComponent(script).length >= 1400) return null;
+  try {
+    const res = await fetchWithTimeout(
+      `https://text.pollinations.ai/${encodeURIComponent(
+        `Read this script aloud exactly, nothing else:\n\n${script}`
+      )}?model=openai-audio&voice=${mapped}`,
+      { method: "GET" },
+      TIMEOUTS.audio,
+      "pollinations-tts"
+    );
+    if (!res.ok) return null;
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("audio")) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > 1000) {
+        return {
+          dataUrl: `data:audio/mpeg;base64,${buf.toString("base64")}`,
+          estMs: Math.round(buf.length / 24),
+        };
+      }
+    }
+    const m = (await res.text()).match(DATA_AUDIO_RE);
+    if (m) {
+      return {
+        dataUrl: `data:audio/mpeg;base64,${m[1]}`,
+        estMs: Math.round((m[1].length * 3) / 4 / 24),
+      };
+    }
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
+  return null;
+}
+
+/**
+ * Catalog-driven TTS. Walks the audio chain (ElevenLabs → OpenAI → Pollinations
+ * when those vendors are actually configured) so a new catalog row is enough
+ * to change order — feature routes do not hard-code vendors.
+ */
+export async function synthesizeSpeech(opts: {
+  text: string;
+  voice: string;
+  speed: number;
+  plan?: Plan;
+}): Promise<{ dataUrl: string; estMs: number } | null> {
+  const script = opts.text.trim().slice(0, 3500);
+  if (!script) return null;
+
+  const chain = modelChain({
+    capability: "audio",
+    plan: opts.plan === "pro" ? "pro" : "free",
+    prompt: script,
+    availableProviders: availableAudioProviders(),
+    max: 5,
+  });
+
+  for (const model of chain) {
+    try {
+      if (model.provider === "elevenlabs") {
+        const hit = await elevenLabsTTS(script, opts.voice, opts.speed);
+        if (hit) return hit;
+      } else if (model.provider === "openai") {
+        const hit = await openAITTS(script, opts.voice, opts.speed);
+        if (hit) return hit;
+      } else if (model.provider === "pollinations") {
+        const hit = await pollinationsTTS(script, opts.voice, opts.speed);
+        if (hit) return hit;
+      }
+    } catch (e) {
+      console.error("[bw] tts fail", model.provider, (e as Error)?.message);
+    }
+  }
+  return null;
 }

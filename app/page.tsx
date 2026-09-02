@@ -956,6 +956,7 @@ function Dashboard() {
   const openHist = async (id: string) => {
     draftsRef.current.set(convId || "__new", input);
     abandonStream();
+    const streamAtOpen = streamEpochRef.current;
     const epoch = ++openEpochRef.current;
     convIdRef.current = id;
     setConvId(id);
