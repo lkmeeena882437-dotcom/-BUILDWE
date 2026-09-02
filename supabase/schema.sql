@@ -74,6 +74,36 @@ create policy "deny all to anon"
 
 
 -- ------------------------------------------------------------
+-- 1c. Owner-scoped rows (accounts, projects, billing)
+-- ------------------------------------------------------------
+-- The kv snapshot is still a last-write-wins document for leftover collections.
+-- Accounts, projects, payments and wallets must not live only in that blob:
+-- one cold instance pushing an empty snapshot would erase someone else's PRO
+-- status. Each of these is its own row, filtered by user_id.
+
+create table if not exists buildwe_owned (
+  kind        text not null,
+  id          text not null,
+  user_id     text not null,
+  payload     jsonb not null,
+  updated_at  timestamptz not null default now(),
+  primary key (kind, id)
+);
+
+create index if not exists buildwe_owned_user_idx
+  on buildwe_owned (kind, user_id, updated_at desc);
+
+alter table buildwe_owned enable row level security;
+
+drop policy if exists "deny all to anon" on buildwe_owned;
+create policy "deny all to anon"
+  on buildwe_owned for all
+  to anon, authenticated
+  using (false)
+  with check (false);
+
+
+-- ------------------------------------------------------------
 -- 2. Durable rate limiting
 -- ------------------------------------------------------------
 -- The in-memory limiter resets whenever an instance restarts and is per
@@ -178,7 +208,7 @@ create policy "public read buildwe media"
 -- This whole script is safe to run more than once — every statement is
 -- idempotent, so re-running it after a change will not error or lose data.
 --
--- Expect: buildwe_kv, buildwe_conversations, buildwe_rate_limits, and a buildwe-media bucket.
+-- Expect: buildwe_kv, buildwe_conversations, buildwe_owned, buildwe_rate_limits, and a buildwe-media bucket.
 select table_name
 from information_schema.tables
 where table_schema = 'public'

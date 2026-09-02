@@ -26,6 +26,22 @@ await run("the schema has a conversations table keyed by user_id", () => {
   assert.ok(sql.includes("user_id     text not null") || /user_id\s+text not null/.test(sql), "owner is a column, not buried in jsonb");
   assert.ok(sql.includes("buildwe_conversations_user_idx"), "listing a person's history is an index, not a seq scan");
   assert.ok(sql.includes("enable row level security"), "RLS is on — service_role bypasses, nothing else should");
+  assert.ok(sql.includes("create table if not exists buildwe_owned"), "accounts/projects/billing are per-row, not only the kv blob");
+  assert.ok(sql.includes("buildwe_owned_user_idx"), "listing one owner's rows is indexed");
+  assert.ok(sql.includes("primary key (kind, id)"), "owned rows are unique per kind+id");
+});
+
+await run("production does not treat the JSON file as the database", () => {
+  const store = readFileSync(path.join(ROOT, "lib", "db", "store.ts"), "utf8");
+  const remoteSrc = readFileSync(path.join(ROOT, "lib", "db", "remote.ts"), "utf8");
+  const login = readFileSync(path.join(ROOT, "app", "api", "auth", "login", "route.ts"), "utf8");
+  assert.ok(store.includes("export function jsonStoreAllowed"), "JSON is a named fallback, not an implicit primary");
+  assert.ok(store.includes('process.env.VERCEL === "1"'), "Vercel must not persist to ephemeral /tmp");
+  assert.ok(store.includes("hydrateAccountByEmail"), "cold login hydrates the account row, not only the blob");
+  assert.ok(login.includes("hydrateAccountByEmail"), "email login waits for that hydrate");
+  assert.ok(remoteSrc.includes("upsertOwnedRecord"), "users/projects/payments/wallets upsert as owned rows");
+  assert.ok(remoteSrc.includes("mergeDbSnapshots"), "a kv push merges so a cold snapshot cannot wipe others");
+  assert.ok(store.includes("scheduleOwnedSync"), "a local write mirrors owned rows, not only the blob");
 });
 
 await run("history GET hydrates this user before listing", () => {
@@ -265,6 +281,93 @@ try {
     assert.equal(remote.remoteDbEnabled(), false);
     assert.equal(await remote.upsertRemoteConversation({ id: "x", userId: "y" }), false);
     assert.deepEqual(await remote.pullRemoteConversations("usr_a"), []);
+    assert.equal(await remote.upsertOwnedRecord("user", "usr_a", "usr_a", { id: "usr_a" }), false);
+    assert.deepEqual(await remote.pullOwnedForUser("usr_a"), []);
+  });
+
+  await run("an empty kv snapshot does not erase another user's account or PRO status", () => {
+    const left = {
+      users: [
+        { id: "usr_a", email: "a@x.test", plan: "pro", planSeats: 3, updatedAt: "2026-09-01T00:00:00.000Z" },
+        { id: "usr_b", email: "b@x.test", plan: "free", updatedAt: "2026-09-01T00:00:00.000Z" },
+      ],
+      payments: [{ id: "pay_1", userId: "usr_a", status: "paid", updatedAt: "2026-09-01T00:00:00.000Z" }],
+      wallets: [{ userId: "usr_a", balance: 40, updatedAt: "2026-09-01T00:00:00.000Z" }],
+      conversations: [],
+    };
+    const right = {
+      users: [{ id: "usr_c", email: "c@x.test", plan: "free", updatedAt: "2026-09-02T00:00:00.000Z" }],
+      payments: [],
+      wallets: [],
+      conversations: [],
+    };
+    const merged = remote.mergeDbSnapshots(left, right);
+    const byId = Object.fromEntries(merged.users.map((u) => [u.id, u]));
+    assert.equal(byId.usr_a.plan, "pro");
+    assert.equal(byId.usr_a.planSeats, 3);
+    assert.ok(byId.usr_b, "user B survives a push that never saw them");
+    assert.ok(byId.usr_c, "the new local user is kept");
+    assert.equal(merged.payments.length, 1);
+    assert.equal(merged.wallets[0].balance, 40);
+  });
+
+  await run("a later cancel is not overwritten by an older PRO snapshot", () => {
+    const olderPro = {
+      users: [{ id: "usr_a", email: "a@x.test", plan: "pro", planSeats: 3, updatedAt: "2026-09-01T00:00:00.000Z" }],
+    };
+    const newerFree = {
+      users: [{ id: "usr_a", email: "a@x.test", plan: "free", updatedAt: "2026-09-02T00:00:00.000Z" }],
+    };
+    const merged = remote.mergeDbSnapshots(olderPro, newerFree);
+    assert.equal(merged.users[0].plan, "free");
+    const stillPro = remote.mergeDbSnapshots(newerFree, olderPro);
+    assert.equal(stillPro.users[0].plan, "free");
+  });
+
+  await run("owned upserts are scoped to this user_id", async () => {
+    const calls = [];
+    const realFetch = globalThis.fetch;
+    process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test-key";
+    globalThis.fetch = async (url, init = {}) => {
+      calls.push({ url: String(url), method: init.method || "GET", body: init.body });
+      return new Response("{}", { status: 201, headers: { "content-type": "application/json" } });
+    };
+    try {
+      assert.equal(
+        await remote.upsertOwnedRecord("user", "usr_a", "usr_a", {
+          id: "usr_a",
+          email: "a@x.test",
+          plan: "pro",
+        }),
+        true
+      );
+      const post = calls.find((c) => c.method === "POST" && c.url.includes("buildwe_owned"));
+      assert.ok(post, "accounts land in buildwe_owned, not only kv");
+      const body = JSON.parse(post.body);
+      assert.equal(body.kind, "user");
+      assert.equal(body.user_id, "usr_a");
+      assert.equal(body.id, "usr_a");
+      assert.equal(body.payload.plan, "pro");
+      assert.equal(post.url.includes("buildwe_kv"), false);
+
+      calls.length = 0;
+      await remote.pullOwnedForUser("usr_a");
+      assert.ok(calls[0].url.includes("user_id=eq.usr_a"), `pull is owner-scoped, got ${calls[0].url}`);
+      assert.equal(calls[0].url.includes("buildwe_kv"), false);
+
+      calls.length = 0;
+      await remote.deleteOwnedRecord("project", "proj_1", "usr_a");
+      assert.equal(calls[0].method, "DELETE");
+      assert.ok(
+        calls[0].url.includes("id=eq.proj_1") && calls[0].url.includes("user_id=eq.usr_a"),
+        "delete is kind+id+owner"
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+      delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+      delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    }
   });
 } finally {
   rmSync(outDir, { recursive: true, force: true });

@@ -2,6 +2,7 @@
 
 import type { PreviewDto } from "@/lib/net/urls";
 import type { PaletteStudio, PaletteTool } from "./palette";
+import { publicErrorMessage, scrubErrorBody } from "@/lib/http/public-error";
 
 export type MeResponse = {
   userId: string;
@@ -58,9 +59,14 @@ async function readJson(r: Response) {
   const text = await r.text();
   if (!text) return {};
   try {
-    return JSON.parse(text);
+    const parsed = JSON.parse(text);
+    return r.ok ? parsed : scrubErrorBody(parsed);
   } catch {
-    return { error: r.ok ? "Unexpected response" : `Request failed (${r.status})` };
+    return {
+      error: r.ok
+        ? "Unexpected response"
+        : publicErrorMessage(`Request failed (${r.status})`, "Something went wrong. Please try again."),
+    };
   }
 }
 
@@ -210,7 +216,8 @@ export async function streamAI(
       const t = line.trim();
       if (!t.startsWith("data:")) continue;
       try {
-        const json = JSON.parse(t.slice(5).trim());
+        const json = JSON.parse(t.slice(5).trim()) as { error?: unknown };
+        if (typeof json.error === "string") json.error = publicErrorMessage(json.error);
         onEvent(json);
       } catch {
         /* ignore partial */

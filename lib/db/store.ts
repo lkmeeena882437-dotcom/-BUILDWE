@@ -11,15 +11,22 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import {
   asConversation,
   conversationsTableReady,
+  deleteOwnedForUser,
+  deleteOwnedRecord,
   deleteRemoteConversation,
   deleteRemoteConversationsForUser,
   mergeConversationLists,
+  mergeDbSnapshots,
+  pullOwnedForUser,
+  pullOwnedUserByEmail,
   pullRemoteConversations,
   pullRemoteDb,
   pushRemoteDb,
   reassignRemoteConversations,
   remoteDbEnabled,
+  upsertOwnedRecord,
   upsertRemoteConversation,
+  type OwnedKind,
 } from "./remote";
 import { CREDITS } from "@/lib/config";
 
@@ -320,12 +327,24 @@ let memoryDb: DB = emptyDb();
 let resolvedPath: string | null | undefined;
 let writable = false;
 
+/**
+ * JSON on disk is allowed when a test/dev directory is named, or when we are
+ * not on a serverless production host. Vercel `/tmp` is not a database.
+ */
+export function jsonStoreAllowed(): boolean {
+  if (process.env.BUILDWE_DATA_DIR) return true;
+  if (process.env.VERCEL === "1") return false;
+  if (process.env.NODE_ENV === "production" && remoteDbEnabled()) return false;
+  return true;
+}
+
 function candidatePaths(): string[] {
+  if (!jsonStoreAllowed()) return [];
   const list: string[] = [];
   if (process.env.BUILDWE_DATA_DIR) {
     list.push(path.join(process.env.BUILDWE_DATA_DIR, "buildwe.json"));
   }
-  // Vercel / AWS lambda writable tmp
+  // Local / VPS writable tmp — never used on Vercel (jsonStoreAllowed is false).
   list.push(path.join("/tmp", "buildwe-data", "buildwe.json"));
   // Local project data folder
   list.push(path.join(process.cwd(), "data", "buildwe.json"));
@@ -564,6 +583,7 @@ function write(db: DB, opts?: { mirror?: boolean; touchBoot?: boolean }) {
   // sense — it must not block adopting users/wallets from the blob, and it
   // must not push a partial snapshot that would erase everyone else.
   if (opts?.touchBoot !== false) localWriteSinceBoot = true;
+  const prevOwned = lastReadRaw ? parseDb(lastReadRaw) : emptyDb();
   const file = getPath();
   if (file && writable) {
     const lock = acquireLock(file);
@@ -602,7 +622,10 @@ function write(db: DB, opts?: { mirror?: boolean; touchBoot?: boolean }) {
     }
   }
   memoryDb = db;
-  if (opts?.mirror !== false) scheduleRemotePush(db);
+  if (opts?.mirror !== false) {
+    scheduleRemotePush(db);
+    scheduleOwnedSync(prevOwned, db);
+  }
 }
 
 /** Chat mutations already upsert a row. Skip the whole-blob push once that table is live. */
@@ -631,6 +654,70 @@ function scheduleRemotePush(db: DB) {
   }, 1500);
 }
 
+type OwnedPending = { kind: OwnedKind; id: string; userId: string; payload: Record<string, unknown> };
+let ownedTimer: ReturnType<typeof setTimeout> | null = null;
+let ownedQueue: OwnedPending[] = [];
+
+function jsonOf(rec: unknown): string {
+  try {
+    return JSON.stringify(rec);
+  } catch {
+    return "";
+  }
+}
+
+function ownedDiff(prev: DB, next: DB): OwnedPending[] {
+  const out: OwnedPending[] = [];
+  const push = (kind: OwnedKind, id: string, userId: string, payload: Record<string, unknown>) => {
+    if (!id || !userId) return;
+    out.push({ kind, id, userId, payload });
+  };
+  const prevUsers = new Map(prev.users.map((u) => [u.id, u]));
+  for (const u of next.users) {
+    if (jsonOf(prevUsers.get(u.id)) !== jsonOf(u)) push("user", u.id, u.id, u as unknown as Record<string, unknown>);
+  }
+  const prevProj = new Map(prev.projects.map((p) => [p.id, p]));
+  for (const p of next.projects) {
+    if (jsonOf(prevProj.get(p.id)) !== jsonOf(p)) push("project", p.id, p.userId, p as unknown as Record<string, unknown>);
+  }
+  const prevPay = new Map(prev.payments.map((p) => [p.id, p]));
+  for (const p of next.payments) {
+    if (jsonOf(prevPay.get(p.id)) !== jsonOf(p)) push("payment", p.id, p.userId, p as unknown as Record<string, unknown>);
+  }
+  const prevWal = new Map(prev.wallets.map((w) => [w.userId, w]));
+  for (const w of next.wallets) {
+    if (jsonOf(prevWal.get(w.userId)) !== jsonOf(w)) {
+      push("wallet", w.userId, w.userId, w as unknown as Record<string, unknown>);
+    }
+  }
+  return out;
+}
+
+function scheduleOwnedSync(prev: DB, next: DB) {
+  if (!remoteDbEnabled()) return;
+  const diff = ownedDiff(prev, next);
+  if (!diff.length) return;
+  ownedQueue.push(...diff);
+  if (ownedTimer) return;
+  ownedTimer = setTimeout(async () => {
+    ownedTimer = null;
+    const batch = ownedQueue;
+    ownedQueue = [];
+    const seen = new Set<string>();
+    for (let i = batch.length - 1; i >= 0; i--) {
+      const row = batch[i];
+      const k = `${row.kind}:${row.id}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      try {
+        await upsertOwnedRecord(row.kind, row.id, row.userId, row.payload);
+      } catch (e) {
+        console.error("[bw] owned upsert", e);
+      }
+    }
+  }, 200);
+}
+
 /**
  * One-time boot: adopt the remote snapshot when local storage is fresh.
  *
@@ -653,28 +740,24 @@ function bootRemote() {
     // A signup in flight still wins outright. Hydrated chats do not: they
     // merge with the blob so users/wallets still arrive on a cold start.
     if (localWriteSinceBoot && memoryDb.users.length > 0) return;
-    const pick = <T,>(local: T[], incoming: unknown): T[] =>
-      local.length ? local : ((Array.isArray(incoming) ? incoming : []) as T[]);
-    const convMerge = mergeConversationLists(
-      memoryDb.conversations,
-      Array.isArray(remote.conversations) ? remote.conversations : []
-    );
+    const merged = mergeDbSnapshots(remote, memoryDb);
+    const base = emptyDb();
     memoryDb = {
-      users: pick(memoryDb.users, remote.users),
-      conversations: convMerge.next as Conversation[],
-      generations: pick(memoryDb.generations, remote.generations),
-      usage: pick(memoryDb.usage, remote.usage),
-      projects: pick(memoryDb.projects, remote.projects),
-      projectFiles: pick(memoryDb.projectFiles, remote.projectFiles),
-      shares: pick(memoryDb.shares, remote.shares),
-      payments: pick(memoryDb.payments, remote.payments),
-      wallets: pick(memoryDb.wallets, remote.wallets),
-      creditLedger: pick(memoryDb.creditLedger, remote.creditLedger),
-      apiKeys: pick(memoryDb.apiKeys, remote.apiKeys),
-      teams: pick(memoryDb.teams, remote.teams),
-      passwordResets: pick(memoryDb.passwordResets, remote.passwordResets),
-      consumedTokens: pick(memoryDb.consumedTokens, remote.consumedTokens),
-      linkPreviews: pick(memoryDb.linkPreviews, remote.linkPreviews),
+      users: (merged.users as User[]) || base.users,
+      conversations: (merged.conversations as Conversation[]) || base.conversations,
+      generations: (merged.generations as Generation[]) || base.generations,
+      usage: (merged.usage as UsageRow[]) || base.usage,
+      projects: (merged.projects as Project[]) || base.projects,
+      projectFiles: (merged.projectFiles as ProjectFile[]) || base.projectFiles,
+      shares: (merged.shares as Share[]) || base.shares,
+      payments: (merged.payments as Payment[]) || base.payments,
+      wallets: (merged.wallets as Wallet[]) || base.wallets,
+      creditLedger: (merged.creditLedger as CreditRow[]) || base.creditLedger,
+      apiKeys: (merged.apiKeys as ApiKey[]) || base.apiKeys,
+      teams: (merged.teams as Team[]) || base.teams,
+      passwordResets: (merged.passwordResets as PasswordReset[]) || base.passwordResets,
+      consumedTokens: (merged.consumedTokens as ConsumedToken[]) || base.consumedTokens,
+      linkPreviews: (merged.linkPreviews as LinkPreviewRow[]) || base.linkPreviews,
     };
     const file = getPath();
     if (file && writable) {
@@ -701,6 +784,103 @@ export async function waitForRemoteBoot() {
     } catch {
       /* login still runs against whatever is local */
     }
+  }
+}
+
+function preferUserRow(a: User, b: User): User {
+  const aT = String(a.updatedAt || a.createdAt || "");
+  const bT = String(b.updatedAt || b.createdAt || "");
+  if (bT !== aT) return bT > aT ? b : a;
+  // Same stamp: do not promote plan just because one copy says PRO — a cancel
+  // that landed with an equal timestamp must be allowed to stick.
+  return a;
+}
+
+function applyOwnedPayload(db: DB, kind: string, payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const rec = payload as Record<string, unknown>;
+  if (kind === "user") {
+    const id = typeof rec.id === "string" ? rec.id : "";
+    const email = typeof rec.email === "string" ? rec.email.trim().toLowerCase() : "";
+    if (!id || !email) return false;
+    const next = rec as unknown as User;
+    const i = db.users.findIndex((u) => u.id === id || u.email === email);
+    if (i < 0) {
+      db.users.push(next);
+      return true;
+    }
+    const pick = preferUserRow(db.users[i], next);
+    if (pick === db.users[i]) return false;
+    db.users[i] = pick;
+    return true;
+  }
+  if (kind === "project") {
+    const id = typeof rec.id === "string" ? rec.id : "";
+    const userId = typeof rec.userId === "string" ? rec.userId : "";
+    if (!id || !userId) return false;
+    if (db.projects.some((p) => p.id === id)) return false;
+    db.projects.push(rec as unknown as Project);
+    return true;
+  }
+  if (kind === "payment") {
+    const id = typeof rec.id === "string" ? rec.id : "";
+    if (!id) return false;
+    const i = db.payments.findIndex((p) => p.id === id);
+    if (i < 0) {
+      db.payments.push(rec as unknown as Payment);
+      return true;
+    }
+    const cur = db.payments[i];
+    if (cur.status !== "paid" && rec.status === "paid") {
+      db.payments[i] = rec as unknown as Payment;
+      return true;
+    }
+    return false;
+  }
+  if (kind === "wallet") {
+    const userId = typeof rec.userId === "string" ? rec.userId : "";
+    if (!userId) return false;
+    const i = db.wallets.findIndex((w) => w.userId === userId);
+    if (i < 0) {
+      db.wallets.push(rec as unknown as Wallet);
+      return true;
+    }
+    const a = db.wallets[i];
+    const b = rec as unknown as Wallet;
+    if (String(b.updatedAt || "") > String(a.updatedAt || "")) {
+      db.wallets[i] = b;
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Cold login/register/oauth: pull this email's account (and its billing rows)
+ * from `buildwe_owned` into the in-process store. Does not push — a partial
+ * snapshot must not erase anyone else.
+ */
+export async function hydrateAccountByEmail(email: string): Promise<void> {
+  if (!remoteDbEnabled()) return;
+  const e = String(email || "").trim().toLowerCase();
+  if (!e || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) return;
+  try {
+    const payload = await pullOwnedUserByEmail(e);
+    if (!payload) return;
+    const db = read();
+    let changed = applyOwnedPayload(db, "user", payload);
+    const uid = typeof payload.id === "string" ? payload.id : "";
+    if (uid) {
+      const rest = await pullOwnedForUser(uid);
+      for (const row of rest) {
+        if (row.kind === "user") continue;
+        changed = applyOwnedPayload(db, row.kind, row.payload) || changed;
+      }
+    }
+    if (changed) write(db, { mirror: false, touchBoot: false });
+  } catch (err) {
+    console.error("[bw] hydrate account", err);
   }
 }
 
@@ -940,6 +1120,7 @@ export function deleteUserCascade(userId: string) {
   db.passwordResets = db.passwordResets.filter((r) => r.userId !== userId);
   write(db);
   void deleteRemoteConversationsForUser(userId);
+  void deleteOwnedForUser(userId);
   return true;
 }
 
@@ -1143,6 +1324,7 @@ export function deleteProject(id: string, userId: string) {
     (f) => !(f.projectId === id && f.userId === userId)
   );
   write(db);
+  void deleteOwnedRecord("project", id, userId);
   return true;
 }
 

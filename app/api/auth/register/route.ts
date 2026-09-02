@@ -2,7 +2,14 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { adoptGuestConversations, createUser, migrateGuestData, publicUser } from "@/lib/db/store";
+import {
+  adoptGuestConversations,
+  createUser,
+  hydrateAccountByEmail,
+  migrateGuestData,
+  publicUser,
+  waitForRemoteBoot,
+} from "@/lib/db/store";
 import {
   clearGuestCookie,
   setSessionCookie,
@@ -41,6 +48,8 @@ export async function POST(req: NextRequest) {
     const guestId = verifyGuestCookie(req.cookies.get("bw_guest")?.value);
 
     const body = parsed.data;
+    await waitForRemoteBoot();
+    await hydrateAccountByEmail(body.email);
     const user = createUser({
       email: body.email,
       password: body.password,

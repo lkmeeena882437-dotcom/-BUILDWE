@@ -463,6 +463,60 @@ await check("history answers, and never lies with an empty list", async () => {
   }
 });
 
+await check("API errors never ship stacks, secrets, or file paths to the browser", async () => {
+  const { readFileSync, readdirSync, statSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const root = new URL("..", import.meta.url).pathname.replace(/\/$/, "") || "/";
+  const leaky = [];
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (name !== "route.ts") continue;
+      const text = readFileSync(full, "utf8");
+      const rel = full.slice(root.length + 1);
+      if (/error:\s*\(e as Error\)\.message/.test(text) && !rel.includes("checkout/order")) {
+        leaky.push(`${rel} returns raw Error.message`);
+      }
+      if (/error:\s*String\(e/.test(text)) leaky.push(`${rel} stringifies a thrown value into JSON`);
+      if (/\.stack/.test(text) && /NextResponse\.json/.test(text) && text.includes("stack:")) {
+        leaky.push(`${rel} puts a stack on the JSON body`);
+      }
+    }
+  };
+  walk(join(root, "app", "api"));
+  assert.deepEqual(leaky, [], leaky.join("; "));
+
+  const client = readFileSync(new URL("../lib/client/api.ts", import.meta.url), "utf8");
+  assert.ok(client.includes("scrubErrorBody"), "the browser helper scrubs leaky JSON before throwing");
+  const pub = readFileSync(new URL("../lib/http/public-error.ts", import.meta.url), "utf8");
+  assert.ok(pub.includes("passwordHash"), "hashes never qualify as a UI sentence");
+  assert.ok(pub.includes("SERVICE_ROLE"), "nor the database key");
+
+  const forgot = readFileSync(new URL("../app/api/auth/forgot/route.ts", import.meta.url), "utf8");
+  assert.ok(
+    /if \(ALLOW_DEV_AUTH_LINKS\)/.test(forgot) && forgot.includes("console.log"),
+    "password-reset links are not logged in production"
+  );
+
+  const bad = await req("/api/auth/login", {
+    method: "POST",
+    body: { email: "not-an-email", password: "x" },
+  });
+  assert.ok([400, 422].includes(bad.status), `bad login shape was ${bad.status}`);
+  const blob = JSON.stringify(bad.json || {});
+  for (const needle of ["ENOENT", "at ", "supabase", "gsk_", "passwordHash", "/home/", "RAZORPAY_KEY"]) {
+    assert.equal(blob.includes(needle), false, `login error leaked ${needle}`);
+  }
+
+  const hist = await req("/api/history", { method: "POST", body: { action: "nope" } });
+  const hblob = JSON.stringify(hist.json || {});
+  assert.ok(!/ENOENT|stack|supabase\.co|\/var\//.test(hblob), "history errors stay generic");
+});
+
 await check("payment ledger cannot be double-redeemed", async () => {
   const { jar } = await signup();
   const a = await req("/api/checkout/verify", {

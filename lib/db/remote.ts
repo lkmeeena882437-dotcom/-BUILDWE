@@ -5,13 +5,14 @@
  *   NEXT_PUBLIC_SUPABASE_URL      e.g. https://xyz.supabase.co
  *   SUPABASE_SERVICE_ROLE_KEY     service role key (server-only!)
  *
- * Two shapes live here:
- *   1. `buildwe_kv` (k='main') — whole-DB snapshot, last-write-wins. Still
- *      used for users/wallets/everything that is not a chat.
- *   2. `buildwe_conversations` — one row per chat, keyed by `user_id`. This
- *      is what actually keeps a person's history when a serverless instance
- *      recycles, and it is what stops User A's write from erasing User B's
- *      chats (the blob cannot).
+ * Three shapes live here:
+ *   1. `buildwe_kv` (k='main') — whole-DB snapshot. Pushes now merge with
+ *      whatever is already stored so a cold instance cannot erase everyone
+ *      else. Still a fallback for collections that are not yet per-row.
+ *   2. `buildwe_conversations` — one row per chat, keyed by `user_id`.
+ *   3. `buildwe_owned` — one row per account/project/payment/wallet, keyed
+ *      by (kind, id) and filtered by `user_id`. This is production billing
+ *      and identity; the JSON file is a dev/test fallback only.
  *
  * Types here are structural copies of `store.ts` so this module stays
  * importable (and testable) without pulling the JSON store in.
@@ -91,15 +92,85 @@ export async function pullRemoteDb(): Promise<DB | null> {
   }
 }
 
-/** Push the snapshot (best-effort, upsert). */
+/**
+ * Union two snapshots by record id. A cold instance's empty arrays must not
+ * replace rows that already exist remotely; a local-only row must not be
+ * dropped by an older blob. Conversations keep the message-aware picker.
+ */
+export function mergeDbSnapshots(left: DB, right: DB): DB {
+  const keys = new Set([...Object.keys(left || {}), ...Object.keys(right || {})]);
+  const out: Record<string, unknown> = { ...(left || {}) };
+  for (const k of keys) {
+    const a = Array.isArray((left as Record<string, unknown>)?.[k])
+      ? ((left as Record<string, unknown>)[k] as Record<string, unknown>[])
+      : [];
+    const b = Array.isArray((right as Record<string, unknown>)?.[k])
+      ? ((right as Record<string, unknown>)[k] as Record<string, unknown>[])
+      : [];
+    if (k === "conversations") {
+      const la = a.map((x) => asConversation(x)).filter(Boolean) as Conversation[];
+      const ra = b.map((x) => asConversation(x)).filter(Boolean) as Conversation[];
+      out[k] = mergeConversationLists(la, ra).next;
+      continue;
+    }
+    out[k] = mergeRecordLists(k, a, b).next;
+  }
+  return out as DB;
+}
+
+function recordId(col: string, rec: Record<string, unknown>): string {
+  if (col === "usage") return `${String(rec.userId || "")}|${String(rec.day || "")}`;
+  if (col === "wallets") return String(rec.userId || "");
+  if (col === "linkPreviews") return String(rec.key || "");
+  const id = rec.id;
+  return typeof id === "string" && id ? id : "";
+}
+
+function newerStamp(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const at = String(a.updatedAt || a.createdAt || "");
+  const bt = String(b.updatedAt || b.createdAt || "");
+  return bt > at;
+}
+
+export function mergeRecordLists(
+  col: string,
+  local: Record<string, unknown>[],
+  incoming: Record<string, unknown>[]
+): { next: Record<string, unknown>[]; changed: boolean } {
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const r of local) {
+    const id = recordId(col, r);
+    if (id) byId.set(id, r);
+  }
+  let changed = false;
+  for (const r of incoming) {
+    const id = recordId(col, r);
+    if (!id) continue;
+    const cur = byId.get(id);
+    if (!cur) {
+      byId.set(id, r);
+      changed = true;
+      continue;
+    }
+    if (newerStamp(cur, r)) {
+      byId.set(id, r);
+      changed = true;
+    }
+  }
+  return { next: Array.from(byId.values()), changed };
+}
+
+/** Push the snapshot after merging with whatever Postgres already holds. */
 export async function pushRemoteDb(db: DB): Promise<boolean> {
   const { url, key, ok } = cfg();
   if (!ok) return false;
   try {
+    const remote = await pullRemoteDb();
+    const v = remote ? mergeDbSnapshots(remote, db) : db;
     const res = await fetch(`${url}/rest/v1/buildwe_kv`, {
       method: "POST",
       headers: { ...headers(key), Prefer: "resolution=merge-duplicates" },
-      body: JSON.stringify({ k: "main", v: db }),
+      body: JSON.stringify({ k: "main", v }),
       ...timed(),
     });
     return res.ok;
@@ -300,4 +371,132 @@ export async function reassignRemoteConversations(
     if (await upsertRemoteConversation(next)) n += 1;
   }
   return n;
+}
+
+/* ── Owner-scoped accounts / projects / billing ──────────── */
+
+export type OwnedKind = "user" | "project" | "payment" | "wallet";
+
+const OWNED_KINDS: readonly OwnedKind[] = ["user", "project", "payment", "wallet"];
+
+export function asOwnedKind(v: unknown): OwnedKind | null {
+  return OWNED_KINDS.includes(v as OwnedKind) ? (v as OwnedKind) : null;
+}
+
+type OwnedRow = {
+  kind: OwnedKind;
+  id: string;
+  user_id: string;
+  payload: Record<string, unknown>;
+  updated_at: string;
+};
+
+function ownedIdOk(id: string): boolean {
+  return typeof id === "string" && !!id && id.length <= 80;
+}
+
+export async function upsertOwnedRecord(
+  kind: OwnedKind,
+  id: string,
+  userId: string,
+  payload: Record<string, unknown>
+): Promise<boolean> {
+  const { url, key, ok } = cfg();
+  if (!ok || !asOwnedKind(kind) || !ownedIdOk(id) || !ownedIdOk(userId) || !payload) return false;
+  const row: OwnedRow = {
+    kind,
+    id,
+    user_id: userId,
+    payload,
+    updated_at: String(payload.updatedAt || payload.createdAt || new Date().toISOString()),
+  };
+  try {
+    const res = await fetch(`${url}/rest/v1/buildwe_owned`, {
+      method: "POST",
+      headers: { ...headers(key), Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify(row),
+      ...timed(),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteOwnedRecord(kind: OwnedKind, id: string, userId: string): Promise<boolean> {
+  const { url, key, ok } = cfg();
+  if (!ok || !asOwnedKind(kind) || !ownedIdOk(id) || !ownedIdOk(userId)) return false;
+  try {
+    const res = await fetch(
+      `${url}/rest/v1/buildwe_owned?kind=eq.${encodeURIComponent(kind)}&id=eq.${encodeURIComponent(id)}&user_id=eq.${encodeURIComponent(userId)}`,
+      timed({ method: "DELETE", headers: headers(key) })
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteOwnedForUser(userId: string): Promise<boolean> {
+  const { url, key, ok } = cfg();
+  if (!ok || !ownedIdOk(userId)) return false;
+  try {
+    const res = await fetch(
+      `${url}/rest/v1/buildwe_owned?user_id=eq.${encodeURIComponent(userId)}`,
+      timed({ method: "DELETE", headers: headers(key) })
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function pullOwnedForUser(
+  userId: string,
+  kind?: OwnedKind
+): Promise<{ kind: OwnedKind; id: string; payload: Record<string, unknown> }[]> {
+  const { url, key, ok } = cfg();
+  if (!ok || !ownedIdOk(userId)) return [];
+  const kindQ = kind ? `&kind=eq.${encodeURIComponent(kind)}` : "";
+  try {
+    const res = await fetch(
+      `${url}/rest/v1/buildwe_owned?select=kind,id,payload&user_id=eq.${encodeURIComponent(userId)}${kindQ}&limit=400`,
+      timed({ headers: headers(key) })
+    );
+    if (!res.ok) return [];
+    const rows = (await res.json()) as { kind?: unknown; id?: unknown; payload?: unknown }[];
+    if (!Array.isArray(rows)) return [];
+    const out: { kind: OwnedKind; id: string; payload: Record<string, unknown> }[] = [];
+    for (const row of rows) {
+      const k = asOwnedKind(row.kind);
+      if (!k || !ownedIdOk(String(row.id || ""))) continue;
+      if (!row.payload || typeof row.payload !== "object") continue;
+      out.push({ kind: k, id: String(row.id), payload: row.payload as Record<string, unknown> });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** Email login on a cold instance: look up the account row, not the whole blob. */
+export async function pullOwnedUserByEmail(email: string): Promise<Record<string, unknown> | null> {
+  const { url, key, ok } = cfg();
+  const e = String(email || "").trim().toLowerCase();
+  if (!ok || !e || e.length > 120 || /[^a-z0-9.@_+-]/.test(e)) return null;
+  try {
+    const res = await fetch(
+      `${url}/rest/v1/buildwe_owned?select=payload&kind=eq.user&payload->>email=eq.${encodeURIComponent(e)}&limit=1`,
+      timed({ headers: headers(key) })
+    );
+    if (!res.ok) return null;
+    const rows = (await res.json()) as { payload?: unknown }[];
+    const payload = rows?.[0]?.payload;
+    if (!payload || typeof payload !== "object") return null;
+    const u = payload as Record<string, unknown>;
+    if (typeof u.id !== "string" || typeof u.email !== "string") return null;
+    return u;
+  } catch {
+    return null;
+  }
 }

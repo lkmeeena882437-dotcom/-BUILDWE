@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   adoptGuestConversations,
   findUserByEmail,
+  hydrateAccountByEmail,
   migrateGuestData,
   publicUser,
   verifyPassword,
@@ -46,6 +47,7 @@ export async function POST(req: NextRequest) {
     }
 
     await waitForRemoteBoot();
+    await hydrateAccountByEmail(email);
     const user = findUserByEmail(email);
     if (!user || !verifyPassword(password, user.passwordHash)) {
       return NextResponse.json(
