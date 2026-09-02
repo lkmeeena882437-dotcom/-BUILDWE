@@ -1931,6 +1931,21 @@ export function conversationAccess(
   return "forbidden";
 }
 
+/**
+ * Same as `conversationAccess`, but a cold instance hydrates this owner's
+ * rows first so a conversationId the client still holds is not treated as
+ * missing (and then recreated as an empty shell that hides the real thread).
+ */
+export async function ensureConversationAccess(
+  id: string,
+  userId: string
+): Promise<"ok" | "missing" | "forbidden"> {
+  const first = conversationAccess(id, userId);
+  if (first !== "missing") return first;
+  await hydrateConversationsForUser(userId);
+  return conversationAccess(id, userId);
+}
+
 /** One chat, if this viewer may see it. Does not scan every other thread. */
 export function getVisibleConversation(id: string, userId: string) {
   const db = read();

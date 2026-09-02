@@ -18,8 +18,8 @@ import { userProviderKeys } from "@/lib/ai/byok";
 import { bump } from "@/lib/metrics/metrics";
 import {
   appendMessages,
-  conversationAccess,
   createConversation,
+  ensureConversationAccess,
   getProject,
   isTeamMember,
   listProjectFiles,
@@ -104,7 +104,7 @@ export async function POST(req: NextRequest) {
 
     let conversationId = (body.conversationId as string | undefined) || uid("conv");
     if (body.conversationId) {
-      const access = conversationAccess(String(body.conversationId), session.userId);
+      const access = await ensureConversationAccess(String(body.conversationId), session.userId);
       if (access === "forbidden") {
         return NextResponse.json({ error: "Not found" }, { status: 404 });
       }
@@ -298,8 +298,10 @@ export async function POST(req: NextRequest) {
     const encoder = new TextEncoder();
     let full = "";
 
+    let assistantSaved = false;
     const persistAssistant = (text: string, quality?: { label: string }) => {
-      if (!text.trim()) return;
+      if (assistantSaved || !text.trim()) return;
+      assistantSaved = true;
       try {
         appendMessages(conversationId!, session.userId, [
           {

@@ -123,10 +123,28 @@ export function asConversation(v: unknown): Conversation | null {
   return c as Conversation;
 }
 
+function messageCount(c: Conversation): number {
+  return Array.isArray(c.messages) ? c.messages.length : 0;
+}
+
 /**
- * Union by id. When both sides have the same chat, the newer `updatedAt` wins
- * so a cold instance's empty store cannot clobber a chat that just landed in
- * Postgres, and an unpushed local write is not thrown away by an older row.
+ * Same id, two copies. An empty local shell (cold start / recreate-on-miss)
+ * must not replace a thread that already has turns, even if its `updatedAt`
+ * is newer — that is how "New chat" used to look like it erased history.
+ * When both sides have turns (or both are empty), the newer `updatedAt` wins
+ * so an unpushed local write is not thrown away by an older row.
+ */
+export function preferConversation(local: Conversation, incoming: Conversation): Conversation {
+  const ln = messageCount(local);
+  const rn = messageCount(incoming);
+  if (ln === 0 && rn > 0) return incoming;
+  if (rn === 0 && ln > 0) return local;
+  if (String(incoming.updatedAt || "") > String(local.updatedAt || "")) return incoming;
+  return local;
+}
+
+/**
+ * Union by id. When both sides have the same chat, `preferConversation` picks.
  */
 export function mergeConversationLists(
   local: Conversation[],
@@ -145,8 +163,9 @@ export function mergeConversationLists(
       changed = true;
       continue;
     }
-    if (String(c.updatedAt || "") > String(cur.updatedAt || "")) {
-      byId.set(c.id, c);
+    const pick = preferConversation(cur, c);
+    if (pick !== cur) {
+      byId.set(c.id, pick);
       changed = true;
     }
   }

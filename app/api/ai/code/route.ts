@@ -9,8 +9,8 @@ import { qualityGate } from "@/lib/ai/quality";
 import {
   addGeneration,
   appendMessages,
-  conversationAccess,
   createConversation,
+  ensureConversationAccess,
   findUserById,
   listProjectFiles,
   uid,
@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
 
     let conversationId = (body.conversationId as string | undefined) || uid("conv");
     if (body.conversationId) {
-      const access = conversationAccess(String(body.conversationId), session.userId);
+      const access = await ensureConversationAccess(String(body.conversationId), session.userId);
       if (access === "forbidden") {
         return NextResponse.json({ error: "Not found" }, { status: 404 });
       }

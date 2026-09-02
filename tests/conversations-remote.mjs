@@ -37,6 +37,28 @@ await run("history GET hydrates this user before listing", () => {
   assert.ok(store.includes("adoptGuestConversations"), "guest chats follow the account into Postgres too");
 });
 
+await run("opening a chat is conversationId → GET /api/history → messages", () => {
+  const hist = readFileSync(path.join(ROOT, "app", "api", "history", "route.ts"), "utf8");
+  const client = readFileSync(path.join(ROOT, "lib", "client", "api.ts"), "utf8");
+  const page = readFileSync(path.join(ROOT, "app", "page.tsx"), "utf8");
+  const chat = readFileSync(path.join(ROOT, "app", "api", "ai", "chat", "route.ts"), "utf8");
+  const store = readFileSync(path.join(ROOT, "lib", "db", "store.ts"), "utf8");
+  assert.ok(hist.includes('searchParams.get("id")'), "GET /api/history?id= is the open path");
+  assert.ok(hist.includes("getVisibleConversation(id, session.userId)"), "and it looks the id up, owner-scoped");
+  const at = client.indexOf("export async function loadConversation");
+  const fn = client.slice(at, client.indexOf("\n}", at) + 2);
+  assert.ok(fn.includes("/api/history?id="), "the client opens via GET, not by scanning the sidebar list");
+  assert.equal(fn.includes('action: "get"'), false, "loadConversation must not POST a get any more");
+  assert.ok(page.includes("abandonStream()"), "switching chats aborts the in-flight stream");
+  assert.ok(page.includes("streamEpochRef"), "late tokens cannot rewrite another thread");
+  assert.ok(page.includes("openEpochRef"), "a slower open cannot overwrite a later click");
+  const newChat = page.slice(page.indexOf("const newChat = () => {"), page.indexOf("const openHist"));
+  assert.equal(newChat.includes("deleteHistory"), false, "New chat must not delete stored threads");
+  assert.ok(newChat.includes("setConvId(null)"), "it only clears the local composer");
+  assert.ok(store.includes("export async function ensureConversationAccess"), "a cold instance hydrates before treating an id as missing");
+  assert.ok(chat.includes("ensureConversationAccess"), "chat persist will not mint an empty shell over a real thread");
+});
+
 await run("history GET is a capped summary, not the whole store", () => {
   const hist = readFileSync(path.join(ROOT, "app", "api", "history", "route.ts"), "utf8");
   const store = readFileSync(path.join(ROOT, "lib", "db", "store.ts"), "utf8");
@@ -112,6 +134,37 @@ try {
       updatedAt: "2026-09-01T00:00:01.000Z",
     };
     assert.equal(remote.asConversation(c).id, "conv_1");
+  });
+
+  await run("an empty newer shell does not hide a thread that already has messages", () => {
+    const local = [
+      {
+        id: "a",
+        userId: "u1",
+        title: "stub",
+        updatedAt: "2026-09-02T04:00:00.000Z",
+        mode: "chat",
+        messages: [],
+        createdAt: "t",
+      },
+    ];
+    const incoming = [
+      {
+        id: "a",
+        userId: "u1",
+        title: "full",
+        updatedAt: "2026-09-01T01:00:00.000Z",
+        mode: "chat",
+        messages: [
+          { id: "m1", role: "user", content: "hello", createdAt: "t" },
+          { id: "m2", role: "assistant", content: "hi", createdAt: "t" },
+        ],
+        createdAt: "t",
+      },
+    ];
+    const { next } = remote.mergeConversationLists(local, incoming);
+    assert.equal(next[0].title, "full");
+    assert.equal(next[0].messages.length, 2);
   });
 
   await run("merge keeps the newer row and does not drop local-only chats", () => {

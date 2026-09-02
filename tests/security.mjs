@@ -384,6 +384,15 @@ await check("guessed ids do not read or write another user's rows", async () => 
   assert.equal(peek.status, 404, `bob must not open alice's chat (${peek.status})`);
   assert.equal(peek.json?.conversation, undefined, "no conversation body on a 404");
 
+  const peekGet = await req(`/api/history?id=${encodeURIComponent(cid)}`, { jar: bob.jar });
+  assert.equal(peekGet.status, 404, `bob must not GET alice's chat (${peekGet.status})`);
+  assert.equal(peekGet.json?.conversation, undefined, "GET ?id= is owner-scoped too");
+
+  const aliceGet = await req(`/api/history?id=${encodeURIComponent(cid)}`, { jar: alice.jar });
+  assert.equal(aliceGet.status, 200, `alice must GET her own chat (${aliceGet.status})`);
+  const aliceTexts = (aliceGet.json.conversation.messages || []).map((m) => m.content);
+  assert.ok(aliceTexts.includes("secret from alice"), "GET ?id= returns the full thread, not a summary");
+
   const append = await req("/api/history", {
     method: "POST",
     jar: bob.jar,

@@ -25,6 +25,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: rl.error, hint: rl.hint }, { status: 429 });
     }
     await hydrateConversationsForUser(session.userId);
+    const id = new URL(req.url).searchParams.get("id");
+    if (id) {
+      const conversation = getVisibleConversation(id, session.userId);
+      if (!conversation) {
+        return NextResponse.json({ error: "Not found" }, { status: 404 });
+      }
+      const res = NextResponse.json({ conversation });
+      attachGuestCookie(res, session.userId);
+      return res;
+    }
     const listed = listVisibleConversationSummaries(session.userId);
     // Generations live on GET /api/ai/generations — the workspace never reads
     // them from this payload, and shipping every image on every mount is waste.

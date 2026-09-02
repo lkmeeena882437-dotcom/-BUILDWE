@@ -116,7 +116,12 @@ function authHeader(): string {
  */
 async function createOrderFor(
   userId: string,
-  opts: { amountPaise: number; receiptPrefix: string; product: string }
+  opts: {
+    amountPaise: number;
+    receiptPrefix: string;
+    product: string;
+    extraNotes?: Record<string, string>;
+  }
 ): Promise<CheckoutOrder> {
   const receipt = `${opts.receiptPrefix}_${userId.slice(0, 8)}_${Date.now()}`;
 
@@ -136,7 +141,7 @@ async function createOrderFor(
       amount: opts.amountPaise,
       currency: RAZORPAY.currency,
       receipt,
-      notes: { product: opts.product, userId },
+      notes: { product: opts.product, userId, ...(opts.extraNotes || {}) },
     }),
     signal: AbortSignal.timeout(15_000),
   });
@@ -169,6 +174,7 @@ export async function createProOrder(userId: string, seats = SEATS_MIN): Promise
     amountPaise: proAmountPaise(n),
     receiptPrefix: "bw_pro",
     product: n > SEATS_MIN ? `buildwe_pro:seats:${n}` : "buildwe_pro",
+    extraNotes: n > SEATS_MIN ? { seats: String(n) } : undefined,
   });
   return n > SEATS_MIN ? { ...order, seats: n } : order;
 }
@@ -256,7 +262,7 @@ export async function verifyProPayment(
     };
   }
   const paid = Number(order.amount_paid || 0);
-  const due = Number(order.amount_expected ?? RAZORPAY.amountPaise);
+  const due = Number(order.amount ?? order.amount_expected ?? RAZORPAY.amountPaise);
   const status = String(order.status || "");
   const notes = (order.notes || {}) as Record<string, unknown>;
   if (status !== "paid" || paid < due) {

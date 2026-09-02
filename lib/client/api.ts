@@ -121,11 +121,10 @@ export async function fetchHistory() {
 }
 
 export async function loadConversation(id: string) {
-  const r = await fetch("/api/history", {
-    method: "POST",
+  // conversationId → GET /api/history?id= → selected thread with messages.
+  // POST {action:"get"} remains for older callers; this is the open path.
+  const r = await fetch(`/api/history?id=${encodeURIComponent(id)}`, {
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "get", conversationId: id }),
   });
   const j = await readJson(r);
   if (!r.ok) throw new Error(j.error || "Couldn’t open chat");

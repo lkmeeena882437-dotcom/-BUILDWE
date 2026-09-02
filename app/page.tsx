@@ -567,6 +567,11 @@ function Dashboard() {
   const [byokNote, setByokNote] = useState("");
 
   const abortRef = useRef<AbortController | null>(null);
+  /** Bumped when the reader leaves a stream so late tokens cannot rewrite another chat. */
+  const streamEpochRef = useRef(0);
+  /** Bumped on every history click so a slower load cannot overwrite a later one. */
+  const openEpochRef = useRef(0);
+  const convIdRef = useRef<string | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -663,8 +668,12 @@ function Dashboard() {
   const refreshHistory = useCallback(async () => {
     try {
       const h = await fetchHistory();
-      setHistory(
-        h.conversations.map((c) => ({
+      const seen = new Set<string>();
+      const rows: HistItem[] = [];
+      for (const c of h.conversations) {
+        if (!c?.id || seen.has(c.id)) continue;
+        seen.add(c.id);
+        rows.push({
           id: c.id,
           title: c.title,
           mode: c.mode,
@@ -673,10 +682,11 @@ function Dashboard() {
           projectId: (c as { projectId?: string | null }).projectId ?? null,
           teamId: (c as { teamId?: string | null }).teamId ?? null,
           mine: (c as { mine?: boolean }).mine ?? true,
-        }))
-      );
+        });
+      }
+      setHistory(rows);
     } catch {
-      /* */
+      /* keep the rail as-is — an empty list here would look like history was deleted */
     }
   }, []);
 
@@ -914,12 +924,22 @@ function Dashboard() {
     if (m !== "audio") setShowVoices(false);
   };
 
+  const abandonStream = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    streamEpochRef.current += 1;
+    setStreaming(false);
+  };
+
   const newChat = () => {
-    // The half-written message stays with the chat it was written in.
+    // Local composer only — never DELETE / overwrite a stored thread.
     draftsRef.current.set(convId || "__new", input);
+    abandonStream();
+    convIdRef.current = null;
     setConvId(null);
     setMessages([]);
     setInput("");
+    setError("");
     setCodePanel("// generated code lands here\n");
     setModelTag("");
     setView("app");
@@ -935,31 +955,41 @@ function Dashboard() {
 
   const openHist = async (id: string) => {
     draftsRef.current.set(convId || "__new", input);
+    abandonStream();
+    const epoch = ++openEpochRef.current;
+    convIdRef.current = id;
+    setConvId(id);
+    setError("");
+    setMessages([]);
+    setView("app");
+    setDrawer(false);
     try {
       const c = await loadConversation(id);
+      if (epoch !== openEpochRef.current) return;
+      if (streamEpochRef.current !== streamAtOpen) return;
+      const seen = new Set<string>();
+      const next: Msg[] = [];
+      for (const m of c.messages || []) {
+        if (m.role !== "user" && m.role !== "assistant") continue;
+        if (!m.id || seen.has(m.id)) continue;
+        seen.add(m.id);
+        next.push({
+          id: m.id,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          sources: m.meta?.sources,
+          context: m.meta?.context as Msg["context"],
+          understood: m.meta?.understood,
+          ...(m.meta?.qualityLabel ? { quality: { label: m.meta.qualityLabel, notes: [] } } : {}),
+        });
+      }
       setConvId(c.id);
-      setMessages(
-        (c.messages || [])
-          .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
-          .map((m: { id: string; role: string; content: string; meta?: { sources?: Msg["sources"]; context?: Msg["context"]; understood?: string; qualityLabel?: "good" | "review" } }) => ({
-            id: m.id,
-            role: m.role as "user" | "assistant",
-            content: m.content,
-            sources: m.meta?.sources,
-            context: m.meta?.context as Msg["context"],
-            understood: m.meta?.understood,
-            ...(m.meta?.qualityLabel ? { quality: { label: m.meta.qualityLabel, notes: [] } } : {}),
-          }))
-      );
+      convIdRef.current = c.id;
+      setMessages(next);
       setMode((c.mode as Mode) || "chat");
       setConvProjectId((c as { projectId?: string | null }).projectId ?? null);
       setConvTeamId((c as { teamId?: string | null }).teamId ?? null);
       setCanvasTab("code");
-      setView("app");
-      setDrawer(false);
-      // What was typed for *this* chat comes back, and the file the previous chat was
-      // reading does not travel with the person: the chip is about this project's files,
-      // and a stale one would spend the context budget on a file nobody meant to send.
       setInput(draftsRef.current.get(c.id) || "");
       setChatCtxPath(null);
       const last = [...(c.messages || [])].reverse().find((m: { role: string }) => m.role === "assistant");
@@ -972,6 +1002,7 @@ function Dashboard() {
         }
       }
     } catch (e) {
+      if (epoch !== openEpochRef.current) return;
       setError((e as Error).message);
     }
   };
@@ -2059,6 +2090,7 @@ function Dashboard() {
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    const epoch = ++streamEpochRef.current;
 
     try {
       let acc = "";
@@ -2073,7 +2105,7 @@ function Dashboard() {
                 ...messages.map((m) => ({ role: m.role, content: m.content })),
                 { role: "user", content: effectiveText },
               ],
-          conversationId: convId,
+          conversationId: convIdRef.current ?? convId,
           webSearch: useSearch,
           projectId: convProjectId ?? activeProject ?? null,
           teamId: convTeamId ?? activeTeam ?? null,
@@ -2087,6 +2119,7 @@ function Dashboard() {
             : {}),
         },
         (ev) => {
+          if (epoch !== streamEpochRef.current) return;
           if (ev.meta && typeof ev.meta === "object") {
             const meta = ev.meta as {
               conversationId?: string;
@@ -2098,7 +2131,13 @@ function Dashboard() {
               clarifier?: string;
               fallbackNote?: string;
             };
-            if (meta.conversationId) setConvId(meta.conversationId);
+            if (meta.conversationId) {
+              const cur = convIdRef.current;
+              if (cur === null || cur === meta.conversationId) {
+                convIdRef.current = meta.conversationId;
+                setConvId(meta.conversationId);
+              }
+            }
             if (meta.model) setModelTag(String(meta.model));
             if (
               meta.understood ||
@@ -2184,17 +2223,19 @@ function Dashboard() {
         },
         ctrl.signal
       );
-      refreshMe();
-      refreshHistory();
-      // keep a version snapshot for the canvas
-      if (resolved === "code") {
-        const blocks = extractCode(acc);
-        if (blocks.length) {
-          pushCanvasVersion(blocks[blocks.length - 1].code, blocks[blocks.length - 1].lang);
+      if (epoch === streamEpochRef.current) {
+        refreshMe();
+        refreshHistory();
+        // keep a version snapshot for the canvas
+        if (resolved === "code") {
+          const blocks = extractCode(acc);
+          if (blocks.length) {
+            pushCanvasVersion(blocks[blocks.length - 1].code, blocks[blocks.length - 1].lang);
+          }
         }
       }
     } catch (e) {
-      if ((e as Error).name !== "AbortError") {
+      if ((e as Error).name !== "AbortError" && epoch === streamEpochRef.current) {
         const err = e as Error & { code?: string; hint?: string };
         // show a useful error + recovery actions instead of a dead bubble
         setMessages((ms) =>
@@ -2218,11 +2259,13 @@ function Dashboard() {
         );
       }
     } finally {
-      setStreaming(false);
-      abortRef.current = null;
-      setStreamPhase("");
-      streamPhaseRef.current = "";
-      if (phaseTimer.current) clearTimeout(phaseTimer.current);
+      if (epoch === streamEpochRef.current) {
+        setStreaming(false);
+        abortRef.current = null;
+        setStreamPhase("");
+        streamPhaseRef.current = "";
+        if (phaseTimer.current) clearTimeout(phaseTimer.current);
+      }
     }
   };
 
@@ -2311,7 +2354,13 @@ function Dashboard() {
 
   const doLogout = async () => {
     await apiLogout();
+    abandonStream();
+    convIdRef.current = null;
+    setConvId(null);
+    setMessages([]);
+    setHistory([]);
     await refreshMe();
+    await refreshHistory();
     setModal(null);
   };
 
