@@ -85,10 +85,26 @@ await run("operator markdown is not tracked on the public clone", async () => {
     .map((s) => s.trim())
     .filter((s) => s.endsWith(".md"));
   assert.deepEqual(md, [], `tracked docs/*.md must be empty, got ${md.join(", ")}`);
-  for (const name of ["AI_BACKEND.md", "ENV_VARIABLES.md", "KEYS_SETUP.md", "SETUP_GUIDE.md"]) {
-    assert.ok(
-      existsSync(path.join(ROOT, "docs", name)),
-      `${name} stays on disk for operators, just untracked`
+
+  // The point of this check is that operator notes are never published in the
+  // public clone. It used to ALSO require the files on disk — which a clone can
+  // never satisfy, because .gitignore is what keeps them out in the first place.
+  // That made the suite permanently red in CI. Assert the durable rule instead:
+  // the ignore rule exists, and any copy present locally stays untracked.
+  const ignore = readFileSync(path.join(ROOT, ".gitignore"), "utf8");
+  assert.match(
+    ignore,
+    /^\/docs\/\*\.md$/m,
+    "the ignore rule is what keeps operator notes off the public clone"
+  );
+  const present = ["AI_BACKEND.md", "ENV_VARIABLES.md", "KEYS_SETUP.md", "SETUP_GUIDE.md"].filter(
+    (n) => existsSync(path.join(ROOT, "docs", n))
+  );
+  for (const name of present) {
+    assert.equal(
+      md.includes(`docs/${name}`),
+      false,
+      `${name} is on disk for operators and must stay untracked`
     );
   }
 });

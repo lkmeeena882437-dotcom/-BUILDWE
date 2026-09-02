@@ -581,9 +581,23 @@ try {
     assert.equal(rowBlock.includes("url:"), false, "no URL column: the cache is not a reading log");
     assert.ok(rowBlock.includes("key: string"), "keyed by the hash");
     assert.ok(store.includes('createHash("sha256").update(normalizedUrl)'), "and that is a SHA-256 of the normalised URL");
-    for (const spot of ["linkPreviews: LinkPreviewRow[]", "linkPreviews: [],", "parsed.linkPreviews || []", "remote.linkPreviews || []"]) {
+    for (const spot of ["linkPreviews: LinkPreviewRow[]", "linkPreviews: [],", "parsed.linkPreviews || []"]) {
       assert.ok(store.includes(spot), `wired into the store and the remote mapping: ${spot}`);
     }
+    // The cold-start hydration path used to read `remote.linkPreviews` directly.
+    // It now merges the remote snapshot first and maps off the result, so assert
+    // the column survives that merge rather than pinning the old expression —
+    // the previous literal check failed while the behaviour was correct.
+    assert.ok(
+      store.includes("(merged.linkPreviews as LinkPreviewRow[]) || base.linkPreviews"),
+      "hydration maps the cache off the merged snapshot"
+    );
+    const remoteSrc = src("lib/db/remote.ts");
+    assert.match(
+      remoteSrc,
+      /if \(col === "linkPreviews"\) return String\(rec\.key \|\| ""\)/,
+      "and the merge de-dupes cache rows on the hash, so a remote row is not lost or doubled"
+    );
     assert.ok(store.includes("r.expiresAt > row.fetchedAt"), "expired rows are pruned on write, and the cap is enforced");
     assert.match(store, /LINK_PREVIEW_MAX_ROWS = 500/, "bounded: a shared cache must not grow forever");
   });
