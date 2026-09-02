@@ -216,7 +216,12 @@ export async function streamAI(
       const t = line.trim();
       if (!t.startsWith("data:")) continue;
       try {
-        const json = JSON.parse(t.slice(5).trim()) as { error?: unknown };
+        const json = JSON.parse(t.slice(5).trim()) as {
+          token?: string;
+          done?: boolean;
+          meta?: unknown;
+          error?: string;
+        };
         if (typeof json.error === "string") json.error = publicErrorMessage(json.error);
         onEvent(json);
       } catch {

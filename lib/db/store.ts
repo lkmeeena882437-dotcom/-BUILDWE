@@ -2185,10 +2185,25 @@ export async function hydrateConversationsForUser(userId: string): Promise<void>
     const fresh = read();
     const visible = (c: Conversation) =>
       c.userId === userId || (c.teamId != null && teamIds.includes(c.teamId));
-    const incoming = remote.filter((c) => asConversation(c) && visible(c));
+    // `remote.Conversation.mode` is a loose string (whatever the row holds);
+    // the store's is a union. Narrow at this boundary so a row written by an
+    // older/newer version cannot smuggle an unknown mode into the store.
+    const MODES: Conversation["mode"][] = ["auto", "chat", "code", "image", "audio"];
+    const narrow = (c: unknown): Conversation | null => {
+      const ok = asConversation(c);
+      if (!ok) return null;
+      return MODES.includes(ok.mode as Conversation["mode"])
+        ? (ok as Conversation)
+        : ({ ...ok, mode: "chat" } as Conversation);
+    };
+    const incoming = remote
+      .map(narrow)
+      .filter((c): c is Conversation => c !== null && visible(c));
     const { next, changed } = mergeConversationLists(fresh.conversations, incoming);
     if (!changed) return;
-    fresh.conversations = next;
+    // `next` is typed with remote's loose `mode`; every element came from
+    // `narrow()` or was already in the store, so both sides are the store shape.
+    fresh.conversations = next as Conversation[];
     write(fresh, { mirror: false, touchBoot: false });
   } catch (e) {
     console.error("[bw] hydrate conversations", e);

@@ -5,11 +5,8 @@
 import { AI_KEYS, AI_MODELS, APP } from "@/lib/config";
 import { SYSTEM_PROMPTS, type Plan } from "@/lib/ai/rules";
 import {
-  pickModel,
   estimateComplexity,
   modelChain,
-  routeModelFor,
-  MODEL_CATALOG,
   publicModelLabel,
 } from "@/lib/ai/models-catalog";
 import {
@@ -36,6 +33,11 @@ import {
   withRetry,
 } from "@/lib/ai/gateway";
 import { availableProvidersFor } from "@/lib/ai/provider-config";
+import {
+  buildChatChain,
+  noteModelFailure,
+  noteModelSuccess,
+} from "@/lib/ai/model-chain";
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -286,61 +288,22 @@ export async function streamChatOrCode(opts: {
   // router never "picks" a model it cannot reach.
   const live = availableProviders(opts.userKeys);
 
-  const catalog = pickModel({
+  // Update #12: chain assembly lives in `lib/ai/model-chain.ts` — reachability,
+  // routing policy, legacy fallback and failure cooldown in one tested place.
+  const { models: tryModelsBuilt } = buildChatChain({
     capability: opts.mode,
     plan: opts.plan,
     prompt: opts.promptForRouting || lastUser,
     availableProviders: live,
-  });
-
-  // Phase 10 routing policy: on strong signals (large doc / code / normal) per
-  // the product spec, bias the chain towards the flagship id when that model is
-  // actually a valid catalog entry for this capability and is reachable on this
-  // deployment. `preferred` below is ordered so the routed id leads.
-  const routedId = routeModelFor({
-    capability: opts.mode,
-    plan: opts.plan,
-    prompt: opts.promptForRouting || lastUser,
-    contextSize: lastUser.length,
-  });
-  const routedModel = routedId
-    ? MODEL_CATALOG.find((m) => m.id === routedId && m.capability === opts.mode) ?? null
-    : null;
-  const routedUsable =
-    routedModel &&
-    live.includes(routedModel.provider) &&
-    (opts.plan === "pro" ? routedModel.tiers.includes("pro") || routedModel.tiers.includes("free") : routedModel.tiers.includes("free"));
-
-  /**
-   * Build the model chain. Order matters:
-   *   1. explicit env override (operator's deliberate choice)
-   *   2. the router's scored pick
-   *   3. cross-vendor alternates, so one provider outage != capability down
-   *   4. the legacy hardcoded Groq list as a last resort
-   */
-  const chain = modelChain({
-    capability: opts.mode,
-    plan: opts.plan,
-    prompt: opts.promptForRouting || lastUser,
-    availableProviders: live,
-    max: 5,
-  }).map((m) => m.id);
-
-  const legacy = opts.mode === "code" ? GROQ_CODE_MODELS : GROQ_CHAT_MODELS;
-  // Routed flagship leads when usable; otherwise the scored pick leads.
-  const preferred = [
-    ...(routedUsable && routedModel ? [routedModel.id] : []),
     envModel,
-    catalog.id,
-    ...chain,
-    ...legacy,
-  ];
+    contextSize: lastUser.length,
+    forceModel: opts.forceModel,
+    preferOffset: opts.preferOffset,
+    legacy: opts.mode === "code" ? GROQ_CODE_MODELS : GROQ_CHAT_MODELS,
+    max: 6,
+  });
 
-  let tryModels = Array.from(new Set(preferred.filter(Boolean)));
-  if (opts.forceModel) tryModels = [opts.forceModel];
-  if (opts.preferOffset && !opts.forceModel && tryModels.length > 1) {
-    tryModels = tryModels.slice(Math.min(opts.preferOffset, tryModels.length - 1));
-  }
+  const tryModels = tryModelsBuilt;
 
   let fallbackNote: string | undefined;
   let attempts = 0;
@@ -349,6 +312,7 @@ export async function streamChatOrCode(opts: {
   for (const model of tryModels.slice(0, 6)) {
     const hit = await streamVia(model, messages, budget, opts.userKeys);
     if (hit) {
+      noteModelSuccess(model);
       return {
         stream: anyStreamToTextSSE(hit.body, hit.wire),
         model: publicModelLabel(model, opts.mode),
@@ -362,6 +326,7 @@ export async function streamChatOrCode(opts: {
         ...(fallbackNote ? { fallbackNote } : {}),
       };
     }
+    noteModelFailure(model);
     attempts++;
     if (attempts === 1) {
       fallbackNote =
@@ -374,6 +339,7 @@ export async function streamChatOrCode(opts: {
   for (const model of tryModels.slice(0, 4)) {
     const text = await completeVia(model, messages, budget, opts.userKeys);
     if (text) {
+      noteModelSuccess(model);
       return {
         stream: textToSSE(text),
         model: publicModelLabel(model, opts.mode),
