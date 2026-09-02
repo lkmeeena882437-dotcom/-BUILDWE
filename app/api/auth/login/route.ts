@@ -8,6 +8,7 @@ import {
   migrateGuestData,
   publicUser,
   verifyPassword,
+  waitForRemoteBoot,
 } from "@/lib/db/store";
 import {
   clearGuestCookie,
@@ -24,19 +25,29 @@ const schema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
-    const body = schema.parse(await req.json());
+    const parsed = schema.safeParse(await req.json().catch(() => null));
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "Enter a valid email and password." },
+        { status: 422 }
+      );
+    }
+    const email = parsed.data.email.trim().toLowerCase();
+    const password = parsed.data.password;
 
     // Per-account limit is checked with the credential in hand, so it survives
     // any amount of IP rotation; the IP bucket stays as the broad flood brake.
-    const rl = await limitLogin(req, body.email);
+    const rl = await limitLogin(req, email);
     if (!rl.ok) {
       return NextResponse.json(
         { error: rl.error, hint: rl.hint },
         { status: 429 }
       );
     }
-    const user = findUserByEmail(body.email);
-    if (!user || !verifyPassword(body.password, user.passwordHash)) {
+
+    await waitForRemoteBoot();
+    const user = findUserByEmail(email);
+    if (!user || !verifyPassword(password, user.passwordHash)) {
       return NextResponse.json(
         { error: "Invalid email or password." },
         { status: 401 }
@@ -67,10 +78,16 @@ export async function POST(req: NextRequest) {
     if (guestId) clearGuestCookie(res);
     return res;
   } catch (e) {
+    const msg = (e as Error).message || "";
+    const busy = /STORE_BUSY|is busy/i.test(msg);
     console.error("[bw] login", e);
     return NextResponse.json(
-      { error: "Couldn’t log in. Check email/password and try again." },
-      { status: 400 }
+      {
+        error: busy
+          ? "Couldn’t save your session right now. Please try again."
+          : "Couldn’t log in. Check email/password and try again.",
+      },
+      { status: busy ? 503 : 400 }
     );
   }
 }

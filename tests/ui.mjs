@@ -901,6 +901,11 @@ await run("step 11: the auth sheet's tabs are the shared control", async () => {
   assert.ok(page.includes("Password (min 8)"), "signup copy names the real floor");
   assert.ok(page.includes("const openAuth = "), "one opener for every Log in / Sign up control");
   assert.ok(page.includes('q.get("auth")'), "/?auth=login is a real reader, not a dead link");
+  assert.ok(page.includes('name="email"') && page.includes('name="password"'), "the login fields have names so submit/autofill send the values");
+  assert.ok(page.includes("new FormData(form)"), "submit reads the form, not only React state (autofill does not fire onChange)");
+  assert.ok(page.includes("Logging in…"), "the button says it is logging in, not a vague wait");
+  assert.ok(page.includes('m.kind !== "user"'), "a 200 without a user session is treated as a failed login");
+  assert.ok(page.includes("landedInWorkspace"), "a signed-in refresh opens the workspace, not the marketing page");
 });
 
 await run("step 11: the sheet holds the keyboard", async () => {

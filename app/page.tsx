@@ -879,6 +879,17 @@ function Dashboard() {
     }
   }, [refreshMe]);
 
+  // A signed-in cookie belongs in the workspace. Refreshing / used to dump a
+  // logged-in person back on the marketing page (the header said "Open workspace"
+  // so the session was there, the view was not). Guests stay on the landing page.
+  // The ref is so tapping the logo to go home is not immediately bounced back.
+  const landedInWorkspace = useRef(false);
+  useEffect(() => {
+    if (me?.kind !== "user" || landedInWorkspace.current) return;
+    landedInWorkspace.current = true;
+    setView("app");
+  }, [me?.kind]);
+
   const grow = () => {
     const el = taRef.current;
     if (!el) return;
@@ -2250,9 +2261,21 @@ function Dashboard() {
     setAuthErr("");
     setAuthBusy(true);
     try {
-      if (authTab === "login") await apiLogin(email, password);
-      else await apiRegister(email, password, name || undefined);
-      await refreshMe();
+      // Autofill often skips React onChange. Read the named fields from the
+      // form so a filled-but-"empty" email still reaches POST /api/auth/login.
+      const form = e.currentTarget as HTMLFormElement;
+      const fd = new FormData(form);
+      const emailVal = String(fd.get("email") || email).trim();
+      const passwordVal = String(fd.get("password") || password);
+      const nameVal = String(fd.get("name") || name);
+      setEmail(emailVal);
+      setPassword(passwordVal);
+      if (authTab === "register") setName(nameVal);
+      if (authTab === "login") await apiLogin(emailVal, passwordVal);
+      else await apiRegister(emailVal, passwordVal, nameVal || undefined);
+      const m = await fetchMe();
+      if (m.kind !== "user") throw new Error("Invalid email or password.");
+      setMe(m);
       await refreshHistory();
       setModal(null);
       setAuthNotice("");
@@ -4520,23 +4543,31 @@ function AuthSheet(props: {
               ]}
             />
           </div>
-          <form onSubmit={props.onSubmit} className="space-y-3">
+          <form onSubmit={props.onSubmit} className="space-y-3" aria-busy={props.busy}>
             {props.tab === "register" && (
-              <input value={props.name} onChange={(e) => props.setName(e.target.value)} placeholder="Name" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+              <input name="name" value={props.name} onChange={(e) => props.setName(e.target.value)} placeholder="Name" disabled={props.busy} className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
             )}
-            <input type="email" required autoComplete="email" data-autofocus value={props.email} onChange={(e) => props.setEmail(e.target.value)} placeholder="Email" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
-            <input type="password" required minLength={props.tab === "register" ? 8 : 1} autoComplete={props.tab === "register" ? "new-password" : "current-password"} value={props.password} onChange={(e) => props.setPassword(e.target.value)} placeholder={props.tab === "register" ? "Password (min 8)" : "Password"} className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+            <input name="email" type="email" required autoComplete="email" data-autofocus value={props.email} onChange={(e) => props.setEmail(e.target.value)} placeholder="Email" disabled={props.busy} className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+            <input name="password" type="password" required minLength={props.tab === "register" ? 8 : 1} autoComplete={props.tab === "register" ? "new-password" : "current-password"} value={props.password} onChange={(e) => props.setPassword(e.target.value)} placeholder={props.tab === "register" ? "Password (min 8)" : "Password"} disabled={props.busy} className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
             {props.tab === "login" && (
-              <button type="button" className="text-xs font-semibold" style={{ color: "var(--accent)" }} onClick={() => setView("forgot")}>
+              <button type="button" className="text-xs font-semibold" style={{ color: "var(--accent)" }} onClick={() => setView("forgot")} disabled={props.busy}>
                 Forgot password?
               </button>
             )}
-            {(props.err || props.notice) && (
-              <p className="text-xs" style={{ color: props.err ? "var(--err)" : "var(--muted)" }}>{props.err || props.notice}</p>
-            )}
+            {props.err ? (
+              <p className="text-xs" style={{ color: "var(--err)" }} role="alert">{props.err}</p>
+            ) : props.notice ? (
+              <p className="text-xs" style={{ color: "var(--muted)" }}>{props.notice}</p>
+            ) : null}
             <Btn type="submit" className="w-full" size="lg" disabled={props.busy}>
               {props.busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              {props.busy ? "Just a sec…" : props.tab === "login" ? "Log in" : "Sign up free"}
+              {props.busy
+                ? props.tab === "login"
+                  ? "Logging in…"
+                  : "Creating account…"
+                : props.tab === "login"
+                  ? "Log in"
+                  : "Sign up free"}
             </Btn>
           </form>
           <p className="mt-3 text-center text-[11px]" style={{ color: "var(--soft)" }}>

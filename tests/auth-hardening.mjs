@@ -128,6 +128,40 @@ await run("a password account exists to be attacked", async () => {
   if (r.status !== 200 && r.status !== 201) throw new Error(`register: ${r.status} ${r.text}`);
 });
 
+await run("email/password login sets a session that /api/auth/me honours", async () => {
+  const jar = newJar();
+  const r = await req(BASE, "/api/auth/login", {
+    method: "POST",
+    jar,
+    body: { email: "victim@buildwe.test", password: "correct-horse-battery" },
+  });
+  if (r.status !== 200) throw new Error(`login: ${r.status} ${r.text}`);
+  if (!r.json?.user?.id) throw new Error(`login body missing user: ${r.text}`);
+  const me = await req(BASE, "/api/auth/me", { jar });
+  if (me.status !== 200) throw new Error(`me: ${me.status} ${me.text}`);
+  if (me.json?.kind !== "user") throw new Error(`session did not stick: ${me.text}`);
+  if (me.json?.user?.email !== "victim@buildwe.test") {
+    throw new Error(`logged in as ${me.json?.user?.email}`);
+  }
+  const again = await req(BASE, "/api/auth/me", { jar });
+  if (again.json?.kind !== "user") throw new Error("refresh lost the session");
+});
+
+await run("wrong email/password is 401 and does not mint a session", async () => {
+  const jar = newJar();
+  const r = await req(BASE, "/api/auth/login", {
+    method: "POST",
+    jar,
+    body: { email: "victim@buildwe.test", password: "definitely-wrong-1" },
+  });
+  if (r.status !== 401) throw new Error(`expected 401, got ${r.status} ${r.text}`);
+  if (!/invalid email or password/i.test(String(r.json?.error || r.text))) {
+    throw new Error(`unclear error: ${r.text}`);
+  }
+  const me = await req(BASE, "/api/auth/me", { jar });
+  if (me.json?.kind === "user") throw new Error("a failed login still signed the browser in");
+});
+
 /** Drive /authorize and return the cookies + the challenge that was sent. */
 async function authorize() {
   const res = await fetch(`${BASE}/api/auth/oauth/github`, { redirect: "manual" });

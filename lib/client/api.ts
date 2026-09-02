@@ -76,10 +76,10 @@ export async function login(email: string, password: string) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email: String(email || "").trim(), password }),
   });
   const j = await readJson(r);
-  if (!r.ok) throw new Error(j.error || "Login failed");
+  if (!r.ok) throw new Error(j.error || "Invalid email or password.");
   return j;
 }
 

@@ -617,6 +617,7 @@ let latestDb: DB | null = null;
 let bootedRemote = false;
 /** Set by write(); blocks a late remote adopt from clobbering local data. */
 let localWriteSinceBoot = false;
+let bootPromise: Promise<void> | null = null;
 
 function scheduleRemotePush(db: DB) {
   if (!remoteDbEnabled()) return;
@@ -642,7 +643,7 @@ function scheduleRemotePush(db: DB) {
 function bootRemote() {
   if (bootedRemote || !remoteDbEnabled()) return;
   bootedRemote = true;
-  void (async () => {
+  bootPromise = (async () => {
     const localHadData =
       memoryDb.users.length > 0 || memoryDb.conversations.length > 0;
     if (localHadData) return; // local wins on warm starts
@@ -684,6 +685,23 @@ function bootRemote() {
       }
     }
   })();
+}
+
+/**
+ * Login/register must not look up an account until the remote snapshot has had
+ * a chance to land. `bootRemote` is fire-and-forget for ordinary reads; a
+ * password check against an empty cold store is a false "invalid password".
+ */
+export async function waitForRemoteBoot() {
+  if (!remoteDbEnabled()) return;
+  bootRemote();
+  if (bootPromise) {
+    try {
+      await bootPromise;
+    } catch {
+      /* login still runs against whatever is local */
+    }
+  }
 }
 
 /**
