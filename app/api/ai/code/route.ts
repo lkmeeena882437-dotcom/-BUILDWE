@@ -9,6 +9,7 @@ import { qualityGate } from "@/lib/ai/quality";
 import {
   addGeneration,
   appendMessages,
+  conversationAccess,
   createConversation,
   findUserById,
   listProjectFiles,
@@ -67,6 +68,12 @@ export async function POST(req: NextRequest) {
         ?.content || "";
 
     let conversationId = (body.conversationId as string | undefined) || uid("conv");
+    if (body.conversationId) {
+      const access = conversationAccess(String(body.conversationId), session.userId);
+      if (access === "forbidden") {
+        return NextResponse.json({ error: "Not found" }, { status: 404 });
+      }
+    }
 
     try {
       if (!body.conversationId) {

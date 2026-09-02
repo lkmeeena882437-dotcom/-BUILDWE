@@ -18,7 +18,9 @@ import { userProviderKeys } from "@/lib/ai/byok";
 import { bump } from "@/lib/metrics/metrics";
 import {
   appendMessages,
+  conversationAccess,
   createConversation,
+  getProject,
   isTeamMember,
   listProjectFiles,
   uid,
@@ -101,6 +103,12 @@ export async function POST(req: NextRequest) {
     }
 
     let conversationId = (body.conversationId as string | undefined) || uid("conv");
+    if (body.conversationId) {
+      const access = conversationAccess(String(body.conversationId), session.userId);
+      if (access === "forbidden") {
+        return NextResponse.json({ error: "Not found" }, { status: 404 });
+      }
+    }
 
     // Persist best-effort — never block the AI reply if storage fails
     try {
@@ -108,12 +116,16 @@ export async function POST(req: NextRequest) {
         const teamId = body.teamId && isTeamMember(String(body.teamId), session.userId)
           ? String(body.teamId)
           : null;
+        const projectId =
+          body.projectId && getProject(String(body.projectId), session.userId)
+            ? String(body.projectId)
+            : null;
         const c = createConversation({
           userId: session.userId,
           mode: "chat",
           title: String(userText).slice(0, 48) || "Chat",
           messages: [],
-          projectId: body.projectId || null,
+          projectId,
           teamId,
         });
         conversationId = c.id;

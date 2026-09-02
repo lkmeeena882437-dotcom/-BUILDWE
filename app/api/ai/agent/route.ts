@@ -80,7 +80,11 @@ export async function POST(req: NextRequest) {
     // Resolve the project: agents need somewhere to put files, so create one
     // on first use rather than failing.
     let projectId = String(body.projectId || "").trim();
-    if (!projectId) {
+    if (projectId) {
+      if (!getProject(projectId, session.userId)) {
+        return NextResponse.json({ error: "Project not found." }, { status: 404 });
+      }
+    } else {
       const existing = listProjects(session.userId);
       projectId =
         existing[0]?.id ||

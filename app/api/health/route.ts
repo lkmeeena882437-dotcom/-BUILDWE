@@ -127,20 +127,20 @@ export async function GET() {
           "Voice generation",
           "degraded",
           "No TTS credential is set, so voice output falls back to the browser's own speech engine.",
-          "no elevenlabs / openai / playht key"
+          "no TTS credential"
         ),
     stt: sttReady
       ? row(
           "Speech to text",
           "live",
           "A transcription provider is configured.",
-          "deepgram or groq credential present"
+          "STT credential present"
         )
       : row(
           "Speech to text",
           "unconfigured",
           "Transcription is not connected, so recordings are stored but not turned into text.",
-          "no deepgram / groq key"
+          "no STT credential"
         ),
     webSearch: searchReady
       ? row(
@@ -161,13 +161,13 @@ export async function GET() {
           "Key encryption",
           "live",
           "User keys are encrypted with a deployment secret.",
-          "BYOK_ENCRYPTION_SECRET or SESSION_SECRET set"
+          "encryption secret set"
         )
       : row(
           "Key encryption",
           "down",
           "No encryption secret is configured, so saved API keys cannot be trusted to stay private.",
-          "missing BYOK_ENCRYPTION_SECRET"
+          "encryption secret missing"
         ),
     agent: row(
       "Coding agent",
@@ -191,16 +191,16 @@ export async function GET() {
           RAZORPAY.webhookSecret ? "live" : "degraded",
           RAZORPAY.webhookSecret
             ? `PRO and ${CREDITS.packs.length} credit pack(s) check out against Razorpay. ${CREDITS.welcome} credits are minted at signup; a tool run costs ${CREDITS.cost.tool}.`
-            : `Prices and orders are live, but no webhook secret is set - a buyer who closes the tab mid-payment cannot be made whole automatically. Set RAZORPAY_WEBHOOK_SECRET.`,
+            : `Prices and orders are live, but no webhook secret is set - a buyer who closes the tab mid-payment cannot be made whole automatically.`,
           RAZORPAY.webhookSecret
-            ? "razorpay key id + secret + webhook secret"
+            ? "checkout keys + webhook secret"
             : "webhook secret missing"
         )
       : row(
           "Billing",
           "unconfigured",
-          "No Razorpay keys on this server, so nothing can be sold — checkout says so rather than faking a success. Credits still meter, and a run that produced nothing is still refunded.",
-          "NEXT_PUBLIC_RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET unset"
+          "No checkout keys on this server, so nothing can be sold — checkout says so rather than faking a success. Credits still meter, and a run that produced nothing is still refunded.",
+          "checkout keys unset"
         ),
     storage:
       storage === "supabase"
@@ -242,7 +242,7 @@ export async function GET() {
             `Forwarded headers are read through ${TRUST_PROXY_HOPS} trusted hop${
               TRUST_PROXY_HOPS === 1 ? "" : "s"
             }.`,
-            "TRUST_PROXY_HOPS"
+            "trusted proxy hops"
           )
         : row(
             "Client identity",

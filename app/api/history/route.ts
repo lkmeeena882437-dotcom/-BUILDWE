@@ -112,7 +112,10 @@ export async function DELETE(req: NextRequest) {
     const session = await getSessionFromRequest(req);
     const id = new URL(req.url).searchParams.get("id");
     if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
-    deleteConversation(id, session.userId);
+    const removed = deleteConversation(id, session.userId);
+    if (!removed) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
     return NextResponse.json({ ok: true });
   } catch (e) {
     console.error("[bw] history DELETE", e);

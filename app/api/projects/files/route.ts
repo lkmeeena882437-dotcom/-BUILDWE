@@ -3,6 +3,7 @@ import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { limitAi } from "@/lib/rate-limit/guard";
 import {
   deleteProjectFile,
+  getProject,
   getProjectFile,
   listProjectFiles,
   saveProjectFile,
@@ -43,6 +44,9 @@ export async function GET(req: NextRequest) {
 
     if (!projectId) {
       return NextResponse.json({ error: "projectId required" }, { status: 400 });
+    }
+    if (!getProject(projectId, session.userId)) {
+      return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
 
     // List stays lightweight — content is fetched per file on demand.

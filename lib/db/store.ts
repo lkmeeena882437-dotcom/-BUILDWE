@@ -1022,8 +1022,13 @@ export function appendMessages(
         isTeamMember(c.teamId, userId)
     );
   }
-  // If missing (new instance / lost memory), recreate shell
   if (i < 0) {
+    // The id exists but this caller may not write it. Recreating a shell under
+    // the caller's userId used to mint a second row with the same id — so a
+    // guessed conversationId became "your" chat, and get-by-id returned whichever
+    // row came first. Refuse instead. A truly missing id (cold start / lost
+    // memory) still gets a shell so the owner can keep talking.
+    if (db.conversations.some((c) => c.id === conversationId)) return null;
     const now = new Date().toISOString();
     db.conversations.unshift({
       id: conversationId,
@@ -1056,14 +1061,13 @@ export function appendMessages(
 
 export function deleteConversation(id: string, userId: string) {
   const db = read();
-  const before = db.conversations.length;
-  db.conversations = db.conversations.filter(
-    (c) => !(c.id === id && c.userId === userId)
-  );
+  const owned = db.conversations.some((c) => c.id === id && c.userId === userId);
+  if (!owned) return false;
+  db.conversations = db.conversations.filter((c) => c.id !== id);
   db.shares = db.shares.filter((s) => s.conversationId !== id);
   write(db);
-  if (db.conversations.length < before) void deleteRemoteConversation(id, userId);
-  return db.conversations.length < before;
+  void deleteRemoteConversation(id, userId);
+  return true;
 }
 
 /* ── Projects ────────────────────────────────────────────── */
@@ -1104,20 +1108,22 @@ export function renameProject(id: string, userId: string, name: string) {
   return p;
 }
 
+export function getProject(id: string, userId: string) {
+  return read().projects.find((p) => p.id === id && p.userId === userId) || null;
+}
+
 export function deleteProject(id: string, userId: string) {
   const db = read();
   const owned = db.projects.some((p) => p.id === id && p.userId === userId);
-  db.projects = db.projects.filter((p) => !(p.id === id && p.userId === userId));
-  // detach conversations from the deleted project
+  if (!owned) return false;
+  db.projects = db.projects.filter((p) => p.id !== id);
+  // Only this owner's chats — a guessed id must not unlink someone else's folder.
   for (const c of db.conversations) {
-    if (c.projectId === id) c.projectId = null;
+    if (c.projectId === id && c.userId === userId) c.projectId = null;
   }
-  // remove the project's files too — otherwise they'd linger unreachable
-  if (owned) {
-    db.projectFiles = db.projectFiles.filter(
-      (f) => !(f.projectId === id && f.userId === userId)
-    );
-  }
+  db.projectFiles = db.projectFiles.filter(
+    (f) => !(f.projectId === id && f.userId === userId)
+  );
   write(db);
   return true;
 }
@@ -1889,6 +1895,22 @@ export function summarizeConversation(c: Conversation, viewerId: string): Conver
     teamId: c.teamId ?? null,
     mine: c.userId === viewerId,
   };
+}
+
+/**
+ * Whether this viewer may use a conversation id.
+ * `forbidden` means the row exists and is not theirs — callers must 404, not
+ * recreate a shell, or the store grows a duplicate id.
+ */
+export function conversationAccess(
+  id: string,
+  userId: string
+): "ok" | "missing" | "forbidden" {
+  const c = read().conversations.find((x) => x.id === id);
+  if (!c) return "missing";
+  if (c.userId === userId) return "ok";
+  if (c.teamId && isTeamMember(c.teamId, userId)) return "ok";
+  return "forbidden";
 }
 
 /** One chat, if this viewer may see it. Does not scan every other thread. */
