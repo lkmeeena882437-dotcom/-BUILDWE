@@ -89,6 +89,8 @@ jobs:
         run: npm run test:image
       - name: voice generation end to end (verified audio, refund, fallback)
         run: npm run test:voice
+      - name: coding feature end to end (stream, context, sandbox, isolation)
+        run: npm run test:code
       - name: chat model chain — reachability, routing, fallback cooldown
         run: npm run test:chat-model
       - name: the README's API map against the routes that exist

@@ -5,12 +5,12 @@ import { limitAi } from "@/lib/rate-limit/guard";
 import { runChat as streamChatOrCode } from "@/lib/ai/adapter";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { understandPrompt } from "@/lib/ai/understanding";
-import { qualityGate } from "@/lib/ai/quality";
 import {
   addGeneration,
   appendMessages,
   createConversation,
   ensureConversationAccess,
+  getProject,
   listProjectFiles,
   uid,
 } from "@/lib/db/store";
@@ -127,21 +127,50 @@ export async function POST(req: NextRequest) {
     }
     let projectContext = "";
     let contextStats: ReturnType<typeof formatProjectContext>["stats"] | null = null;
+    /** Set when a project was asked for but contributed nothing, so the UI can say why. */
+    let contextRef: { requested: true; attached: false; reason: "not_found" | "empty_project" } | null =
+      null;
     const projectId = body.projectId ? String(body.projectId) : "";
     if (projectId) {
-      try {
-        const out = formatProjectContext(listProjectFiles(projectId, session.userId), {
-          purpose: "code",
-          ...(ctxIn.value ? { openPath: ctxIn.value.path } : {}),
-        });
-        projectContext = out.text;
-        contextStats = out.stats;
-      } catch (e) {
-        console.error("[bw] project context", e);
+      // Ownership is enforced by the store query itself: `listProjectFiles`
+      // filters on userId, so another account's project simply has no files
+      // here. Guessing an id therefore leaks nothing — but it also used to be
+      // indistinguishable from "your project is empty", and the answer came
+      // back written as if the model had seen the code. Saying which of the two
+      // happened is the difference between a wrong answer and a fixable one.
+      if (!getProject(projectId, session.userId)) {
+        contextRef = { requested: true, attached: false, reason: "not_found" };
+      } else {
+        try {
+          const rows = listProjectFiles(projectId, session.userId);
+          const out = formatProjectContext(rows, {
+            purpose: "code",
+            ...(ctxIn.value ? { openPath: ctxIn.value.path } : {}),
+          });
+          if (rows.length) {
+            projectContext = out.text;
+            contextStats = out.stats;
+          } else {
+            contextRef = { requested: true, attached: false, reason: "empty_project" };
+          }
+        } catch (e) {
+          console.error("[bw] project context", e);
+        }
       }
     }
+    // Never fail the request over context — a lost answer is worse than a lost
+    // file list — but do tell the model it is working blind, so it asks for the
+    // code instead of inventing a file structure.
+    const contextMeta = contextStats
+      ? { attached: true as const, ...contextStats }
+      : contextRef;
 
-    const codeSystemParts = [understood.systemHint, projectContext].filter(Boolean);
+    const blindNote = contextRef
+      ? contextRef.reason === "not_found"
+        ? "PROJECT CONTEXT: the referenced project could not be read, so you have NOT been shown its files. Do not invent its structure — work from the conversation, and ask for the relevant file if you need it."
+        : "PROJECT CONTEXT: this project has no files yet, so there is no existing code to build on. Say so briefly if the request assumes otherwise."
+      : "";
+    const codeSystemParts = [understood.systemHint, projectContext, blindNote].filter(Boolean);
     const codeMessages = codeSystemParts.length
       ? [
           { role: "system", content: codeSystemParts.join("\n\n---\n\n") },
@@ -182,7 +211,7 @@ export async function POST(req: NextRequest) {
                   model,
                   live,
                   ...(fallbackNote ? { fallbackNote } : {}),
-                  ...(contextStats ? { context: { attached: true, ...contextStats } } : {}),
+                  ...(contextMeta ? { context: contextMeta } : {}),
                 },
               })}\n\n`
             )
@@ -213,7 +242,7 @@ export async function POST(req: NextRequest) {
                   meta: {
                     model,
                     live,
-                    ...(contextStats ? { context: { attached: true, ...contextStats } } : {}),
+                    ...(contextMeta ? { context: contextMeta } : {}),
                   },
                 },
               ]);
