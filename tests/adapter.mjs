@@ -111,7 +111,10 @@ await run("the adapter is catalog-driven: chain + availability, no new vendors",
   assert.ok(adapter.includes("export const runAudio"), "audio is a named capability runner");
   assert.ok(adapter.includes("modelChain"), "chains come from the catalog, not a per-feature list");
   assert.equal(adapter.includes("api.openai.com"), false, "the adapter does not own vendor URLs");
-  assert.ok(adapter.includes('capability === "audio"'), "audio availability is not borrowed from chat keys");
+  assert.ok(adapter.includes("availableProvidersFor"), "availability is one function over the provider config");
+  const cfg = src("lib/ai/provider-config.ts");
+  assert.ok(cfg.includes('resolveCapability(capability)'), "agent aliases code rather than duplicating models");
+  assert.equal(cfg.includes("api.openai.com"), false, "readiness does not embed vendor URLs");
 });
 
 await run("audio walks the catalog instead of a hardcoded vendor list", () => {

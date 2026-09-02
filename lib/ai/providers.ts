@@ -35,6 +35,7 @@ import {
   TIMEOUTS,
   withRetry,
 } from "@/lib/ai/gateway";
+import { availableProvidersFor } from "@/lib/ai/provider-config";
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -619,16 +620,9 @@ export async function generateImage(opts: {
   };
 }
 
-function keyUsable(v?: string): boolean {
-  return Boolean(v && !v.startsWith("your_") && !v.includes("REPLACE"));
-}
-
 /** Audio vendors that can actually be called right now. Pollinations is keyless. */
 export function availableAudioProviders(userKeys?: ProviderKeys): string[] {
-  const out = ["pollinations"];
-  if (keyUsable(userKeys?.openai || AI_KEYS.openai)) out.push("openai");
-  if (keyUsable(userKeys?.elevenlabs || AI_KEYS.elevenlabs)) out.push("elevenlabs");
-  return out;
+  return availableProvidersFor("audio", userKeys);
 }
 
 export async function generateAudioPlan(opts: {

@@ -573,6 +573,19 @@ await run("GET /api/ai/models reports what THIS deployment can call", async () =
   assert.equal(j.catalogSize, CAT.MODEL_CATALOG.length, "the size the route quotes is the catalog the gateway routes from");
   assert.ok(j.all.some((m) => m.status === "coming_soon"), "the marketing ladder still carries its reserved seats");
   assert.equal(JSON.stringify(j.selectable).includes("coming_soon"), false, "and none of them leaked into the callable list");
+  const blob = JSON.stringify(j);
+  for (const leak of ["GROQ_API_KEY", "OPENAI_API_KEY", "envKey", "api.openai.com", "api.groq.com", "AI_KEYS", "sk-", "gsk_"]) {
+    assert.equal(blob.includes(leak), false, `/api/ai/models leaked ${leak}`);
+  }
+  assert.ok(Array.isArray(j.internal) && j.internal.includes("agent"), "agent is an alias, not a picker section");
+  assert.ok(
+    j.selectable.audio.some((m) => m.provider === "pollinations" && m.available && m.keyless),
+    "keyless voice is callable without a key"
+  );
+  assert.ok(
+    j.selectable.audio.some((m) => m.provider === "cartesia" && !m.available),
+    "an unimplemented vendor stays unavailable even as a catalog row"
+  );
 
   const dry = await req(OFF, "/api/ai/models");
   assert.equal(dry.json.llmLive, false, "a keyless deployment admits it");

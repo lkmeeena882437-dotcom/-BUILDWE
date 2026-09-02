@@ -57,6 +57,188 @@ export type CatalogModel = {
   notes?: string;
 };
 
+/** Wire adapter a vendor uses for a capability. Not an HTTP URL — those stay in the registry. */
+export type AdapterName = "llm" | "image" | "audio" | "stt" | "vision";
+
+/** A capability a user can actually ask for. `router` is internal; `agent` aliases `code`. */
+export type WorkCapability = Exclude<Capability, "router">;
+
+/**
+ * One entry per vendor — not per model. The same Groq row powers chat, code, STT and
+ * vision without copying key/adapter config onto every catalog model.
+ *
+ * `adapters` is what we actually have code for. A catalog model whose provider+capability
+ * is missing here is never marked available, even if a key exists (Cartesia / PlayHT TTS).
+ * `keyEnv` is the platform env var name (null = keyless). It is never sent to the browser.
+ */
+export type ProviderConfig = {
+  id: ProviderId;
+  adapters: Partial<Record<WorkCapability, AdapterName>>;
+  keyEnv: string | null;
+  byokField?: string;
+  /** Lower is preferred as a fallback after the scored pick. */
+  priority: number;
+};
+
+export const PROVIDER_CONFIG: Record<ProviderId, ProviderConfig> = {
+  groq: {
+    id: "groq",
+    adapters: { chat: "llm", code: "llm", stt: "stt", vision: "vision" },
+    keyEnv: "GROQ_API_KEY",
+    byokField: "groq",
+    priority: 1,
+  },
+  pollinations: {
+    id: "pollinations",
+    adapters: { image: "image", audio: "audio" },
+    keyEnv: null,
+    priority: 2,
+  },
+  openrouter: {
+    id: "openrouter",
+    adapters: { chat: "llm", code: "llm" },
+    keyEnv: "OPENROUTER_API_KEY",
+    byokField: "openrouter",
+    priority: 3,
+  },
+  google: {
+    id: "google",
+    adapters: { chat: "llm", code: "llm" },
+    keyEnv: "GOOGLE_API_KEY",
+    byokField: "google",
+    priority: 4,
+  },
+  openai: {
+    id: "openai",
+    adapters: { chat: "llm", code: "llm", image: "image", audio: "audio", vision: "vision" },
+    keyEnv: "OPENAI_API_KEY",
+    byokField: "openai",
+    priority: 5,
+  },
+  anthropic: {
+    id: "anthropic",
+    adapters: { chat: "llm", code: "llm", vision: "vision" },
+    keyEnv: "ANTHROPIC_API_KEY",
+    byokField: "anthropic",
+    priority: 6,
+  },
+  mistral: {
+    id: "mistral",
+    adapters: { chat: "llm", code: "llm" },
+    keyEnv: "MISTRAL_API_KEY",
+    byokField: "mistral",
+    priority: 7,
+  },
+  deepseek: {
+    id: "deepseek",
+    adapters: { chat: "llm", code: "llm" },
+    keyEnv: "DEEPSEEK_API_KEY",
+    byokField: "deepseek",
+    priority: 8,
+  },
+  together: {
+    id: "together",
+    adapters: { chat: "llm", code: "llm" },
+    keyEnv: "TOGETHER_API_KEY",
+    byokField: "together",
+    priority: 9,
+  },
+  huggingface: {
+    id: "huggingface",
+    adapters: { image: "image" },
+    keyEnv: "HF_TOKEN",
+    priority: 10,
+  },
+  fal: {
+    id: "fal",
+    adapters: { image: "image" },
+    keyEnv: "FAL_KEY",
+    priority: 11,
+  },
+  elevenlabs: {
+    id: "elevenlabs",
+    adapters: { audio: "audio" },
+    keyEnv: "ELEVENLABS_API_KEY",
+    byokField: "elevenlabs",
+    priority: 12,
+  },
+  stability: {
+    id: "stability",
+    adapters: { image: "image" },
+    keyEnv: "STABILITY_API_KEY",
+    byokField: "stability",
+    priority: 13,
+  },
+  goapi: {
+    id: "goapi",
+    adapters: { image: "image" },
+    keyEnv: "GOAPI_API_KEY",
+    byokField: "goapi",
+    priority: 14,
+  },
+  deepgram: {
+    id: "deepgram",
+    adapters: { stt: "stt" },
+    keyEnv: "DEEPGRAM_API_KEY",
+    byokField: "deepgram",
+    priority: 15,
+  },
+  playht: {
+    id: "playht",
+    adapters: {},
+    keyEnv: "PLAYHT_API_KEY",
+    byokField: "playht",
+    priority: 90,
+  },
+  cartesia: {
+    id: "cartesia",
+    adapters: {},
+    keyEnv: "CARTESIA_API_KEY",
+    priority: 91,
+  },
+  replicate: {
+    id: "replicate",
+    adapters: {},
+    keyEnv: "REPLICATE_API_TOKEN",
+    byokField: "replicate",
+    priority: 92,
+  },
+};
+
+export const KEYLESS_PROVIDERS: readonly ProviderId[] = (
+  Object.values(PROVIDER_CONFIG) as ProviderConfig[]
+)
+  .filter((p) => p.keyEnv === null)
+  .map((p) => p.id);
+
+/** Agent runs on the code catalog — one set of models, not a second copy. */
+export function resolveCapability(cap: string): WorkCapability {
+  if (cap === "agent") return "code";
+  if (cap === "router") return "chat";
+  return cap as WorkCapability;
+}
+
+export function providerConfig(id: string): ProviderConfig | undefined {
+  return PROVIDER_CONFIG[id as ProviderId];
+}
+
+export function adapterFor(provider: string, capability: string): AdapterName | null {
+  const cap = resolveCapability(capability);
+  return PROVIDER_CONFIG[provider as ProviderId]?.adapters[cap] ?? null;
+}
+
+export function isKeylessProvider(provider: string): boolean {
+  return (KEYLESS_PROVIDERS as readonly string[]).includes(provider);
+}
+
+export function isProviderImplemented(provider: string, capability: string): boolean {
+  return adapterFor(provider, capability) !== null;
+}
+
+export function requiredKeyEnv(provider: string): string | null {
+  return PROVIDER_CONFIG[provider as ProviderId]?.keyEnv ?? null;
+}
+
 /**
  * Recommended stack (you can keep ALL of these registered).
  * Auto-router ranks by: capability match → tier allowed → quality/cost blend → health.
@@ -639,6 +821,11 @@ export const MODEL_CATALOG: CatalogModel[] = [
   },
 ];
 
+export function modelsForCapability(cap: string): CatalogModel[] {
+  const resolved = resolveCapability(cap);
+  return MODEL_CATALOG.filter((m) => m.capability === resolved);
+}
+
 export type TaskComplexity = "simple" | "normal" | "complex";
 
 export function estimateComplexity(prompt: string): TaskComplexity {
@@ -718,7 +905,8 @@ export function pickModel(opts: {
    */
   availableProviders?: readonly string[];
 }): CatalogModel {
-  const { capability, plan, prompt, preferModelId, availableProviders } = opts;
+  const capability = resolveCapability(opts.capability);
+  const { plan, prompt, preferModelId, availableProviders } = opts;
   const complexity = estimateComplexity(prompt);
   const allowed: ModelTier[] = plan === "pro" ? ["pro", "free"] : ["free"];
 
@@ -726,12 +914,10 @@ export function pickModel(opts: {
     (m) => m.capability === capability && m.tiers.some((t) => allowed.includes(t))
   );
 
-  // Providers that need no key at all are always callable.
-  const KEYLESS: readonly string[] = ["pollinations"];
   const pool = availableProviders
     ? tierPool.filter(
         (m) =>
-          KEYLESS.includes(m.provider) || availableProviders.includes(m.provider)
+          isKeylessProvider(m.provider) || availableProviders.includes(m.provider)
       )
     : tierPool;
 
@@ -796,26 +982,28 @@ export function modelChain(opts: {
   availableProviders?: readonly string[];
   max?: number;
 }): CatalogModel[] {
-  const first = pickModel(opts);
+  const capability = resolveCapability(opts.capability);
+  const first = pickModel({ ...opts, capability });
   const allowed: ModelTier[] = opts.plan === "pro" ? ["pro", "free"] : ["free"];
-  const KEYLESS: readonly string[] = ["pollinations"];
 
   const rest = MODEL_CATALOG.filter(
     (m) =>
-      m.capability === opts.capability &&
+      m.capability === capability &&
       m.id !== first.id &&
       m.tiers.some((t) => allowed.includes(t)) &&
       (!opts.availableProviders ||
-        KEYLESS.includes(m.provider) ||
+        isKeylessProvider(m.provider) ||
         opts.availableProviders.includes(m.provider))
   );
 
-  // Cross-vendor first, then same-vendor alternates.
+  // Cross-vendor first (catalog priority, then quality), then same-vendor alternates.
   const otherVendor = rest.filter((m) => m.provider !== first.provider);
   const sameVendor = rest.filter((m) => m.provider === first.provider);
-  const byQuality = (a: CatalogModel, b: CatalogModel) => b.quality - a.quality;
-  otherVendor.sort(byQuality);
-  sameVendor.sort(byQuality);
+  const pri = (m: CatalogModel) => PROVIDER_CONFIG[m.provider]?.priority ?? 50;
+  const byFallback = (a: CatalogModel, b: CatalogModel) =>
+    pri(a) - pri(b) || b.quality - a.quality;
+  otherVendor.sort(byFallback);
+  sameVendor.sort(byFallback);
 
   const chain = [first, ...otherVendor, ...sameVendor];
   // de-duplicate by id (the same id can appear under two capabilities)
@@ -932,6 +1120,7 @@ export function catalogRow(id?: string | null, capability?: Capability): Catalog
 const MODE_CAPABILITY: Record<string, Capability> = {
   chat: "chat",
   code: "code",
+  agent: "code",
   image: "image",
   audio: "audio",
   vision: "vision",

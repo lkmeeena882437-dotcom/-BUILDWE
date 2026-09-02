@@ -24,6 +24,7 @@
 import { AI_KEYS } from "@/lib/config";
 import { fetchWithTimeout, TIMEOUTS, withRetry } from "@/lib/ai/gateway";
 import { MODEL_CATALOG } from "@/lib/ai/models-catalog";
+import { availableProvidersFor } from "@/lib/ai/provider-config";
 
 export type ImageResult = {
   url: string;
@@ -60,13 +61,7 @@ function keyOk(v?: string): boolean {
 
 /** Image providers that can actually be called right now. */
 export function availableImageProviders(): string[] {
-  const out = ["pollinations"]; // always available — no key required
-  if (keyOk(AI_KEYS.fal)) out.push("fal");
-  if (keyOk(AI_KEYS.hf)) out.push("huggingface");
-  if (keyOk(AI_KEYS.openai)) out.push("openai");
-  if (keyOk(AI_KEYS.stability)) out.push("stability");
-  if (keyOk(AI_KEYS.goapi)) out.push("goapi");
-  return out;
+  return availableProvidersFor("image");
 }
 
 /* ── Adapters ─────────────────────────────────────────────── */

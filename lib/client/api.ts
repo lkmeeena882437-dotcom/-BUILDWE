@@ -883,6 +883,8 @@ export type SelectableModel = {
   strengths: string[];
   available: boolean;
   whyNot?: string;
+  /** True when the vendor needs no platform key. Safe metadata — not an env name. */
+  keyless?: boolean;
 };
 
 export type ModelsInfo = {
