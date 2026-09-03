@@ -5,11 +5,8 @@
 import { AI_KEYS, AI_MODELS, APP } from "@/lib/config";
 import { SYSTEM_PROMPTS, type Plan } from "@/lib/ai/rules";
 import {
-  pickModel,
   estimateComplexity,
   modelChain,
-  routeModelFor,
-  MODEL_CATALOG,
   publicModelLabel,
 } from "@/lib/ai/models-catalog";
 import {
@@ -35,24 +32,37 @@ import {
   TIMEOUTS,
   withRetry,
 } from "@/lib/ai/gateway";
+import { availableProvidersFor } from "@/lib/ai/provider-config";
+import { audioFromBytes, audioFromDataUrl } from "@/lib/ai/audio-verify";
+import {
+  buildChatChain,
+  noteModelFailure,
+  noteModelSuccess,
+} from "@/lib/ai/model-chain";
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
   content: string;
 };
 
+/**
+ * Last-resort ids used only when the catalog yields nothing at all.
+ *
+ * Groq shut down llama-3.1-8b-instant and llama-3.3-70b-versatile on
+ * 2026-08-16 (and qwen3-32b / llama-4-scout earlier), so the previous entries
+ * here were all dead ids — a "fallback" that could only ever 400. These are the
+ * replacements Groq names in its own deprecation notice.
+ */
 const GROQ_CHAT_MODELS = [
-  "llama-3.3-70b-versatile",
-  "llama-3.1-8b-instant",
-  "llama-3.1-70b-versatile",
-  "gemma2-9b-it",
+  "openai/gpt-oss-120b",
+  "openai/gpt-oss-20b",
+  "qwen/qwen3.6-27b",
 ];
 
 const GROQ_CODE_MODELS = [
-  "llama-3.3-70b-versatile",
-  "llama-3.1-70b-versatile",
-  "llama-3.1-8b-instant",
-  "gemma2-9b-it",
+  "openai/gpt-oss-120b",
+  "qwen/qwen3.6-27b",
+  "openai/gpt-oss-20b",
 ];
 
 export type ProviderKeys = {
@@ -285,61 +295,22 @@ export async function streamChatOrCode(opts: {
   // router never "picks" a model it cannot reach.
   const live = availableProviders(opts.userKeys);
 
-  const catalog = pickModel({
+  // Update #12: chain assembly lives in `lib/ai/model-chain.ts` — reachability,
+  // routing policy, legacy fallback and failure cooldown in one tested place.
+  const { models: tryModelsBuilt } = buildChatChain({
     capability: opts.mode,
     plan: opts.plan,
     prompt: opts.promptForRouting || lastUser,
     availableProviders: live,
-  });
-
-  // Phase 10 routing policy: on strong signals (large doc / code / normal) per
-  // the product spec, bias the chain towards the flagship id when that model is
-  // actually a valid catalog entry for this capability and is reachable on this
-  // deployment. `preferred` below is ordered so the routed id leads.
-  const routedId = routeModelFor({
-    capability: opts.mode,
-    plan: opts.plan,
-    prompt: opts.promptForRouting || lastUser,
-    contextSize: lastUser.length,
-  });
-  const routedModel = routedId
-    ? MODEL_CATALOG.find((m) => m.id === routedId && m.capability === opts.mode) ?? null
-    : null;
-  const routedUsable =
-    routedModel &&
-    live.includes(routedModel.provider) &&
-    (opts.plan === "pro" ? routedModel.tiers.includes("pro") || routedModel.tiers.includes("free") : routedModel.tiers.includes("free"));
-
-  /**
-   * Build the model chain. Order matters:
-   *   1. explicit env override (operator's deliberate choice)
-   *   2. the router's scored pick
-   *   3. cross-vendor alternates, so one provider outage != capability down
-   *   4. the legacy hardcoded Groq list as a last resort
-   */
-  const chain = modelChain({
-    capability: opts.mode,
-    plan: opts.plan,
-    prompt: opts.promptForRouting || lastUser,
-    availableProviders: live,
-    max: 5,
-  }).map((m) => m.id);
-
-  const legacy = opts.mode === "code" ? GROQ_CODE_MODELS : GROQ_CHAT_MODELS;
-  // Routed flagship leads when usable; otherwise the scored pick leads.
-  const preferred = [
-    ...(routedUsable && routedModel ? [routedModel.id] : []),
     envModel,
-    catalog.id,
-    ...chain,
-    ...legacy,
-  ];
+    contextSize: lastUser.length,
+    forceModel: opts.forceModel,
+    preferOffset: opts.preferOffset,
+    legacy: opts.mode === "code" ? GROQ_CODE_MODELS : GROQ_CHAT_MODELS,
+    max: 6,
+  });
 
-  let tryModels = Array.from(new Set(preferred.filter(Boolean)));
-  if (opts.forceModel) tryModels = [opts.forceModel];
-  if (opts.preferOffset && !opts.forceModel && tryModels.length > 1) {
-    tryModels = tryModels.slice(Math.min(opts.preferOffset, tryModels.length - 1));
-  }
+  const tryModels = tryModelsBuilt;
 
   let fallbackNote: string | undefined;
   let attempts = 0;
@@ -348,6 +319,7 @@ export async function streamChatOrCode(opts: {
   for (const model of tryModels.slice(0, 6)) {
     const hit = await streamVia(model, messages, budget, opts.userKeys);
     if (hit) {
+      noteModelSuccess(model);
       return {
         stream: anyStreamToTextSSE(hit.body, hit.wire),
         model: publicModelLabel(model, opts.mode),
@@ -361,6 +333,7 @@ export async function streamChatOrCode(opts: {
         ...(fallbackNote ? { fallbackNote } : {}),
       };
     }
+    noteModelFailure(model);
     attempts++;
     if (attempts === 1) {
       fallbackNote =
@@ -373,6 +346,7 @@ export async function streamChatOrCode(opts: {
   for (const model of tryModels.slice(0, 4)) {
     const text = await completeVia(model, messages, budget, opts.userKeys);
     if (text) {
+      noteModelSuccess(model);
       return {
         stream: textToSSE(text),
         model: publicModelLabel(model, opts.mode),
@@ -413,8 +387,9 @@ export async function streamChatOrCode(opts: {
 const VISION_MODELS: { id: string; provider: "openai" | "anthropic" | "groq" }[] = [
   { id: "gpt-4o", provider: "openai" },
   { id: "claude-3-5-sonnet-20241022", provider: "anthropic" },
-  { id: "meta-llama/llama-4-scout-17b-16e-instruct", provider: "groq" },
-  { id: "llama-3.2-11b-vision-preview", provider: "groq" },
+  // Groq retired llama-4-scout (2026-07-17) and the 3.2 vision preview before
+  // it; qwen3.6-27b is the current Groq row that accepts image input.
+  { id: "qwen/qwen3.6-27b", provider: "groq" },
 ];
 
 /** Convert a data URL + text question into the right vendor's body shape. */
@@ -616,7 +591,15 @@ export async function generateImage(opts: {
     // Surfaced so the UI can tell the user their pick was unavailable
     // instead of silently handing them a different model's output.
     fellBack: result.fellBack,
+    // Whether the picture is known to exist. The route refunds on false —
+    // a constructed URL is not evidence of a generated image.
+    verified: result.verified,
   };
+}
+
+/** Audio vendors that can actually be called right now. Pollinations is keyless. */
+export function availableAudioProviders(userKeys?: ProviderKeys): string[] {
+  return availableProvidersFor("audio", userKeys);
 }
 
 export async function generateAudioPlan(opts: {
@@ -638,6 +621,7 @@ export async function generateAudioPlan(opts: {
     text: speak,
     voice: opts.voice,
     speed: opts.speed,
+    plan: opts.plan,
   });
   if (mp3) {
     return {
@@ -649,12 +633,20 @@ export async function generateAudioPlan(opts: {
       voice: opts.voice,
       speed: opts.speed,
       model: "BUILDWE Voice Studio",
-      provider: "pollinations",
+      provider: "buildwe",
       live: true,
+      // Verified by `lib/ai/audio-verify.ts`: real bytes, real container. The
+      // route bills on this rather than on "a string came back".
+      verified: true,
+      mime: mp3.mime,
+      bytes: mp3.bytes,
       charCount: speak.length,
     };
   }
 
+  // No vendor produced audio. The browser's own speech engine can still read
+  // the text, but that is NOT an AI generation — it is the user's device — so
+  // it is reported as offline and unverified, and the route refunds it.
   return {
     type: "browser-tts" as const,
     text: speak,
@@ -663,7 +655,8 @@ export async function generateAudioPlan(opts: {
     speed: opts.speed,
     model: "BUILDWE Voice",
     provider: "buildwe",
-    live: true,
+    live: false,
+    verified: false,
     charCount: speak.length,
   };
 }
@@ -696,6 +689,33 @@ const TTS_VOICE_MAP: Record<string, string> = {
 
 const DATA_AUDIO_RE = /data:audio\/[a-z0-9]+;base64,([A-Za-z0-9+/=]+)/;
 
+/** BUILDWE voice ids → ElevenLabs premade voice ids. OpenAI names are not valid here. */
+const ELEVENLABS_VOICE_IDS: Record<string, string> = {
+  nova: "EXAVITQu4vr4xnSDxMaL",
+  atlas: "pNInz6obpgDQGcFmaJgB",
+  luna: "MF3mGyEYCl7XYWbV9V6O",
+  ember: "TxGEqnHWrfWFTfGW9XjX",
+  river: "yoZ06a0pjB7iEbrgsRBS",
+  aanya: "EXAVITQu4vr4xnSDxMaL",
+  arjun: "pNInz6obpgDQGcFmaJgB",
+  kiara: "MF3mGyEYCl7XYWbV9V6O",
+  vihaan: "VR6AewLTigWG4xSOukaG",
+  meera: "EXAVITQu4vr4xnSDxMaL",
+  kabir: "TxGEqnHWrfWFTfGW9XjX",
+  saanvi: "MF3mGyEYCl7XYWbV9V6O",
+  ananya: "EXAVITQu4vr4xnSDxMaL",
+  dev: "pNInz6obpgDQGcFmaJgB",
+  isha: "EXAVITQu4vr4xnSDxMaL",
+  sofia: "MF3mGyEYCl7XYWbV9V6O",
+  luca: "ErXwobaYiN019PkySvjV",
+  amira: "21m00Tcm4TlvDq8ikWAM",
+  yuki: "MF3mGyEYCl7XYWbV9V6O",
+  chen: "VR6AewLTigWG4xSOukaG",
+};
+
+/** What every TTS adapter returns once its bytes have been verified as audio. */
+type TtsClip = { dataUrl: string; estMs: number; mime: string; bytes: number };
+
 /**
  * ElevenLabs TTS — POST /v1/text-to-speech/{voice}. Returns MP3 bytes as a
  * data URL. Voice ids are BUILDWE's own mapped to ElevenLabs preset ids.
@@ -704,10 +724,10 @@ async function elevenLabsTTS(
   script: string,
   voice: string,
   speed: number
-): Promise<{ dataUrl: string; estMs: number } | null> {
+): Promise<TtsClip | null> {
   const key = AI_KEYS.elevenlabs;
   if (!key || key.startsWith("your_") || key.includes("REPLACE")) return null;
-  const voiceId = TTS_VOICE_MAP[voice] || "21m00Tcm4TlvDq8ikWAM";
+  const voiceId = ELEVENLABS_VOICE_IDS[voice] || "21m00Tcm4TlvDq8ikWAM";
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 45_000);
   try {
@@ -730,9 +750,9 @@ async function elevenLabsTTS(
       "elevenlabs"
     );
     if (!res.ok) return null;
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 1000) return null;
-    return { dataUrl: `data:audio/mpeg;base64,${buf.toString("base64")}`, estMs: Math.round(buf.length / 24) };
+    // One shared definition of "this is audio" — a big HTML error body used to
+    // clear the old length-only check.
+    return audioFromBytes(Buffer.from(await res.arrayBuffer()));
   } catch (e) {
     console.error("[bw] elevenlabs tts", (e as Error)?.message);
     return null;
@@ -749,7 +769,7 @@ async function openAITTS(
   script: string,
   voice: string,
   speed: number
-): Promise<{ dataUrl: string; estMs: number } | null> {
+): Promise<TtsClip | null> {
   const key = AI_KEYS.openai;
   if (!key || key.startsWith("your_") || key.includes("REPLACE")) return null;
   const voiceId = TTS_VOICE_MAP[voice] || "alloy";
@@ -768,9 +788,7 @@ async function openAITTS(
       }),
     }, TIMEOUTS.audio, "openai-tts");
     if (!res.ok) return null;
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 1000) return null;
-    return { dataUrl: `data:audio/mpeg;base64,${buf.toString("base64")}`, estMs: Math.round(buf.length / 24) };
+    return audioFromBytes(Buffer.from(await res.arrayBuffer()));
   } catch (e) {
     console.error("[bw] openai tts", (e as Error)?.message);
     return null;
@@ -780,47 +798,33 @@ async function openAITTS(
 }
 
 /**
- * Key-free TTS via Pollinations `openai-audio`.
- * GET when the script is short; POST /openai for longer scripts.
- * Returns a data URL the browser can play/download directly.
- *
- * When a premium TTS key is configured (ElevenLabs → OpenAI → PlayHT), those
- * are tried first so the catalog's "PRO default" models are actually reachable;
- * otherwise (and as the universal fallback) Pollinations keeps the free path
- * working with zero configuration.
+ * Base for the keyless TTS host. Overridable with AI_BASE_URL_POLLINATIONS_TEXT,
+ * matching the AI_BASE_URL_* convention used by the LLM registry and the image
+ * provider, so a proxy or an offline test fixture can stand in unchanged.
  */
-export async function synthesizeSpeech(opts: {
-  text: string;
-  voice: string;
-  speed: number;
-}): Promise<{ dataUrl: string; estMs: number } | null> {
-  const script = opts.text.trim().slice(0, 3500);
-  if (!script) return null;
-  const voice = TTS_VOICE_MAP[opts.voice] || "alloy";
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 45_000);
+function pollinationsTextBase(): string {
+  const override = process.env.AI_BASE_URL_POLLINATIONS_TEXT;
+  return override && /^https?:\/\//.test(override)
+    ? override.replace(/\/$/, "")
+    : "https://text.pollinations.ai";
+}
 
-  // Premium adapters first (they exist only if a key is configured).
+async function pollinationsTTS(
+  script: string,
+  voice: string,
+  speed: number
+): Promise<TtsClip | null> {
+  const mapped = TTS_VOICE_MAP[voice] || "alloy";
   try {
-    const premium: { dataUrl: string; estMs: number } | null =
-      (await elevenLabsTTS(script, voice, opts.speed)) ||
-      (await openAITTS(script, voice, opts.speed));
-    if (premium) return premium;
-  } catch {
-    /* fall through to Pollinations */
-  }
-
-  try {
-    // 1) POST /openai — handles long scripts cleanly
-    try {
-      const res = await fetch("https://text.pollinations.ai/openai", {
+    const res = await fetchWithTimeout(
+      `${pollinationsTextBase()}/openai`,
+      {
         method: "POST",
-        signal: ctrl.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "openai-audio",
-          voice,
-          speed: opts.speed,
+          voice: mapped,
+          speed,
           messages: [
             {
               role: "user",
@@ -828,56 +832,100 @@ export async function synthesizeSpeech(opts: {
             },
           ],
         }),
-      });
-      if (res.ok) {
-        const raw = await res.text();
-        const m = raw.match(DATA_AUDIO_RE);
-        if (m) {
-          const b64 = m[1];
-          return {
-            dataUrl: `data:audio/mpeg;base64,${b64}`,
-            estMs: Math.round((b64.length * 3) / 4 / 24), // ~24KB/s mp3
-          };
-        }
-      }
-    } catch {
-      /* fall through to GET */
-    }
-
-    // 2) GET path — short scripts
-    if (encodeURIComponent(script).length < 1400) {
-      const res = await fetch(
-        `https://text.pollinations.ai/${encodeURIComponent(
-          `Read this script aloud exactly, nothing else:\n\n${script}`
-        )}?model=openai-audio&voice=${voice}`,
-        { signal: ctrl.signal }
-      );
-      if (res.ok) {
-        const ct = res.headers.get("content-type") || "";
-        if (ct.includes("audio")) {
-          const buf = Buffer.from(await res.arrayBuffer());
-          if (buf.length > 1000) {
-            return {
-              dataUrl: `data:audio/mpeg;base64,${buf.toString("base64")}`,
-              estMs: Math.round(buf.length / 24),
-            };
-          }
-        }
-        // JSON body with embedded data URL
-        const m = (await res.text()).match(DATA_AUDIO_RE);
-        if (m) {
-          return {
-            dataUrl: `data:audio/mpeg;base64,${m[1]}`,
-            estMs: Math.round((m[1].length * 3) / 4 / 24),
-          };
-        }
+      },
+      TIMEOUTS.audio,
+      "pollinations-tts"
+    );
+    if (res.ok) {
+      const raw = await res.text();
+      const m = raw.match(DATA_AUDIO_RE);
+      // This endpoint is a *chat* model asked for audio, so the reply may be
+      // prose containing a token that merely looks like a data URL. Decode and
+      // verify the container before calling it a clip; previously this path had
+      // no check at all and shipped 3-byte "MP3"s as billable successes.
+      if (m) {
+        const ok = audioFromDataUrl(`data:audio/mpeg;base64,${m[1]}`);
+        if (ok) return ok;
       }
     }
+  } catch {
+    /* try the short GET path */
+  }
 
-    return null;
+  if (encodeURIComponent(script).length >= 1400) return null;
+  try {
+    const res = await fetchWithTimeout(
+      `${pollinationsTextBase()}/${encodeURIComponent(
+        `Read this script aloud exactly, nothing else:\n\n${script}`
+      )}?model=openai-audio&voice=${mapped}`,
+      { method: "GET" },
+      TIMEOUTS.audio,
+      "pollinations-tts"
+    );
+    if (!res.ok) return null;
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("audio")) {
+      const ok = audioFromBytes(Buffer.from(await res.arrayBuffer()));
+      if (ok) return ok;
+      return null;
+    }
+    const m = (await res.text()).match(DATA_AUDIO_RE);
+    if (m) {
+      const ok = audioFromDataUrl(`data:audio/mpeg;base64,${m[1]}`);
+      if (ok) return ok;
+    }
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
+  return null;
+}
+
+/**
+ * Catalog-driven TTS. Walks the audio chain (ElevenLabs → OpenAI → Pollinations
+ * when those vendors are actually configured) so a new catalog row is enough
+ * to change order — feature routes do not hard-code vendors.
+ */
+export async function synthesizeSpeech(opts: {
+  text: string;
+  voice: string;
+  speed: number;
+  plan?: Plan;
+}): Promise<{
+  dataUrl: string;
+  estMs: number;
+  mime: string;
+  bytes: number;
+  /** Which catalog model actually produced the clip. */
+  modelId: string;
+  provider: string;
+} | null> {
+  const script = opts.text.trim().slice(0, 3500);
+  if (!script) return null;
+
+  const chain = modelChain({
+    capability: "audio",
+    plan: opts.plan === "pro" ? "pro" : "free",
+    prompt: script,
+    availableProviders: availableAudioProviders(),
+    max: 5,
+  });
+
+  for (const model of chain) {
+    try {
+      const hit =
+        model.provider === "elevenlabs"
+          ? await elevenLabsTTS(script, opts.voice, opts.speed)
+          : model.provider === "openai"
+            ? await openAITTS(script, opts.voice, opts.speed)
+            : model.provider === "pollinations"
+              ? await pollinationsTTS(script, opts.voice, opts.speed)
+              : null;
+      // Only verified audio ends the walk. A vendor that returned junk is a
+      // failure like any other, so the chain continues to the next model.
+      if (hit) return { ...hit, modelId: model.id, provider: model.provider };
+    } catch (e) {
+      console.error("[bw] tts fail", model.provider, (e as Error)?.message);
+    }
+  }
+  return null;
 }

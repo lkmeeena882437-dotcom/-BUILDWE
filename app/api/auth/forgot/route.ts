@@ -40,9 +40,11 @@ export async function POST(req: NextRequest) {
     if (user) {
       const token = createPasswordReset(user.id);
       const link = `/reset?token=${token}`;
-      console.log(`[bw] password reset link for ${email}: ${link}`);
-      // Never off a raw env flag: SHOW_DEV_LINKS=true in a production .env used
-      // to hand the reset token to whoever asked for one (audit HIGH).
+      // Reset tokens stay in the server log only while a local operator asked
+      // for them. Production must not print a live credential next to an email.
+      if (ALLOW_DEV_AUTH_LINKS) {
+        console.log(`[bw] password reset link for ${email}: ${link}`);
+      }
       const showDevLink = ALLOW_DEV_AUTH_LINKS;
       return NextResponse.json({
         ok: true,

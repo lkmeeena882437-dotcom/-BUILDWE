@@ -262,6 +262,191 @@ await check("C2: share page escapes quotes and kills javascript: links", async (
   assert.ok(robots && /noindex/.test(robots[1]), "a shared conversation is public, not indexable");
 });
 
+await check("gitignore keeps real env files out of git", async () => {
+  const { readFileSync } = await import("node:fs");
+  const gi = readFileSync(new URL("../.gitignore", import.meta.url), "utf8");
+  assert.ok(/^\.env$/m.test(gi), ".env must be ignored");
+  assert.ok(/^\.env\.\*$/m.test(gi), ".env.* must be ignored (covers .env.production, .env.development)");
+  assert.ok(/^!\.env\.example$/m.test(gi), ".env.example must stay tracked");
+  assert.ok(/^\.vercel$/m.test(gi), "Vercel CLI dumps must stay out");
+  assert.ok(/\/docs\/\*\.md/.test(gi), "operator markdown must stay untracked");
+});
+
+await check("tracked sources do not contain live tenant ids or key prefixes", async () => {
+  // Banned strings are base64 so this file cannot re-introduce them.
+  const banned = [
+    Buffer.from("eWllbnpjeWZtbXZhd2J4emRwdGI=", "base64").toString("utf8"),
+    Buffer.from("Z3NrX0VoM2c=", "base64").toString("utf8"),
+  ];
+  const { readdirSync, readFileSync, statSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const rootDir = new URL("..", import.meta.url);
+  const skip = new Set(["node_modules", ".git", ".next", "tmp", "coverage", "out", "data"]);
+  const hits = [];
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      if (skip.has(name)) continue;
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!/\.(md|ts|tsx|js|mjs|json|yml|yaml|example|sql)$/i.test(name) && name !== ".env.example") {
+        continue;
+      }
+      const text = readFileSync(full, "utf8");
+      for (const needle of banned) {
+        if (text.includes(needle)) hits.push(`${full.slice(rootDir.pathname.length)} contains a redacted secret`);
+      }
+    }
+  };
+  walk(rootDir.pathname.replace(/\/$/, "") || rootDir.pathname);
+  assert.deepEqual(hits, [], hits.join("; "));
+});
+
+await check("client modules do not import server secrets or tool prompts", async () => {
+  const { readdirSync, readFileSync, statSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const rootDir = (new URL("..", import.meta.url).pathname.replace(/\/$/, "") || "/");
+  const skip = new Set(["node_modules", ".git", ".next", "tmp", "coverage", "out", "data"]);
+  const forbiddenFrom = [
+    "@/lib/config",
+    "@/lib/crypto",
+    "@/lib/db/",
+    "@/lib/ai/providers",
+    "@/lib/ai/provider-registry",
+    "@/lib/ai/workspace-context",
+    "@/lib/tools/registry",
+    "@/lib/payments/razorpay",
+  ];
+  const hits = [];
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      if (skip.has(name)) continue;
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!/\.(ts|tsx|js|jsx)$/.test(name)) continue;
+      const rel = full.slice(rootDir.length + 1);
+      const inClientTree =
+        rel.startsWith("components/") ||
+        rel.startsWith("lib/client/") ||
+        (rel.startsWith("app/") && !rel.startsWith("app/api/"));
+      if (!inClientTree) continue;
+      const text = readFileSync(full, "utf8");
+      const isClient =
+        rel.startsWith("lib/client/") || /^\s*["']use client["']/.test(text);
+      if (!isClient) continue;
+      for (const line of text.split("\n")) {
+        if (!/\bfrom\s+["']/.test(line)) continue;
+        if (/^\s*import\s+type\s/.test(line)) continue;
+        for (const f of forbiddenFrom) {
+          if (line.includes(`"${f}`) || line.includes(`'${f}`)) {
+            hits.push(`${rel}: ${line.trim()}`);
+          }
+        }
+      }
+      for (const needle of ["AI_KEYS", "GROQ_API_KEY", "SESSION_SECRET", "SUPABASE_SERVICE_ROLE", "RAZORPAY_KEY_SECRET"]) {
+        if (text.includes(needle)) hits.push(`${rel} mentions ${needle}`);
+      }
+    }
+  };
+  walk(rootDir);
+  assert.deepEqual(hits, [], hits.join("; "));
+});
+
+await check("guessed ids do not read or write another user's rows", async () => {
+  const alice = await signup();
+  const bob = await signup();
+  assert.equal(alice.r.status, 200, `alice signup: ${alice.r.text.slice(0, 120)}`);
+  assert.equal(bob.r.status, 200, `bob signup: ${bob.r.text.slice(0, 120)}`);
+
+  const conv = await req("/api/history", {
+    method: "POST",
+    jar: alice.jar,
+    body: {
+      action: "create",
+      mode: "chat",
+      title: "alice only",
+      messages: [{ role: "user", content: "secret from alice" }],
+    },
+  });
+  assert.equal(conv.status, 200, `alice create: ${conv.text.slice(0, 120)}`);
+  const cid = conv.json.conversation.id;
+
+  const peek = await req("/api/history", {
+    method: "POST",
+    jar: bob.jar,
+    body: { action: "get", conversationId: cid },
+  });
+  assert.equal(peek.status, 404, `bob must not open alice's chat (${peek.status})`);
+  assert.equal(peek.json?.conversation, undefined, "no conversation body on a 404");
+
+  const peekGet = await req(`/api/history?id=${encodeURIComponent(cid)}`, { jar: bob.jar });
+  assert.equal(peekGet.status, 404, `bob must not GET alice's chat (${peekGet.status})`);
+  assert.equal(peekGet.json?.conversation, undefined, "GET ?id= is owner-scoped too");
+
+  const aliceGet = await req(`/api/history?id=${encodeURIComponent(cid)}`, { jar: alice.jar });
+  assert.equal(aliceGet.status, 200, `alice must GET her own chat (${aliceGet.status})`);
+  const aliceTexts = (aliceGet.json.conversation.messages || []).map((m) => m.content);
+  assert.ok(aliceTexts.includes("secret from alice"), "GET ?id= returns the full thread, not a summary");
+
+  const append = await req("/api/history", {
+    method: "POST",
+    jar: bob.jar,
+    body: {
+      action: "append",
+      conversationId: cid,
+      messages: [{ role: "user", content: "bob injecting" }],
+    },
+  });
+  assert.equal(append.status, 404, `bob must not append into alice's chat (${append.status})`);
+
+  const still = await req("/api/history", {
+    method: "POST",
+    jar: alice.jar,
+    body: { action: "get", conversationId: cid },
+  });
+  assert.equal(still.status, 200);
+  const texts = (still.json.conversation.messages || []).map((m) => m.content);
+  assert.ok(texts.includes("secret from alice"));
+  assert.equal(texts.includes("bob injecting"), false, "alice's thread must not grow bob's message");
+
+  const stolenId = await req(`/api/history?id=${encodeURIComponent(cid)}`, {
+    method: "DELETE",
+    jar: bob.jar,
+  });
+  assert.equal(stolenId.status, 404, `bob must not delete alice's chat (${stolenId.status})`);
+
+  const proj = await req("/api/projects", {
+    method: "POST",
+    jar: alice.jar,
+    body: { action: "create", name: "alice folder" },
+  });
+  assert.equal(proj.status, 200, `alice project: ${proj.text.slice(0, 120)}`);
+  const pid = proj.json.project.id;
+
+  const files = await req(`/api/projects/files?projectId=${encodeURIComponent(pid)}`, {
+    jar: bob.jar,
+  });
+  assert.equal(files.status, 404, `bob must not list alice's files (${files.status})`);
+
+  const zap = await req(`/api/projects?id=${encodeURIComponent(pid)}`, {
+    method: "DELETE",
+    jar: bob.jar,
+  });
+  assert.equal(zap.status, 404, `bob must not delete alice's project (${zap.status})`);
+
+  const listed = await req("/api/projects", { jar: alice.jar });
+  assert.equal(listed.status, 200);
+  assert.ok(
+    (listed.json.projects || []).some((p) => p.id === pid),
+    "alice's project must still be there"
+  );
+});
+
 await check("history answers, and never lies with an empty list", async () => {
   const r = await req("/api/history", { method: "GET" });
   assert.ok(
@@ -276,6 +461,60 @@ await check("history answers, and never lies with an empty list", async () => {
       "a successful history read must not also claim an error"
     );
   }
+});
+
+await check("API errors never ship stacks, secrets, or file paths to the browser", async () => {
+  const { readFileSync, readdirSync, statSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const root = new URL("..", import.meta.url).pathname.replace(/\/$/, "") || "/";
+  const leaky = [];
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (name !== "route.ts") continue;
+      const text = readFileSync(full, "utf8");
+      const rel = full.slice(root.length + 1);
+      if (/error:\s*\(e as Error\)\.message/.test(text) && !rel.includes("checkout/order")) {
+        leaky.push(`${rel} returns raw Error.message`);
+      }
+      if (/error:\s*String\(e/.test(text)) leaky.push(`${rel} stringifies a thrown value into JSON`);
+      if (/\.stack/.test(text) && /NextResponse\.json/.test(text) && text.includes("stack:")) {
+        leaky.push(`${rel} puts a stack on the JSON body`);
+      }
+    }
+  };
+  walk(join(root, "app", "api"));
+  assert.deepEqual(leaky, [], leaky.join("; "));
+
+  const client = readFileSync(new URL("../lib/client/api.ts", import.meta.url), "utf8");
+  assert.ok(client.includes("scrubErrorBody"), "the browser helper scrubs leaky JSON before throwing");
+  const pub = readFileSync(new URL("../lib/http/public-error.ts", import.meta.url), "utf8");
+  assert.ok(pub.includes("passwordHash"), "hashes never qualify as a UI sentence");
+  assert.ok(pub.includes("SERVICE_ROLE"), "nor the database key");
+
+  const forgot = readFileSync(new URL("../app/api/auth/forgot/route.ts", import.meta.url), "utf8");
+  assert.ok(
+    /if \(ALLOW_DEV_AUTH_LINKS\)/.test(forgot) && forgot.includes("console.log"),
+    "password-reset links are not logged in production"
+  );
+
+  const bad = await req("/api/auth/login", {
+    method: "POST",
+    body: { email: "not-an-email", password: "x" },
+  });
+  assert.ok([400, 422].includes(bad.status), `bad login shape was ${bad.status}`);
+  const blob = JSON.stringify(bad.json || {});
+  for (const needle of ["ENOENT", "at ", "supabase", "gsk_", "passwordHash", "/home/", "RAZORPAY_KEY"]) {
+    assert.equal(blob.includes(needle), false, `login error leaked ${needle}`);
+  }
+
+  const hist = await req("/api/history", { method: "POST", body: { action: "nope" } });
+  const hblob = JSON.stringify(hist.json || {});
+  assert.ok(!/ENOENT|stack|supabase\.co|\/var\//.test(hblob), "history errors stay generic");
 });
 
 await check("payment ledger cannot be double-redeemed", async () => {

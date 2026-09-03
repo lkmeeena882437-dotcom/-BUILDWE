@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { limitAi } from "@/lib/rate-limit/guard";
 
-import { streamChatOrCode } from "@/lib/ai/providers";
+import { runChat as streamChatOrCode } from "@/lib/ai/adapter";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import {
   composeSearchAnswer,
@@ -19,6 +19,8 @@ import { bump } from "@/lib/metrics/metrics";
 import {
   appendMessages,
   createConversation,
+  ensureConversationAccess,
+  getProject,
   isTeamMember,
   listProjectFiles,
   uid,
@@ -92,15 +94,25 @@ export async function POST(req: NextRequest) {
     // ── Web search grounding (free, no key needed) ──────────
     let searchResults: SearchResult[] = [];
     let searchReason: string | undefined;
+    let searchStatus: string | undefined;
     if (wantSearch && userText) {
       const outcome = await webSearchDetailed(userText, { max: 5 });
       searchResults = outcome.results;
+      // Reported to the client so the UI can tell "nothing matched" apart from
+      // "the search backend is down" instead of showing an unexplained blank.
+      searchStatus = outcome.status;
       // Keep the reason so an offline reply can explain the empty result set
       // instead of silently pretending the search never happened.
       if (!outcome.results.length) searchReason = outcome.reason;
     }
 
     let conversationId = (body.conversationId as string | undefined) || uid("conv");
+    if (body.conversationId) {
+      const access = await ensureConversationAccess(String(body.conversationId), session.userId);
+      if (access === "forbidden") {
+        return NextResponse.json({ error: "Not found" }, { status: 404 });
+      }
+    }
 
     // Persist best-effort — never block the AI reply if storage fails
     try {
@@ -108,12 +120,16 @@ export async function POST(req: NextRequest) {
         const teamId = body.teamId && isTeamMember(String(body.teamId), session.userId)
           ? String(body.teamId)
           : null;
+        const projectId =
+          body.projectId && getProject(String(body.projectId), session.userId)
+            ? String(body.projectId)
+            : null;
         const c = createConversation({
           userId: session.userId,
           mode: "chat",
           title: String(userText).slice(0, 48) || "Chat",
           messages: [],
-          projectId: body.projectId || null,
+          projectId,
           teamId,
         });
         conversationId = c.id;
@@ -236,6 +252,23 @@ export async function POST(req: NextRequest) {
       contextBlock
         ? `${contextBlock}\n\nAnswer using these results where relevant. Cite sources inline as [1], [2]. If the results don't cover it, say so and answer from your own knowledge.`
         : "",
+      // The user asked for a web-grounded answer and the search produced
+      // nothing. `composeSearchAnswer` only covers the offline path, so
+      // without this a LIVE model would be handed the question with no hint
+      // that the search failed — and would answer from training memory as
+      // though it had sources. Say so explicitly and ban invented citations.
+      wantSearch && !searchResults.length
+        ? [
+            "WEB SEARCH RAN AND RETURNED NO USABLE RESULTS.",
+            searchReason ? `Reason: ${searchReason}` : "",
+            "You have NO web sources for this answer. You must:",
+            "- Open by saying the web search came back empty, in one short line.",
+            "- Never invent, guess or recall a URL, citation, [1]-style marker, publication or date as if it came from that search.",
+            "- You may still answer from your own knowledge, but label it as such and flag anything that may be out of date.",
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : "",
     ].filter(Boolean);
     const apiMessages = systemParts.length
       ? [{ role: "system", content: systemParts.join("\n\n") }, ...body.messages]
@@ -286,8 +319,10 @@ export async function POST(req: NextRequest) {
     const encoder = new TextEncoder();
     let full = "";
 
+    let assistantSaved = false;
     const persistAssistant = (text: string, quality?: { label: string }) => {
-      if (!text.trim()) return;
+      if (assistantSaved || !text.trim()) return;
+      assistantSaved = true;
       try {
         appendMessages(conversationId!, session.userId, [
           {
@@ -340,6 +375,9 @@ export async function POST(req: NextRequest) {
                           host: r.host,
                         })),
                       }
+                    : {}),
+                  ...(searchStatus
+                    ? { search: { status: searchStatus, ...(searchReason ? { reason: searchReason } : {}) } }
                     : {}),
                   // What the model was actually shown. The chip and the line under the
                   // answer both read this, so the UI can never claim context it did not

@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PUBLIC_MODELS, liveModels } from "@/lib/ai/model-tiers";
-import { MODEL_CATALOG, publicModelLabel } from "@/lib/ai/models-catalog";
-import { availableProviders } from "@/lib/ai/provider-registry";
-import { availableImageProviders } from "@/lib/ai/image-providers";
+import {
+  MODEL_CATALOG,
+  publicModelLabel,
+  isKeylessProvider,
+  isProviderImplemented,
+} from "@/lib/ai/models-catalog";
+import { availableFor } from "@/lib/ai/adapter";
 import { getSessionFromRequest } from "@/lib/auth/session";
 import { byokAccepted, userProviderKeys } from "@/lib/ai/byok";
 
@@ -22,6 +26,8 @@ type SelectableRow = {
   strengths: string[];
   available: boolean;
   whyNot?: string;
+  /** True when this vendor needs no platform key. Safe to show; not an env name. */
+  keyless: boolean;
 };
 
 /**
@@ -44,24 +50,21 @@ type SelectableRow = {
 export async function GET(req: NextRequest) {
   const session = await getSessionFromRequest(req);
   const userKeys = session.kind === "user" ? userProviderKeys(session.userId) : undefined;
-  const chatProviders = availableProviders(userKeys);
-  const imageProviders = availableImageProviders();
-  const keyless = ["pollinations"];
-
-  const reachable = (provider: string, kind: "image" | "other") =>
-    keyless.includes(provider) ||
-    (kind === "image" ? imageProviders : chatProviders).includes(provider);
+  const chatProviders = availableFor("chat", userKeys);
 
   const CAPS = ["chat", "code", "image", "audio", "stt", "vision"] as const;
+  const reachable = (provider: string, cap: (typeof CAPS)[number]) =>
+    availableFor(cap, userKeys).includes(provider);
   // `router` is a capability in the catalog — the internal model that picks the others — and it is
   // deliberately not a seat anyone can choose. Named here rather than left out silently, so a new
   // capability has to be declared one way or the other (tests/tools.mjs checks that).
-  const INTERNAL_CAPS = ["router"] as const;
+  const INTERNAL_CAPS = ["router", "agent"] as const;
 
   const selectable = CAPS.reduce(
     (acc, cap) => {
       acc[cap] = MODEL_CATALOG.filter((m) => m.capability === cap).map((m) => {
-        const available = reachable(m.provider, cap === "image" ? "image" : "other");
+        const implemented = isProviderImplemented(m.provider, cap);
+        const available = implemented && reachable(m.provider, cap);
         return {
           id: m.id,
           label: m.label,
@@ -76,14 +79,18 @@ export async function GET(req: NextRequest) {
           strengths: m.strengths,
           // available = this deployment can actually call it today
           available,
+          keyless: isKeylessProvider(m.provider),
           // ...and what is missing when it cannot, because "unavailable" with no reason is a dead
           // row, and this app has made a study of those. When a user key would be enough, the row
           // says so and where to put it — the difference between a dead row and a task.
+          // Unimplemented vendors (no adapter) are not a missing-key problem.
           ...(!available
             ? {
-                whyNot: byokAccepted(m.provider)
-                  ? `No ${m.provider} key here — add yours in Settings → API keys`
-                  : `No ${m.provider} key on this deployment`,
+                whyNot: !implemented
+                  ? "Not enabled on this deployment"
+                  : byokAccepted(m.provider)
+                    ? `No ${m.provider} key here — add yours in Settings → API keys`
+                    : `No ${m.provider} key on this deployment`,
               }
             : {}),
         };

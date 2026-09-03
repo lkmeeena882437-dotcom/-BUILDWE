@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { limitAi } from "@/lib/rate-limit/guard";
-import { streamChatOrCode } from "@/lib/ai/providers";
+import { runChat as streamChatOrCode } from "@/lib/ai/adapter";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
-import { findUserById } from "@/lib/db/store";
-import { decryptSecret } from "@/lib/crypto";
+import { userProviderKeys } from "@/lib/ai/byok";
 import { bump } from "@/lib/metrics/metrics";
 
 export const runtime = "nodejs";
@@ -119,13 +118,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // BYOK keys take precedence (same as chat/code routes)
-    const owner = session.kind === "user" ? findUserById(session.userId) : null;
-    const byok = owner?.byok || {};
-    const userKeys = {
-      groq: byok.groq ? decryptSecret(byok.groq) : undefined,
-      openrouter: byok.openrouter ? decryptSecret(byok.openrouter) : undefined,
-    };
+    // BYOK keys take precedence. This used to decrypt `groq` and `openrouter`
+    // by hand — the fourth copy of that pair, and the one that silently stopped
+    // matching when the accepted set changed. `userProviderKeys` is the single
+    // resolver chat, code and the agent already share, so a key the user saves
+    // in Settings cannot work everywhere except here.
+    const userKeys = userProviderKeys(session.userId);
 
     const spec = ACTIONS[action];
     const { stream, live } = await streamChatOrCode({

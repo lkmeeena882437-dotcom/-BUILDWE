@@ -2,7 +2,14 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createUser, migrateGuestData, publicUser } from "@/lib/db/store";
+import {
+  adoptGuestConversations,
+  createUser,
+  hydrateAccountByEmail,
+  migrateGuestData,
+  publicUser,
+  waitForRemoteBoot,
+} from "@/lib/db/store";
 import {
   clearGuestCookie,
   setSessionCookie,
@@ -41,6 +48,8 @@ export async function POST(req: NextRequest) {
     const guestId = verifyGuestCookie(req.cookies.get("bw_guest")?.value);
 
     const body = parsed.data;
+    await waitForRemoteBoot();
+    await hydrateAccountByEmail(body.email);
     const user = createUser({
       email: body.email,
       password: body.password,
@@ -53,6 +62,7 @@ export async function POST(req: NextRequest) {
     if (guestId) {
       try {
         migrated = migrateGuestData(guestId, user.id);
+        await adoptGuestConversations(guestId, user.id);
       } catch (err) {
         console.error("[bw] guest migration", err);
       }
@@ -81,7 +91,7 @@ export async function POST(req: NextRequest) {
       : msg.includes("already")
         ? "Email already registered. Try logging in."
         : msg.includes("Invalid") || msg.includes("email")
-          ? "Enter a valid email and password (min 6 characters)."
+          ? "Enter a valid email and password (min 8 characters)."
           : "Couldn’t create account. Please try again.";
     const status = msg.includes("already") ? 409 : busy ? 503 : 400;
     console.error("[bw] register", e);

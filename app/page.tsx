@@ -52,6 +52,7 @@ import {
   Terminal,
   Printer,
   Users,
+  User,
   UserPlus,
   Chrome,
   Github,
@@ -566,6 +567,11 @@ function Dashboard() {
   const [byokNote, setByokNote] = useState("");
 
   const abortRef = useRef<AbortController | null>(null);
+  /** Bumped when the reader leaves a stream so late tokens cannot rewrite another chat. */
+  const streamEpochRef = useRef(0);
+  /** Bumped on every history click so a slower load cannot overwrite a later one. */
+  const openEpochRef = useRef(0);
+  const convIdRef = useRef<string | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -662,8 +668,12 @@ function Dashboard() {
   const refreshHistory = useCallback(async () => {
     try {
       const h = await fetchHistory();
-      setHistory(
-        h.conversations.map((c) => ({
+      const seen = new Set<string>();
+      const rows: HistItem[] = [];
+      for (const c of h.conversations) {
+        if (!c?.id || seen.has(c.id)) continue;
+        seen.add(c.id);
+        rows.push({
           id: c.id,
           title: c.title,
           mode: c.mode,
@@ -672,10 +682,11 @@ function Dashboard() {
           projectId: (c as { projectId?: string | null }).projectId ?? null,
           teamId: (c as { teamId?: string | null }).teamId ?? null,
           mine: (c as { mine?: boolean }).mine ?? true,
-        }))
-      );
+        });
+      }
+      setHistory(rows);
     } catch {
-      /* */
+      /* keep the rail as-is — an empty list here would look like history was deleted */
     }
   }, []);
 
@@ -821,31 +832,73 @@ function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // OAuth redirects: /?oauth=setup|failed|unknown or /?welcome=1
+  // Deep links the auth sheet actually honours. /?welcome=1 used to land back on the
+  // marketing page (and stash the toast in the *teams* sheet, which is closed), so a
+  // finished Google/GitHub login looked like a no-op. /?auth=login|register is what
+  // "Log in & buy" and the reset page point at — without a reader those links were
+  // just "/". Guest mode stays: we do not bounce a visitor to a login wall.
   const oauthTried = useRef(false);
   useEffect(() => {
     if (oauthTried.current) return;
     oauthTried.current = true;
     const q = new URLSearchParams(window.location.search);
     const oauth = q.get("oauth");
+    const auth = (q.get("auth") || "").toLowerCase();
+    const wantsSignup =
+      auth === "register" || auth === "signup" || q.get("signup") === "1" || q.get("register") === "1";
+    const wantsLogin = auth === "login" || q.get("login") === "1";
+
+    const stripAuthQuery = () => {
+      const url = new URL(window.location.href);
+      for (const key of ["welcome", "oauth", "auth", "login", "signup", "register", "provider"]) {
+        url.searchParams.delete(key);
+      }
+      const next = url.pathname + url.search + url.hash;
+      window.history.replaceState({}, "", next);
+    };
+
     if (q.get("welcome")) {
-      window.history.replaceState({}, "", window.location.pathname);
-      refreshMe();
-      setTeamNote("Logged in ✓ — welcome to your workspace");
-      setTimeout(() => setTeamNote(""), 3500);
+      stripAuthQuery();
+      void refreshMe();
+      setView("app");
+      setShareNote("Logged in ✓ — welcome to your workspace");
+      setTimeout(() => setShareNote(""), 3500);
       return;
     }
-    if (!oauth) return;
-    window.history.replaceState({}, "", window.location.pathname);
-    setAuthTab("login");
-    setModal("auth");
-    setAuthNotice(
-      oauth === "setup"
-        ? "Social sign-in needs provider keys on the server — use email for now (it works great)."
-        : "Sign-in with that provider didn't complete. Try again or use email."
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (oauth) {
+      stripAuthQuery();
+      setAuthTab("login");
+      setModal("auth");
+      setAuthNotice(
+        oauth === "setup"
+          ? "Social sign-in needs provider keys on the server — use email for now (it works great)."
+          : "Sign-in with that provider didn't complete. Try again or use email."
+      );
+      return;
+    }
+    if (wantsSignup) {
+      stripAuthQuery();
+      setAuthTab("register");
+      setModal("auth");
+      return;
+    }
+    if (wantsLogin) {
+      stripAuthQuery();
+      setAuthTab("login");
+      setModal("auth");
+    }
+  }, [refreshMe]);
+
+  // A signed-in cookie belongs in the workspace. Refreshing / used to dump a
+  // logged-in person back on the marketing page (the header said "Open workspace"
+  // so the session was there, the view was not). Guests stay on the landing page.
+  // The ref is so tapping the logo to go home is not immediately bounced back.
+  const landedInWorkspace = useRef(false);
+  useEffect(() => {
+    if (me?.kind !== "user" || landedInWorkspace.current) return;
+    landedInWorkspace.current = true;
+    setView("app");
+  }, [me?.kind]);
 
   const grow = () => {
     const el = taRef.current;
@@ -871,12 +924,22 @@ function Dashboard() {
     if (m !== "audio") setShowVoices(false);
   };
 
+  const abandonStream = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    streamEpochRef.current += 1;
+    setStreaming(false);
+  };
+
   const newChat = () => {
-    // The half-written message stays with the chat it was written in.
+    // Local composer only — never DELETE / overwrite a stored thread.
     draftsRef.current.set(convId || "__new", input);
+    abandonStream();
+    convIdRef.current = null;
     setConvId(null);
     setMessages([]);
     setInput("");
+    setError("");
     setCodePanel("// generated code lands here\n");
     setModelTag("");
     setView("app");
@@ -892,31 +955,42 @@ function Dashboard() {
 
   const openHist = async (id: string) => {
     draftsRef.current.set(convId || "__new", input);
+    abandonStream();
+    const streamAtOpen = streamEpochRef.current;
+    const epoch = ++openEpochRef.current;
+    convIdRef.current = id;
+    setConvId(id);
+    setError("");
+    setMessages([]);
+    setView("app");
+    setDrawer(false);
     try {
       const c = await loadConversation(id);
+      if (epoch !== openEpochRef.current) return;
+      if (streamEpochRef.current !== streamAtOpen) return;
+      const seen = new Set<string>();
+      const next: Msg[] = [];
+      for (const m of c.messages || []) {
+        if (m.role !== "user" && m.role !== "assistant") continue;
+        if (!m.id || seen.has(m.id)) continue;
+        seen.add(m.id);
+        next.push({
+          id: m.id,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          sources: m.meta?.sources,
+          context: m.meta?.context as Msg["context"],
+          understood: m.meta?.understood,
+          ...(m.meta?.qualityLabel ? { quality: { label: m.meta.qualityLabel, notes: [] } } : {}),
+        });
+      }
       setConvId(c.id);
-      setMessages(
-        (c.messages || [])
-          .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
-          .map((m: { id: string; role: string; content: string; meta?: { sources?: Msg["sources"]; context?: Msg["context"]; understood?: string; qualityLabel?: "good" | "review" } }) => ({
-            id: m.id,
-            role: m.role as "user" | "assistant",
-            content: m.content,
-            sources: m.meta?.sources,
-            context: m.meta?.context as Msg["context"],
-            understood: m.meta?.understood,
-            ...(m.meta?.qualityLabel ? { quality: { label: m.meta.qualityLabel, notes: [] } } : {}),
-          }))
-      );
+      convIdRef.current = c.id;
+      setMessages(next);
       setMode((c.mode as Mode) || "chat");
       setConvProjectId((c as { projectId?: string | null }).projectId ?? null);
       setConvTeamId((c as { teamId?: string | null }).teamId ?? null);
       setCanvasTab("code");
-      setView("app");
-      setDrawer(false);
-      // What was typed for *this* chat comes back, and the file the previous chat was
-      // reading does not travel with the person: the chip is about this project's files,
-      // and a stale one would spend the context budget on a file nobody meant to send.
       setInput(draftsRef.current.get(c.id) || "");
       setChatCtxPath(null);
       const last = [...(c.messages || [])].reverse().find((m: { role: string }) => m.role === "assistant");
@@ -929,6 +1003,7 @@ function Dashboard() {
         }
       }
     } catch (e) {
+      if (epoch !== openEpochRef.current) return;
       setError((e as Error).message);
     }
   };
@@ -2016,6 +2091,7 @@ function Dashboard() {
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    const epoch = ++streamEpochRef.current;
 
     try {
       let acc = "";
@@ -2030,7 +2106,7 @@ function Dashboard() {
                 ...messages.map((m) => ({ role: m.role, content: m.content })),
                 { role: "user", content: effectiveText },
               ],
-          conversationId: convId,
+          conversationId: convIdRef.current ?? convId,
           webSearch: useSearch,
           projectId: convProjectId ?? activeProject ?? null,
           teamId: convTeamId ?? activeTeam ?? null,
@@ -2044,6 +2120,7 @@ function Dashboard() {
             : {}),
         },
         (ev) => {
+          if (epoch !== streamEpochRef.current) return;
           if (ev.meta && typeof ev.meta === "object") {
             const meta = ev.meta as {
               conversationId?: string;
@@ -2055,7 +2132,13 @@ function Dashboard() {
               clarifier?: string;
               fallbackNote?: string;
             };
-            if (meta.conversationId) setConvId(meta.conversationId);
+            if (meta.conversationId) {
+              const cur = convIdRef.current;
+              if (cur === null || cur === meta.conversationId) {
+                convIdRef.current = meta.conversationId;
+                setConvId(meta.conversationId);
+              }
+            }
             if (meta.model) setModelTag(String(meta.model));
             if (
               meta.understood ||
@@ -2141,17 +2224,19 @@ function Dashboard() {
         },
         ctrl.signal
       );
-      refreshMe();
-      refreshHistory();
-      // keep a version snapshot for the canvas
-      if (resolved === "code") {
-        const blocks = extractCode(acc);
-        if (blocks.length) {
-          pushCanvasVersion(blocks[blocks.length - 1].code, blocks[blocks.length - 1].lang);
+      if (epoch === streamEpochRef.current) {
+        refreshMe();
+        refreshHistory();
+        // keep a version snapshot for the canvas
+        if (resolved === "code") {
+          const blocks = extractCode(acc);
+          if (blocks.length) {
+            pushCanvasVersion(blocks[blocks.length - 1].code, blocks[blocks.length - 1].lang);
+          }
         }
       }
     } catch (e) {
-      if ((e as Error).name !== "AbortError") {
+      if ((e as Error).name !== "AbortError" && epoch === streamEpochRef.current) {
         const err = e as Error & { code?: string; hint?: string };
         // show a useful error + recovery actions instead of a dead bubble
         setMessages((ms) =>
@@ -2175,11 +2260,13 @@ function Dashboard() {
         );
       }
     } finally {
-      setStreaming(false);
-      abortRef.current = null;
-      setStreamPhase("");
-      streamPhaseRef.current = "";
-      if (phaseTimer.current) clearTimeout(phaseTimer.current);
+      if (epoch === streamEpochRef.current) {
+        setStreaming(false);
+        abortRef.current = null;
+        setStreamPhase("");
+        streamPhaseRef.current = "";
+        if (phaseTimer.current) clearTimeout(phaseTimer.current);
+      }
     }
   };
 
@@ -2206,17 +2293,43 @@ function Dashboard() {
     }
   };
 
+  const openAuth = (tab: "login" | "register") => {
+    setAuthTab(tab);
+    setAuthErr("");
+    setAuthNotice("");
+    setModal("auth");
+  };
+
   const onAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthErr("");
     setAuthBusy(true);
     try {
-      if (authTab === "login") await apiLogin(email, password);
-      else await apiRegister(email, password, name || undefined);
-      await refreshMe();
+      // Autofill often skips React onChange. Read the named fields from the
+      // form so a filled-but-"empty" email still reaches POST /api/auth/login.
+      const form = e.currentTarget as HTMLFormElement;
+      const fd = new FormData(form);
+      const emailVal = String(fd.get("email") || email).trim();
+      const passwordVal = String(fd.get("password") || password);
+      const nameVal = String(fd.get("name") || name);
+      setEmail(emailVal);
+      setPassword(passwordVal);
+      if (authTab === "register") setName(nameVal);
+      if (authTab === "login") await apiLogin(emailVal, passwordVal);
+      else await apiRegister(emailVal, passwordVal, nameVal || undefined);
+      const m = await fetchMe();
+      if (m.kind !== "user") throw new Error("Invalid email or password.");
+      setMe(m);
       await refreshHistory();
       setModal(null);
+      setAuthNotice("");
       setPassword("");
+      setDrawer(false);
+      // Closing the sheet on the marketing page used to look like a dead click:
+      // the header still said "Log in" and nothing else changed.
+      setView("app");
+      setShareNote(authTab === "register" ? "Account created ✓ — this workspace is yours" : "Logged in ✓");
+      setTimeout(() => setShareNote(""), 3500);
     } catch (err) {
       setAuthErr((err as Error).message);
     } finally {
@@ -2231,8 +2344,7 @@ function Dashboard() {
    */
   const goProFromPlans = () => {
     if (!loggedIn) {
-      setAuthTab("register");
-      setModal("auth");
+      openAuth("register");
       return;
     }
     setModal(null);
@@ -2243,7 +2355,13 @@ function Dashboard() {
 
   const doLogout = async () => {
     await apiLogout();
+    abandonStream();
+    convIdRef.current = null;
+    setConvId(null);
+    setMessages([]);
+    setHistory([]);
     await refreshMe();
+    await refreshHistory();
     setModal(null);
   };
 
@@ -2330,12 +2448,23 @@ function Dashboard() {
             <Link href="/status" className="hover:opacity-80">Status</Link>
           </nav>
           <div className="flex items-center gap-2">
-            <Btn variant="ghost" size="sm" onClick={() => { setAuthTab("login"); setModal("auth"); }}>
-              Log in
-            </Btn>
-            <Btn size="sm" onClick={() => setView("app")}>
-              Enter app <ArrowRight className="h-3.5 w-3.5" />
-            </Btn>
+            {loggedIn ? (
+              <Btn size="sm" onClick={() => setView("app")}>
+                Open workspace <ArrowRight className="h-3.5 w-3.5" />
+              </Btn>
+            ) : (
+              <>
+                <Btn variant="ghost" size="sm" onClick={() => openAuth("login")}>
+                  Log in
+                </Btn>
+                <Btn variant="ghost" size="sm" onClick={() => openAuth("register")}>
+                  Sign up
+                </Btn>
+                <Btn size="sm" className="hidden sm:inline-flex" onClick={() => setView("app")}>
+                  Enter app <ArrowRight className="h-3.5 w-3.5" />
+                </Btn>
+              </>
+            )}
           </div>
         </header>
 
@@ -2477,9 +2606,10 @@ function Dashboard() {
             name={name}
             setName={setName}
             err={authErr}
+            notice={authNotice}
             busy={authBusy}
             onSubmit={onAuth}
-            onClose={() => setModal(null)}
+            onClose={() => { setModal(null); setAuthNotice(""); }}
           />
         )}
         {modal === "plans" && (
@@ -2742,7 +2872,7 @@ function Dashboard() {
                   </p>
                   <button
                     type="button"
-                    onClick={() => { setAuthTab("register"); setModal("auth"); }}
+                    onClick={() => openAuth("register")}
                     className="mt-1.5 w-full rounded-xl py-1.5 text-[11px] font-semibold text-white"
                     style={{ background: "var(--accent)" }}
                   >
@@ -2865,7 +2995,7 @@ function Dashboard() {
               onSignOut={doLogout}
             />
           ) : (
-            <button type="button" onClick={() => { setAuthTab("login"); setModal("auth"); }} className={clsx("flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm font-medium", sidebarOpen ? "px-3" : "justify-center")} style={{ background: "var(--ink)", color: "var(--bg)" }}>
+            <button type="button" onClick={() => openAuth("login")} className={clsx("flex w-full items-center gap-2.5 rounded-2xl py-2.5 text-sm font-medium", sidebarOpen ? "px-3" : "justify-center")} style={{ background: "var(--ink)", color: "var(--bg)" }}>
               <LogIn className="h-4 w-4" />
               {sidebarOpen && "Log in"}
             </button>
@@ -3767,6 +3897,11 @@ function Dashboard() {
               <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm" style={{ color: "var(--muted)" }} onClick={() => { setDrawer(false); setModal("settings"); }}><Settings className="h-4 w-4" /> Settings</button>
               <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm" style={{ color: "var(--muted)" }} onClick={() => { setDrawer(false); setModal("creations"); }}><Layers className="h-4 w-4" /> Creations</button>
               <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium" style={{ background: "var(--accent-soft)", color: "var(--accent)" }} onClick={() => { setDrawer(false); setModal("plans"); }}><Zap className="h-4 w-4" /> Plans</button>
+              {loggedIn ? (
+                <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm" style={{ color: "var(--muted)" }} onClick={() => { setDrawer(false); setModal("profile"); }}><User className="h-4 w-4" /> Account</button>
+              ) : (
+                <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium" style={{ background: "var(--ink)", color: "var(--bg)" }} onClick={() => { setDrawer(false); openAuth("login"); }}><LogIn className="h-4 w-4" /> Log in</button>
+              )}
             </div>
           </div>
         </div>
@@ -3803,7 +3938,7 @@ function Dashboard() {
             history,
             activeMode: mode,
             running: agentBusy ? "agent" : streaming ? "answer" : null,
-            signedIn: Boolean(me),
+            signedIn: me?.kind === "user",
           }}
           onPick={pickPaletteRow}
         />
@@ -3978,7 +4113,7 @@ function Dashboard() {
           title="Settings"
         >
           <div className="space-y-1">
-            <button type="button" onClick={() => setModal(loggedIn ? "profile" : "auth")} className="mb-2 flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left" style={{ borderColor: "var(--border)", background: "var(--secondary)" }}>
+            <button type="button" onClick={() => (loggedIn ? setModal("profile") : openAuth("login"))} className="mb-2 flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left" style={{ borderColor: "var(--border)", background: "var(--secondary)" }}>
               <span className="flex h-10 w-10 items-center justify-center rounded-full text-xs font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{(me?.name || "G")[0]}</span>
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium">{me?.name || "Guest"}</span>
@@ -4103,7 +4238,7 @@ function Dashboard() {
                   )}
                 </>
               ) : (
-                <button type="button" onClick={() => setModal("auth")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><LogIn className="h-4 w-4 opacity-70" /> Log in</button>
+                <button type="button" onClick={() => openAuth("login")} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium"><LogIn className="h-4 w-4 opacity-70" /> Log in</button>
               )}
             </div>
             <p className="px-1 pt-2 text-[10px]" style={{ color: "var(--soft)" }}>Now: {dark ? "Dark" : "Light"}{themePref === "system" ? " (system)" : ""}</p>
@@ -4458,23 +4593,31 @@ function AuthSheet(props: {
               ]}
             />
           </div>
-          <form onSubmit={props.onSubmit} className="space-y-3">
+          <form onSubmit={props.onSubmit} className="space-y-3" aria-busy={props.busy}>
             {props.tab === "register" && (
-              <input value={props.name} onChange={(e) => props.setName(e.target.value)} placeholder="Name" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+              <input name="name" value={props.name} onChange={(e) => props.setName(e.target.value)} placeholder="Name" disabled={props.busy} className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
             )}
-            <input type="email" required value={props.email} onChange={(e) => props.setEmail(e.target.value)} placeholder="Email" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
-            <input type="password" required minLength={6} value={props.password} onChange={(e) => props.setPassword(e.target.value)} placeholder="Password (min 6)" className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+            <input name="email" type="email" required autoComplete="email" data-autofocus value={props.email} onChange={(e) => props.setEmail(e.target.value)} placeholder="Email" disabled={props.busy} className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
+            <input name="password" type="password" required minLength={props.tab === "register" ? 8 : 1} autoComplete={props.tab === "register" ? "new-password" : "current-password"} value={props.password} onChange={(e) => props.setPassword(e.target.value)} placeholder={props.tab === "register" ? "Password (min 8)" : "Password"} disabled={props.busy} className="h-11 w-full rounded-2xl border px-3 text-sm outline-none" style={{ borderColor: "var(--border)", background: "var(--bg)" }} />
             {props.tab === "login" && (
-              <button type="button" className="text-xs font-semibold" style={{ color: "var(--accent)" }} onClick={() => setView("forgot")}>
+              <button type="button" className="text-xs font-semibold" style={{ color: "var(--accent)" }} onClick={() => setView("forgot")} disabled={props.busy}>
                 Forgot password?
               </button>
             )}
-            {(props.err || props.notice) && (
-              <p className="text-xs" style={{ color: "var(--err)" }}>{props.err || props.notice}</p>
-            )}
+            {props.err ? (
+              <p className="text-xs" style={{ color: "var(--err)" }} role="alert">{props.err}</p>
+            ) : props.notice ? (
+              <p className="text-xs" style={{ color: "var(--muted)" }}>{props.notice}</p>
+            ) : null}
             <Btn type="submit" className="w-full" size="lg" disabled={props.busy}>
               {props.busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              {props.busy ? "Just a sec…" : props.tab === "login" ? "Log in" : "Sign up free"}
+              {props.busy
+                ? props.tab === "login"
+                  ? "Logging in…"
+                  : "Creating account…"
+                : props.tab === "login"
+                  ? "Log in"
+                  : "Sign up free"}
             </Btn>
           </form>
           <p className="mt-3 text-center text-[11px]" style={{ color: "var(--soft)" }}>

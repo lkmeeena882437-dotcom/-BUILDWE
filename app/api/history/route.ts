@@ -7,9 +7,10 @@ import {
   appendMessages,
   createConversation,
   deleteConversation,
+  getVisibleConversation,
+  hydrateConversationsForUser,
   isTeamMember,
-  listGenerations,
-  listVisibleConversations,
+  listVisibleConversationSummaries,
   uid,
 } from "@/lib/db/store";
 
@@ -23,19 +24,25 @@ export async function GET(req: NextRequest) {
     if (!rl.ok) {
       return NextResponse.json({ error: rl.error, hint: rl.hint }, { status: 429 });
     }
-    const conversations = listVisibleConversations(session.userId).map((c) => ({
-      id: c.id,
-      title: c.title,
-      mode: c.mode,
-      updatedAt: c.updatedAt,
-      preview: c.messages[c.messages.length - 1]?.content?.slice(0, 100) || "",
-      messageCount: c.messages.length,
-      projectId: c.projectId ?? null,
-      teamId: c.teamId ?? null,
-      mine: c.userId === session.userId,
-    }));
-    const generations = listGenerations(session.userId);
-    const res = NextResponse.json({ conversations, generations });
+    await hydrateConversationsForUser(session.userId);
+    const id = new URL(req.url).searchParams.get("id");
+    if (id) {
+      const conversation = getVisibleConversation(id, session.userId);
+      if (!conversation) {
+        return NextResponse.json({ error: "Not found" }, { status: 404 });
+      }
+      const res = NextResponse.json({ conversation });
+      attachGuestCookie(res, session.userId);
+      return res;
+    }
+    const listed = listVisibleConversationSummaries(session.userId);
+    // Generations live on GET /api/ai/generations — the workspace never reads
+    // them from this payload, and shipping every image on every mount is waste.
+    const res = NextResponse.json({
+      conversations: listed.conversations,
+      total: listed.total,
+      capped: listed.capped,
+    });
     attachGuestCookie(res, session.userId);
     return res;
   } catch (e) {
@@ -90,8 +97,12 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === "get" && body.conversationId) {
-      const all = listVisibleConversations(session.userId);
-      const c = all.find((x) => x.id === body.conversationId);
+      const id = String(body.conversationId);
+      let c = getVisibleConversation(id, session.userId);
+      if (!c) {
+        await hydrateConversationsForUser(session.userId);
+        c = getVisibleConversation(id, session.userId);
+      }
       if (!c) return NextResponse.json({ error: "Not found" }, { status: 404 });
       return NextResponse.json({ conversation: c });
     }
@@ -111,7 +122,10 @@ export async function DELETE(req: NextRequest) {
     const session = await getSessionFromRequest(req);
     const id = new URL(req.url).searchParams.get("id");
     if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
-    deleteConversation(id, session.userId);
+    const removed = deleteConversation(id, session.userId);
+    if (!removed) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
     return NextResponse.json({ ok: true });
   } catch (e) {
     console.error("[bw] history DELETE", e);

@@ -149,11 +149,18 @@ export async function POST(req: NextRequest) {
       // Seats ride in the order's own notes; a `subscription.charged` event carries
       // none, and must not quietly shrink an account that already paid for four.
       const noteSeats = normalizeSeats(entity?.notes?.seats);
+      const productSeats = normalizeSeats(String(entity?.notes?.product || "").split(":")[2]);
+      const seats =
+        entity?.notes?.seats !== undefined && entity?.notes?.seats !== null && entity?.notes?.seats !== ""
+          ? noteSeats
+          : productSeats.error
+            ? noteSeats
+            : productSeats;
       const fields =
-        noteSeats.error || noteSeats.seats <= 1
+        seats.error || seats.seats <= 1
           ? { plan: "pro" as const }
-          : { plan: "pro" as const, planSeats: noteSeats.seats };
-      if (user.plan !== "pro" || (noteSeats.seats > 1 && user.planSeats !== noteSeats.seats)) {
+          : { plan: "pro" as const, planSeats: seats.seats };
+      if (user.plan !== "pro" || (seats.seats > 1 && user.planSeats !== seats.seats)) {
         updateUser(userId, fields);
       }
 

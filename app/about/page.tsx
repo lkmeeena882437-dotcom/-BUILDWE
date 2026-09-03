@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/about" },
   title: "About — BUILDWE.ONLINE",
   description:
     "BUILDWE is the free AI platform for chat, code, image, and audio — one workspace for everyone.",

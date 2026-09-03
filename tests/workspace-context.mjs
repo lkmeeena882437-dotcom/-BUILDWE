@@ -489,7 +489,11 @@ try {
     assert.equal(route.includes("fileEditInstruction"), false, "telling Code mode to answer in a fence would break the canvas flow it already has");
     assert.ok(route.includes('purpose: "code"'), "it keeps the project block, with the open file emphasised");
     assert.ok(route.includes("parseContextInput(body.context)"), "and the same shape validation");
-    assert.ok(route.includes('context: { attached: true, ...contextStats }'), "and reports what it attached");
+    // Update 15 moved this behind `contextMeta`, which reports the attached
+    // stats AND the "asked for a project, got nothing" case. The rule is
+    // unchanged: whatever it sends, it tells the UI.
+    assert.ok(route.includes("attached: true as const, ...contextStats"), "it still reports what it attached");
+    assert.ok(route.includes("context: contextMeta"), "and the meta frame carries it");
     assert.equal(
       codeOnly(src("lib/db/store.ts")).includes("buildProjectContext"),
       false,

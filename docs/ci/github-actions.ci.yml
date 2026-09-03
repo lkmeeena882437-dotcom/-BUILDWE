@@ -85,5 +85,29 @@ jobs:
         run: npm run test:workspace
       - name: creations and public shares
         run: npm run test:artifacts
+      - name: image generation end to end (refund, fallback, isolation)
+        run: npm run test:image
+      - name: voice generation end to end (verified audio, refund, fallback)
+        run: npm run test:voice
+      - name: coding feature end to end (stream, context, sandbox, isolation)
+        run: npm run test:code
+
+      - name: coding agent end to end (tools, fallback, credits, isolation)
+        run: npm run test:agent-e2e
+
+      - name: web search end to end (parsing, sources, fallback, secrets)
+        run: npm run test:search
+
+      - name: AI provider and routing system (catalog routing, STT, credits)
+        run: npm run test:routing
+
+      - name: core provider activation (live model ids, availability, fallback)
+        run: npm run test:providers
+
+      - name: database and Supabase hardening (RLS, isolation, injection)
+        run: npm run test:db-security
+
+      - name: chat model chain — reachability, routing, fallback cooldown
+        run: npm run test:chat-model
       - name: the README's API map against the routes that exist
         run: npm run test:docs

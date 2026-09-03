@@ -16,16 +16,28 @@
 
 # misc
 .DS_Store
-*.pem
 
 # debug
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# env files
+# ── secrets ────────────────────────────────────────────────────────────────
+# Real values live in .env.local (or the host's env). Only .env.example is tracked.
 .env
-.env*.local
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.p8
+id_rsa
+id_ed25519
+credentials.json
+serviceAccount*.json
+.git-askpass.sh
+.git-credentials
 
 # typescript
 *.tsbuildinfo
@@ -34,24 +46,19 @@ next-env.d.ts
 # local artifacts
 buildwe-main.bundle
 
-
-.git-askpass.sh
-.git-credentials
-
-
 # test scratch: os.tmpdir() resolves to ./tmp when TMPDIR is relative,
 # and each disposable dev server puts its build cache there
 /tmp
 
-# free local db
+# free local db / generated install secrets
 /data
 *.db
-.env.local
+
+# Vercel CLI pull dumps production env into .env.local — keep the whole dir out
+.vercel
 
 # ── internal working notes, kept on disk but never published ────────────────
-# This repo is public. Audit findings, competitor analysis, gap lists and the
-# step tracker describe what the product does not do yet - that is a roadmap for
-# someone looking for a soft spot, not documentation. The files stay in the
-# workspace (docs/internal/) so the plan can keep being followed; they are simply
-# not tracked.
+# This repo is public. Operator runbooks, env cookbooks, and working notes stay
+# on disk so a deploy can still follow them; they are not part of the clone.
 /docs/internal/
+/docs/*.md

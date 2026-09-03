@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { SitePage, Section } from "@/components/SitePage";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/contact" },
   title: "Contact",
   description: "Reach the BUILDWE team — support, privacy, security, and partnerships.",
 };

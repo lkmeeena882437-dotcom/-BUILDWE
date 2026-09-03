@@ -14,6 +14,8 @@
  * that has not set it up yet.
  */
 
+import { assertSafeUrl } from "@/lib/net/ssrf";
+
 const BUCKET = "buildwe-media";
 
 function cfg() {
@@ -108,6 +110,12 @@ export async function mirrorRemoteImage(
 ): Promise<string> {
   if (!mediaStorageEnabled()) return remoteUrl;
   try {
+    // This is the one outbound fetch that used to skip the SSRF guard every
+    // other user-influenced fetch goes through. The URL is provider-controlled
+    // today, so this is defence in depth rather than a live hole — but a future
+    // adapter that echoes a caller-supplied URL would otherwise turn this into
+    // a metadata-service reader. Resolved-address checks, every redirect hop.
+    await assertSafeUrl(remoteUrl);
     const res = await fetch(remoteUrl, {
       cache: "no-store",
       signal: AbortSignal.timeout(25_000),

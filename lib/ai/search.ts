@@ -68,10 +68,25 @@ export type SearchOutcome = {
   reason?: string;
 };
 
-const ENDPOINTS = [
+const DEFAULT_ENDPOINTS = [
   "https://html.duckduckgo.com/html/",
   "https://lite.duckduckgo.com/lite/",
 ];
+
+/**
+ * Server-side only. Mirrors the `AI_BASE_URL_*` convention used for model
+ * providers: lets a deployment point search at its own egress proxy, and lets
+ * the tests exercise the real fetch/parse path offline. Never read on the
+ * client, and never echoed back in a response.
+ */
+function endpoints(): string[] {
+  const override = (process.env.SEARCH_BASE_URL || "").trim();
+  if (!override) return DEFAULT_ENDPOINTS;
+  return override
+    .split(",")
+    .map((u) => u.trim())
+    .filter((u) => /^https?:\/\//.test(u));
+}
 
 function parseResults(html: string, max: number): SearchResult[] {
   const results: SearchResult[] = [];
@@ -129,7 +144,11 @@ export async function webSearchDetailed(
   let lastStatus: SearchStatus = "unreachable";
   let lastReason = "Web search is unreachable from the server right now.";
 
-  for (const endpoint of ENDPOINTS) {
+  const list = endpoints();
+  if (!list.length) {
+    return { results: [], status: "unreachable", reason: lastReason };
+  }
+  for (const endpoint of list) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {

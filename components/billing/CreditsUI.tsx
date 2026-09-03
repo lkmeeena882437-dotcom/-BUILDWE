@@ -575,7 +575,7 @@ async function startPackCheckout(
 ): Promise<{ granted?: boolean; note?: string }> {
   try {
     if (!signedIn) {
-      router.push("/");
+      router.push("/?auth=register");
       return {
         note: "Create a free account first — then top up in one tap.",
       };

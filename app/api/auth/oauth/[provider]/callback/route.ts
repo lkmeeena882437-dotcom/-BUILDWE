@@ -5,7 +5,13 @@ import {
   signSession,
 } from "@/lib/auth/session";
 import { verifyGuestCookie } from "@/lib/auth/guest";
-import { findOrCreateOauthUser, migrateGuestData } from "@/lib/db/store";
+import {
+  adoptGuestConversations,
+  findOrCreateOauthUser,
+  hydrateAccountByEmail,
+  migrateGuestData,
+  waitForRemoteBoot,
+} from "@/lib/db/store";
 import { OAUTH, isOAuthProvider } from "@/lib/auth/oauth-endpoints";
 
 export const runtime = "nodejs";
@@ -133,6 +139,8 @@ export async function GET(
   if (!profile) return home("?oauth=failed");
 
   try {
+    await waitForRemoteBoot();
+    if (profile.email) await hydrateAccountByEmail(profile.email);
     const user = findOrCreateOauthUser({
       provider: p,
       oauthId: profile.oauthId,
@@ -145,6 +153,7 @@ export async function GET(
     if (guestId) {
       try {
         migrateGuestData(guestId, user.id);
+        await adoptGuestConversations(guestId, user.id);
       } catch (err) {
         console.error("[bw] guest migration (oauth)", err);
       }

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { SitePage, Section } from "@/components/SitePage";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/help" },
   title: "Help & FAQ",
   description: "Answers to common BUILDWE questions — free plan, guest mode, limits, keys, mobile, deletion.",
 };

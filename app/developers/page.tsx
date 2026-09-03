@@ -101,7 +101,7 @@ export default function DevelopersPage() {
 
           {needAuth && (
             <p className="mt-3 text-sm" style={{ color: "var(--muted)" }}>
-              <Link href="/" className="font-semibold" style={{ color: "var(--accent)" }}>Log in</Link> from the workspace first, then manage keys here.
+              <Link href="/?auth=login" className="font-semibold" style={{ color: "var(--accent)" }}>Log in</Link> from the workspace first, then manage keys here.
             </p>
           )}
 

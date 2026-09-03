@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { SitePage, Section } from "@/components/SitePage";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/how-it-works" },
   title: "How it works",
   description: "What you do, and what BUILDWE does behind the scenes — in plain language.",
 };

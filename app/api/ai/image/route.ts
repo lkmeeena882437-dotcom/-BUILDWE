@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { limitAi } from "@/lib/rate-limit/guard";
 
-import { generateImage } from "@/lib/ai/providers";
+import { runImage as generateImage } from "@/lib/ai/adapter";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { addGeneration, uid } from "@/lib/db/store";
 import { INPUT_LIMITS } from "@/lib/ai/gateway";
@@ -94,12 +94,18 @@ export async function POST(req: NextRequest) {
       refundArtifact(session.userId, "image", gate.hold.cost, genId);
       throw e;
     }
-    if (!result.url) {
+    // `url` alone is not evidence: the keyless provider's URL is *constructed*,
+    // so this check passed even when every vendor was down and the browser got a
+    // broken image — charged for. `verified` is set only when bytes came back or
+    // the URL was confirmed to serve an image, so the refund is now honest.
+    if (!result.url || !result.verified) {
       refundArtifact(session.userId, "image", gate.hold.cost, genId);
       return NextResponse.json(
         {
-          error: "The image provider returned nothing - your credit was given back. Try again.",
+          error:
+            "The image provider didn’t return a picture — your credit was given back. Try again.",
           code: "PROVIDER_EMPTY",
+          hint: "Sab image models abhi busy hain — thodi der baad ya alag model se try karo.",
         },
         { status: 502 }
       );

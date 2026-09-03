@@ -358,7 +358,13 @@ await run("the image route holds 2 credits and refuses an empty wallet", async (
   });
   const j = await res.json().catch(() => ({}));
   w.absorb(res);
-  if (!res.ok) throw new Error(`funded image -> ${res.status} ${JSON.stringify(j).slice(0, 160)}`);
+  // A 502 PROVIDER_EMPTY is a legal outcome, not a broken test: since update 13
+  // the route verifies the picture actually exists, so when no image vendor is
+  // reachable it refuses AND refunds rather than charging for a broken link.
+  // The rule below is unchanged — the run must be metered either way.
+  if (!res.ok && !(res.status === 502 && j.code === "PROVIDER_EMPTY")) {
+    throw new Error(`funded image -> ${res.status} ${JSON.stringify(j).slice(0, 160)}`);
+  }
   const after = await credits(BASE, w);
   const rows = after.ledger || [];
   const charged = rows.find((r) => r.reason === "image");

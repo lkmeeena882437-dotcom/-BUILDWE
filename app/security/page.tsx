@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { SitePage, Section } from "@/components/SitePage";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/security" },
   title: "Security",
   description: "How BUILDWE protects accounts, keys, and data — with claims we can actually demonstrate.",
 };
@@ -25,7 +26,7 @@ export default function SecurityPage() {
 
       <Section title="Your API keys (BYOK)">
         <ul className="list-disc space-y-1.5 pl-5">
-          <li>User-provided provider keys are encrypted with AES-256-GCM before storage and are never returned to the browser — only a masked preview (e.g. gsk_te…1234).</li>
+          <li>User-provided provider keys are encrypted before storage and are never returned to the browser — only a short masked preview.</li>
           <li>Keys are used only for your own requests and can be removed anytime in Settings → API keys.</li>
         </ul>
       </Section>

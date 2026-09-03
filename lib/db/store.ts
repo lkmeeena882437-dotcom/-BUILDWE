@@ -8,7 +8,26 @@
 import fs from "fs";
 import path from "path";
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "crypto";
-import { pullRemoteDb, pushRemoteDb, remoteDbEnabled } from "./remote";
+import {
+  asConversation,
+  conversationsTableReady,
+  deleteOwnedForUser,
+  deleteOwnedRecord,
+  deleteRemoteConversation,
+  deleteRemoteConversationsForUser,
+  mergeConversationLists,
+  mergeDbSnapshots,
+  pullOwnedForUser,
+  pullOwnedUserByEmail,
+  pullRemoteConversations,
+  pullRemoteDb,
+  pushRemoteDb,
+  reassignRemoteConversations,
+  remoteDbEnabled,
+  upsertOwnedRecord,
+  upsertRemoteConversation,
+  type OwnedKind,
+} from "./remote";
 import { CREDITS } from "@/lib/config";
 
 export type Plan = "free" | "pro";
@@ -308,12 +327,24 @@ let memoryDb: DB = emptyDb();
 let resolvedPath: string | null | undefined;
 let writable = false;
 
+/**
+ * JSON on disk is allowed when a test/dev directory is named, or when we are
+ * not on a serverless production host. Vercel `/tmp` is not a database.
+ */
+export function jsonStoreAllowed(): boolean {
+  if (process.env.BUILDWE_DATA_DIR) return true;
+  if (process.env.VERCEL === "1") return false;
+  if (process.env.NODE_ENV === "production" && remoteDbEnabled()) return false;
+  return true;
+}
+
 function candidatePaths(): string[] {
+  if (!jsonStoreAllowed()) return [];
   const list: string[] = [];
   if (process.env.BUILDWE_DATA_DIR) {
     list.push(path.join(process.env.BUILDWE_DATA_DIR, "buildwe.json"));
   }
-  // Vercel / AWS lambda writable tmp
+  // Local / VPS writable tmp — never used on Vercel (jsonStoreAllowed is false).
   list.push(path.join("/tmp", "buildwe-data", "buildwe.json"));
   // Local project data folder
   list.push(path.join(process.cwd(), "data", "buildwe.json"));
@@ -325,7 +356,7 @@ function tryInitPath(file: string): boolean {
     const dir = path.dirname(file);
     fs.mkdirSync(dir, { recursive: true });
     if (!fs.existsSync(file)) {
-      fs.writeFileSync(file, JSON.stringify(emptyDb(), null, 2), "utf8");
+      fs.writeFileSync(file, JSON.stringify(emptyDb()), "utf8");
     } else {
       // touch-read to ensure readable
       fs.readFileSync(file, "utf8");
@@ -545,10 +576,14 @@ function mergeOnto(theirs: DB, base: DB, ours: DB): DB {
   return out;
 }
 
-function write(db: DB) {
+function write(db: DB, opts?: { mirror?: boolean; touchBoot?: boolean }) {
   // A local write happened. If bootRemote() is still awaiting its pull, this
   // tells it to abandon the adopt rather than overwrite what we just wrote.
-  localWriteSinceBoot = true;
+  // Hydrating one user's chats from Postgres is not a local write in that
+  // sense — it must not block adopting users/wallets from the blob, and it
+  // must not push a partial snapshot that would erase everyone else.
+  if (opts?.touchBoot !== false) localWriteSinceBoot = true;
+  const prevOwned = lastReadRaw ? parseDb(lastReadRaw) : emptyDb();
   const file = getPath();
   if (file && writable) {
     const lock = acquireLock(file);
@@ -568,7 +603,8 @@ function write(db: DB) {
         if (lock) blind = true;
       }
       if (blind) throw new StoreBusyError("the store could not be read before writing");
-      const out = JSON.stringify(current, null, 2);
+      // Compact JSON: pretty-print doubled the write and the parse on every mutation.
+      const out = JSON.stringify(current);
       // atomic: never leave a half-written store behind
       const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
       fs.writeFileSync(tmp, out, "utf8");
@@ -586,8 +622,17 @@ function write(db: DB) {
     }
   }
   memoryDb = db;
-  scheduleRemotePush(db);
+  if (opts?.mirror !== false) {
+    scheduleRemotePush(db);
+    scheduleOwnedSync(prevOwned, db);
+  }
 }
+
+/** Chat mutations already upsert a row. Skip the whole-blob push once that table is live. */
+function writeConversations(db: DB) {
+  write(db, { mirror: !conversationsTableReady() });
+}
+
 /* ── Optional Supabase mirror (permanent DB) ─────────────── */
 
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -595,6 +640,7 @@ let latestDb: DB | null = null;
 let bootedRemote = false;
 /** Set by write(); blocks a late remote adopt from clobbering local data. */
 let localWriteSinceBoot = false;
+let bootPromise: Promise<void> | null = null;
 
 function scheduleRemotePush(db: DB) {
   if (!remoteDbEnabled()) return;
@@ -606,6 +652,78 @@ function scheduleRemotePush(db: DB) {
     latestDb = null;
     if (snapshot) await pushRemoteDb(snapshot);
   }, 1500);
+}
+
+type OwnedPending = { kind: OwnedKind; id: string; userId: string; payload: Record<string, unknown> };
+let ownedTimer: ReturnType<typeof setTimeout> | null = null;
+let ownedQueue: OwnedPending[] = [];
+
+function jsonOf(rec: unknown): string {
+  try {
+    return JSON.stringify(rec);
+  } catch {
+    return "";
+  }
+}
+
+function ownedDiff(prev: DB, next: DB): OwnedPending[] {
+  const out: OwnedPending[] = [];
+  const push = (kind: OwnedKind, id: string, userId: string, payload: Record<string, unknown>) => {
+    if (!id || !userId) return;
+    out.push({ kind, id, userId, payload });
+  };
+  const prevUsers = new Map(prev.users.map((u) => [u.id, u]));
+  for (const u of next.users) {
+    if (jsonOf(prevUsers.get(u.id)) !== jsonOf(u)) push("user", u.id, u.id, u as unknown as Record<string, unknown>);
+  }
+  const prevProj = new Map(prev.projects.map((p) => [p.id, p]));
+  for (const p of next.projects) {
+    if (jsonOf(prevProj.get(p.id)) !== jsonOf(p)) push("project", p.id, p.userId, p as unknown as Record<string, unknown>);
+  }
+  const prevPay = new Map(prev.payments.map((p) => [p.id, p]));
+  for (const p of next.payments) {
+    if (jsonOf(prevPay.get(p.id)) !== jsonOf(p)) push("payment", p.id, p.userId, p as unknown as Record<string, unknown>);
+  }
+  const prevWal = new Map(prev.wallets.map((w) => [w.userId, w]));
+  for (const w of next.wallets) {
+    if (jsonOf(prevWal.get(w.userId)) !== jsonOf(w)) {
+      push("wallet", w.userId, w.userId, w as unknown as Record<string, unknown>);
+    }
+  }
+  // Ledger rows are append-only and immutable once written, so only genuinely
+  // new ids need pushing — no re-diffing of history on every write.
+  const prevCredit = new Set(prev.creditLedger.map((c) => c.id));
+  for (const c of next.creditLedger) {
+    if (!prevCredit.has(c.id)) {
+      push("credit", c.id, c.userId, c as unknown as Record<string, unknown>);
+    }
+  }
+  return out;
+}
+
+function scheduleOwnedSync(prev: DB, next: DB) {
+  if (!remoteDbEnabled()) return;
+  const diff = ownedDiff(prev, next);
+  if (!diff.length) return;
+  ownedQueue.push(...diff);
+  if (ownedTimer) return;
+  ownedTimer = setTimeout(async () => {
+    ownedTimer = null;
+    const batch = ownedQueue;
+    ownedQueue = [];
+    const seen = new Set<string>();
+    for (let i = batch.length - 1; i >= 0; i--) {
+      const row = batch[i];
+      const k = `${row.kind}:${row.id}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      try {
+        await upsertOwnedRecord(row.kind, row.id, row.userId, row.payload);
+      } catch (e) {
+        console.error("[bw] owned upsert", e);
+      }
+    }
+  }, 200);
 }
 
 /**
@@ -620,41 +738,168 @@ function scheduleRemotePush(db: DB) {
 function bootRemote() {
   if (bootedRemote || !remoteDbEnabled()) return;
   bootedRemote = true;
-  void (async () => {
+  bootPromise = (async () => {
     const localHadData =
       memoryDb.users.length > 0 || memoryDb.conversations.length > 0;
     if (localHadData) return; // local wins on warm starts
     const remote = await pullRemoteDb();
     if (!remote) return;
     // Re-check AFTER the await — this is the race the guard exists for.
-    if (localWriteSinceBoot) return;
-    if (memoryDb.users.length > 0 || memoryDb.conversations.length > 0) return;
+    // A signup in flight still wins outright. Hydrated chats do not: they
+    // merge with the blob so users/wallets still arrive on a cold start.
+    if (localWriteSinceBoot && memoryDb.users.length > 0) return;
+    const merged = mergeDbSnapshots(remote, memoryDb);
+    const base = emptyDb();
     memoryDb = {
-      users: remote.users || [],
-      conversations: remote.conversations || [],
-      generations: remote.generations || [],
-      usage: remote.usage || [],
-      projects: remote.projects || [],
-      projectFiles: remote.projectFiles || [],
-      shares: remote.shares || [],
-      payments: remote.payments || [],
-      wallets: remote.wallets || [],
-      creditLedger: remote.creditLedger || [],
-      apiKeys: remote.apiKeys || [],
-      teams: remote.teams || [],
-      passwordResets: remote.passwordResets || [],
-      consumedTokens: remote.consumedTokens || [],
-      linkPreviews: remote.linkPreviews || [],
+      users: (merged.users as User[]) || base.users,
+      conversations: (merged.conversations as Conversation[]) || base.conversations,
+      generations: (merged.generations as Generation[]) || base.generations,
+      usage: (merged.usage as UsageRow[]) || base.usage,
+      projects: (merged.projects as Project[]) || base.projects,
+      projectFiles: (merged.projectFiles as ProjectFile[]) || base.projectFiles,
+      shares: (merged.shares as Share[]) || base.shares,
+      payments: (merged.payments as Payment[]) || base.payments,
+      wallets: (merged.wallets as Wallet[]) || base.wallets,
+      creditLedger: (merged.creditLedger as CreditRow[]) || base.creditLedger,
+      apiKeys: (merged.apiKeys as ApiKey[]) || base.apiKeys,
+      teams: (merged.teams as Team[]) || base.teams,
+      passwordResets: (merged.passwordResets as PasswordReset[]) || base.passwordResets,
+      consumedTokens: (merged.consumedTokens as ConsumedToken[]) || base.consumedTokens,
+      linkPreviews: (merged.linkPreviews as LinkPreviewRow[]) || base.linkPreviews,
     };
     const file = getPath();
     if (file && writable) {
       try {
-        fs.writeFileSync(file, JSON.stringify(memoryDb, null, 2), "utf8");
+        fs.writeFileSync(file, JSON.stringify(memoryDb), "utf8");
       } catch {
         /* */
       }
     }
   })();
+}
+
+/**
+ * Login/register must not look up an account until the remote snapshot has had
+ * a chance to land. `bootRemote` is fire-and-forget for ordinary reads; a
+ * password check against an empty cold store is a false "invalid password".
+ */
+export async function waitForRemoteBoot() {
+  if (!remoteDbEnabled()) return;
+  bootRemote();
+  if (bootPromise) {
+    try {
+      await bootPromise;
+    } catch {
+      /* login still runs against whatever is local */
+    }
+  }
+}
+
+function preferUserRow(a: User, b: User): User {
+  const aT = String(a.updatedAt || a.createdAt || "");
+  const bT = String(b.updatedAt || b.createdAt || "");
+  if (bT !== aT) return bT > aT ? b : a;
+  // Same stamp: do not promote plan just because one copy says PRO — a cancel
+  // that landed with an equal timestamp must be allowed to stick.
+  return a;
+}
+
+function applyOwnedPayload(db: DB, kind: string, payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const rec = payload as Record<string, unknown>;
+  if (kind === "user") {
+    const id = typeof rec.id === "string" ? rec.id : "";
+    const email = typeof rec.email === "string" ? rec.email.trim().toLowerCase() : "";
+    if (!id || !email) return false;
+    const next = rec as unknown as User;
+    const i = db.users.findIndex((u) => u.id === id || u.email === email);
+    if (i < 0) {
+      db.users.push(next);
+      return true;
+    }
+    const pick = preferUserRow(db.users[i], next);
+    if (pick === db.users[i]) return false;
+    db.users[i] = pick;
+    return true;
+  }
+  if (kind === "project") {
+    const id = typeof rec.id === "string" ? rec.id : "";
+    const userId = typeof rec.userId === "string" ? rec.userId : "";
+    if (!id || !userId) return false;
+    if (db.projects.some((p) => p.id === id)) return false;
+    db.projects.push(rec as unknown as Project);
+    return true;
+  }
+  if (kind === "payment") {
+    const id = typeof rec.id === "string" ? rec.id : "";
+    if (!id) return false;
+    const i = db.payments.findIndex((p) => p.id === id);
+    if (i < 0) {
+      db.payments.push(rec as unknown as Payment);
+      return true;
+    }
+    const cur = db.payments[i];
+    if (cur.status !== "paid" && rec.status === "paid") {
+      db.payments[i] = rec as unknown as Payment;
+      return true;
+    }
+    return false;
+  }
+  if (kind === "wallet") {
+    const userId = typeof rec.userId === "string" ? rec.userId : "";
+    if (!userId) return false;
+    const i = db.wallets.findIndex((w) => w.userId === userId);
+    if (i < 0) {
+      db.wallets.push(rec as unknown as Wallet);
+      return true;
+    }
+    const a = db.wallets[i];
+    const b = rec as unknown as Wallet;
+    if (String(b.updatedAt || "") > String(a.updatedAt || "")) {
+      db.wallets[i] = b;
+      return true;
+    }
+    return false;
+  }
+  if (kind === "credit") {
+    // Ledger rows are append-only and immutable: an existing id is never
+    // rewritten, so a replayed hydrate cannot double-count a movement.
+    const id = typeof rec.id === "string" ? rec.id : "";
+    const userId = typeof rec.userId === "string" ? rec.userId : "";
+    if (!id || !userId) return false;
+    if (db.creditLedger.some((c) => c.id === id)) return false;
+    db.creditLedger.push(rec as unknown as CreditRow);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Cold login/register/oauth: pull this email's account (and its billing rows)
+ * from `buildwe_owned` into the in-process store. Does not push — a partial
+ * snapshot must not erase anyone else.
+ */
+export async function hydrateAccountByEmail(email: string): Promise<void> {
+  if (!remoteDbEnabled()) return;
+  const e = String(email || "").trim().toLowerCase();
+  if (!e || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) return;
+  try {
+    const payload = await pullOwnedUserByEmail(e);
+    if (!payload) return;
+    const db = read();
+    let changed = applyOwnedPayload(db, "user", payload);
+    const uid = typeof payload.id === "string" ? payload.id : "";
+    if (uid) {
+      const rest = await pullOwnedForUser(uid);
+      for (const row of rest) {
+        if (row.kind === "user") continue;
+        changed = applyOwnedPayload(db, row.kind, row.payload) || changed;
+      }
+    }
+    if (changed) write(db, { mirror: false, touchBoot: false });
+  } catch (err) {
+    console.error("[bw] hydrate account", err);
+  }
 }
 
 /**
@@ -892,6 +1137,8 @@ export function deleteUserCascade(userId: string) {
   db.apiKeys = db.apiKeys.filter((k) => k.userId !== userId);
   db.passwordResets = db.passwordResets.filter((r) => r.userId !== userId);
   write(db);
+  void deleteRemoteConversationsForUser(userId);
+  void deleteOwnedForUser(userId);
   return true;
 }
 
@@ -931,6 +1178,7 @@ export function createConversation(input: {
     updatedAt: now,
   };
   db.conversations.unshift(c);
+  void upsertRemoteConversation(c);
   // Keep memory bounded PER USER, never globally.
   //
   // This used to be `db.conversations.slice(0, 200)` across the whole table,
@@ -939,7 +1187,7 @@ export function createConversation(input: {
   // conversations were created. Trimming per owner keeps the table bounded
   // without ever touching another account's data.
   trimPerUser(db, input.userId);
-  write(db);
+  writeConversations(db);
   return c;
 }
 
@@ -965,9 +1213,11 @@ function trimPerUser(db: DB, userId: string) {
       .slice(0, RETENTION.conversationsPerUser)
       .map((c) => c.id)
   );
+  const dropped = mine.filter((c) => !keep.has(c.id));
   db.conversations = db.conversations.filter(
     (c) => c.userId !== userId || keep.has(c.id)
   );
+  for (const c of dropped) void deleteRemoteConversation(c.id, userId);
 }
 
 export function appendMessages(
@@ -989,8 +1239,13 @@ export function appendMessages(
         isTeamMember(c.teamId, userId)
     );
   }
-  // If missing (new instance / lost memory), recreate shell
   if (i < 0) {
+    // The id exists but this caller may not write it. Recreating a shell under
+    // the caller's userId used to mint a second row with the same id — so a
+    // guessed conversationId became "your" chat, and get-by-id returned whichever
+    // row came first. Refuse instead. A truly missing id (cold start / lost
+    // memory) still gets a shell so the owner can keep talking.
+    if (db.conversations.some((c) => c.id === conversationId)) return null;
     const now = new Date().toISOString();
     db.conversations.unshift({
       id: conversationId,
@@ -1016,19 +1271,20 @@ export function appendMessages(
   }
   db.conversations[i].updatedAt = new Date().toISOString();
   if (title) db.conversations[i].title = title.slice(0, 80);
-  write(db);
+  writeConversations(db);
+  void upsertRemoteConversation(db.conversations[i]);
   return db.conversations[i];
 }
 
 export function deleteConversation(id: string, userId: string) {
   const db = read();
-  const before = db.conversations.length;
-  db.conversations = db.conversations.filter(
-    (c) => !(c.id === id && c.userId === userId)
-  );
+  const owned = db.conversations.some((c) => c.id === id && c.userId === userId);
+  if (!owned) return false;
+  db.conversations = db.conversations.filter((c) => c.id !== id);
   db.shares = db.shares.filter((s) => s.conversationId !== id);
   write(db);
-  return db.conversations.length < before;
+  void deleteRemoteConversation(id, userId);
+  return true;
 }
 
 /* ── Projects ────────────────────────────────────────────── */
@@ -1069,21 +1325,24 @@ export function renameProject(id: string, userId: string, name: string) {
   return p;
 }
 
+export function getProject(id: string, userId: string) {
+  return read().projects.find((p) => p.id === id && p.userId === userId) || null;
+}
+
 export function deleteProject(id: string, userId: string) {
   const db = read();
   const owned = db.projects.some((p) => p.id === id && p.userId === userId);
-  db.projects = db.projects.filter((p) => !(p.id === id && p.userId === userId));
-  // detach conversations from the deleted project
+  if (!owned) return false;
+  db.projects = db.projects.filter((p) => p.id !== id);
+  // Only this owner's chats — a guessed id must not unlink someone else's folder.
   for (const c of db.conversations) {
-    if (c.projectId === id) c.projectId = null;
+    if (c.projectId === id && c.userId === userId) c.projectId = null;
   }
-  // remove the project's files too — otherwise they'd linger unreachable
-  if (owned) {
-    db.projectFiles = db.projectFiles.filter(
-      (f) => !(f.projectId === id && f.userId === userId)
-    );
-  }
+  db.projectFiles = db.projectFiles.filter(
+    (f) => !(f.projectId === id && f.userId === userId)
+  );
   write(db);
+  void deleteOwnedRecord("project", id, userId);
   return true;
 }
 
@@ -1243,6 +1502,7 @@ export function setConversationProject(
   c.projectId = projectId;
   c.updatedAt = new Date().toISOString();
   write(db);
+  void upsertRemoteConversation(c);
   return c;
 }
 
@@ -1821,7 +2081,79 @@ export function setConversationTeam(
   c.teamId = teamId;
   c.updatedAt = new Date().toISOString();
   write(db);
+  void upsertRemoteConversation(c);
   return c;
+}
+
+/** Sidebar list cap — the rail cannot usefully show 200 full threads. */
+export const HISTORY_LIST_CAP = 80;
+
+export type ConversationSummary = {
+  id: string;
+  title: string;
+  mode: Conversation["mode"];
+  updatedAt: string;
+  preview: string;
+  messageCount: number;
+  projectId: string | null;
+  teamId: string | null;
+  mine: boolean;
+};
+
+export function summarizeConversation(c: Conversation, viewerId: string): ConversationSummary {
+  const last = c.messages[c.messages.length - 1];
+  return {
+    id: c.id,
+    title: c.title,
+    mode: c.mode,
+    updatedAt: c.updatedAt,
+    preview: String(last?.content || "").replace(/\s+/g, " ").slice(0, 100),
+    messageCount: c.messages.length,
+    projectId: c.projectId ?? null,
+    teamId: c.teamId ?? null,
+    mine: c.userId === viewerId,
+  };
+}
+
+/**
+ * Whether this viewer may use a conversation id.
+ * `forbidden` means the row exists and is not theirs — callers must 404, not
+ * recreate a shell, or the store grows a duplicate id.
+ */
+export function conversationAccess(
+  id: string,
+  userId: string
+): "ok" | "missing" | "forbidden" {
+  const c = read().conversations.find((x) => x.id === id);
+  if (!c) return "missing";
+  if (c.userId === userId) return "ok";
+  if (c.teamId && isTeamMember(c.teamId, userId)) return "ok";
+  return "forbidden";
+}
+
+/**
+ * Same as `conversationAccess`, but a cold instance hydrates this owner's
+ * rows first so a conversationId the client still holds is not treated as
+ * missing (and then recreated as an empty shell that hides the real thread).
+ */
+export async function ensureConversationAccess(
+  id: string,
+  userId: string
+): Promise<"ok" | "missing" | "forbidden"> {
+  const first = conversationAccess(id, userId);
+  if (first !== "missing") return first;
+  await hydrateConversationsForUser(userId);
+  return conversationAccess(id, userId);
+}
+
+/** One chat, if this viewer may see it. Does not scan every other thread. */
+export function getVisibleConversation(id: string, userId: string) {
+  const db = read();
+  const c = db.conversations.find((x) => x.id === id) || null;
+  if (!c) return null;
+  if (c.userId === userId) return c;
+  if (c.teamId && isTeamMember(c.teamId, userId)) return c;
+  return null;
 }
 
 /** Conversations visible to a user: own + their teams' */
@@ -1837,6 +2169,72 @@ export function listVisibleConversations(userId: string) {
       (c) => c.userId === userId || (c.teamId && teamIds.has(c.teamId))
     )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export function listVisibleConversationSummaries(
+  userId: string,
+  cap = HISTORY_LIST_CAP
+) {
+  const all = listVisibleConversations(userId);
+  const n = Math.max(1, Math.min(Math.floor(cap) || HISTORY_LIST_CAP, HISTORY_LIST_CAP));
+  return {
+    conversations: all.slice(0, n).map((c) => summarizeConversation(c, userId)),
+    total: all.length,
+    capped: all.length > n,
+  };
+}
+
+/**
+ * Pull this owner's chats (and their teams') from Postgres and merge them
+ * into the in-process store. History GET awaits this so a cold serverless
+ * instance still has the thread the user left yesterday.
+ *
+ * Does not push the JSON blob: a partial snapshot would erase everyone else.
+ */
+export async function hydrateConversationsForUser(userId: string): Promise<void> {
+  if (!remoteDbEnabled() || !userId) return;
+  try {
+    const db = read();
+    const teamIds = db.teams
+      .filter((t) => t.members.some((m) => m.userId === userId))
+      .map((t) => t.id);
+    const remote = await pullRemoteConversations(userId, teamIds);
+    if (!remote.length) return;
+    const fresh = read();
+    const visible = (c: Conversation) =>
+      c.userId === userId || (c.teamId != null && teamIds.includes(c.teamId));
+    // `remote.Conversation.mode` is a loose string (whatever the row holds);
+    // the store's is a union. Narrow at this boundary so a row written by an
+    // older/newer version cannot smuggle an unknown mode into the store.
+    const MODES: Conversation["mode"][] = ["auto", "chat", "code", "image", "audio"];
+    const narrow = (c: unknown): Conversation | null => {
+      const ok = asConversation(c);
+      if (!ok) return null;
+      return MODES.includes(ok.mode as Conversation["mode"])
+        ? (ok as Conversation)
+        : ({ ...ok, mode: "chat" } as Conversation);
+    };
+    const incoming = remote
+      .map(narrow)
+      .filter((c): c is Conversation => c !== null && visible(c));
+    const { next, changed } = mergeConversationLists(fresh.conversations, incoming);
+    if (!changed) return;
+    // `next` is typed with remote's loose `mode`; every element came from
+    // `narrow()` or was already in the store, so both sides are the store shape.
+    fresh.conversations = next as Conversation[];
+    write(fresh, { mirror: false, touchBoot: false });
+  } catch (e) {
+    console.error("[bw] hydrate conversations", e);
+  }
+}
+
+export async function adoptGuestConversations(guestId: string, userId: string): Promise<void> {
+  if (!remoteDbEnabled() || !guestId || !userId || guestId === userId) return;
+  try {
+    await reassignRemoteConversations(guestId, userId);
+  } catch (e) {
+    console.error("[bw] reassign conversations", e);
+  }
 }
 
 /* ── Generations ─────────────────────────────────────────── */
@@ -2362,6 +2760,7 @@ export function migrateGuestData(guestId: string, userId: string) {
     moved.conversations + moved.projects + moved.generations + moved.shares;
   // `moved.credits` is set whenever a guest wallet existed, even at balance 0.
   if (touched > 0 || guestUsage.length > 0 || moved.credits !== undefined) write(db);
+  if (moved.conversations > 0) void reassignRemoteConversations(guestId, userId);
 
   return moved;
 }

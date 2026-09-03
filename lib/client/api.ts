@@ -2,6 +2,7 @@
 
 import type { PreviewDto } from "@/lib/net/urls";
 import type { PaletteStudio, PaletteTool } from "./palette";
+import { publicErrorMessage, scrubErrorBody } from "@/lib/http/public-error";
 
 export type MeResponse = {
   userId: string;
@@ -58,9 +59,14 @@ async function readJson(r: Response) {
   const text = await r.text();
   if (!text) return {};
   try {
-    return JSON.parse(text);
+    const parsed = JSON.parse(text);
+    return r.ok ? parsed : scrubErrorBody(parsed);
   } catch {
-    return { error: r.ok ? "Unexpected response" : `Request failed (${r.status})` };
+    return {
+      error: r.ok
+        ? "Unexpected response"
+        : publicErrorMessage(`Request failed (${r.status})`, "Something went wrong. Please try again."),
+    };
   }
 }
 
@@ -76,10 +82,10 @@ export async function login(email: string, password: string) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email: String(email || "").trim(), password }),
   });
   const j = await readJson(r);
-  if (!r.ok) throw new Error(j.error || "Login failed");
+  if (!r.ok) throw new Error(j.error || "Invalid email or password.");
   return j;
 }
 
@@ -111,17 +117,20 @@ export async function fetchHistory() {
       updatedAt: string;
       preview: string;
       messageCount: number;
+      projectId?: string | null;
+      teamId?: string | null;
+      mine?: boolean;
     }[];
-    generations: unknown[];
+    total?: number;
+    capped?: boolean;
   };
 }
 
 export async function loadConversation(id: string) {
-  const r = await fetch("/api/history", {
-    method: "POST",
+  // conversationId → GET /api/history?id= → selected thread with messages.
+  // POST {action:"get"} remains for older callers; this is the open path.
+  const r = await fetch(`/api/history?id=${encodeURIComponent(id)}`, {
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "get", conversationId: id }),
   });
   const j = await readJson(r);
   if (!r.ok) throw new Error(j.error || "Couldn’t open chat");
@@ -207,7 +216,13 @@ export async function streamAI(
       const t = line.trim();
       if (!t.startsWith("data:")) continue;
       try {
-        const json = JSON.parse(t.slice(5).trim());
+        const json = JSON.parse(t.slice(5).trim()) as {
+          token?: string;
+          done?: boolean;
+          meta?: unknown;
+          error?: string;
+        };
+        if (typeof json.error === "string") json.error = publicErrorMessage(json.error);
         onEvent(json);
       } catch {
         /* ignore partial */
@@ -873,6 +888,8 @@ export type SelectableModel = {
   strengths: string[];
   available: boolean;
   whyNot?: string;
+  /** True when the vendor needs no platform key. Safe metadata — not an env name. */
+  keyless?: boolean;
 };
 
 export type ModelsInfo = {

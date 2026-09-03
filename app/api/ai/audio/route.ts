@@ -2,12 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { limitAi } from "@/lib/rate-limit/guard";
 
-import { generateAudioPlan } from "@/lib/ai/providers";
+import { runAudio as generateAudioPlan } from "@/lib/ai/adapter";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { addGeneration, uid } from "@/lib/db/store";
 import { INPUT_LIMITS } from "@/lib/ai/gateway";
 import { persistDataUrl, mediaStorageEnabled } from "@/lib/storage/media";
-import { creditGate, creditReceipt, refundArtifact } from "@/lib/credits";
+import { creditGate, creditReceipt, getBalance, refundArtifact } from "@/lib/credits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -67,14 +67,44 @@ export async function POST(req: NextRequest) {
     // the browser's own speech engine served it - no server call, no cost, so
     // the hold is returned. A real mp3 that came back empty is a failed run,
     // which is also not billable, and the client is told so.
-    if (plan.type !== "mp3") {
+    //
+    // `verified` (update 14) is the billable condition: it is set only when the
+    // bytes decoded to a genuine audio container. A truthy `audioUrl` was not
+    // enough — the keyless vendor is a chat model asked for speech, and a
+    // scrap of base64 lifted out of an apology satisfied the old check.
+    const generated =
+      plan.type === "mp3" && Boolean(plan.audioUrl) && plan.verified === true;
+
+    if (!generated) {
+      // Nothing was synthesised, so nothing is owed. Refund first, then decide
+      // what to tell the client.
       refundArtifact(session.userId, "audio", gate.hold.cost, genId);
-    } else if (!plan.audioUrl) {
-      refundArtifact(session.userId, "audio", gate.hold.cost, genId);
-      return NextResponse.json(
-        { error: "The voice provider returned nothing - your credit was given back.", code: "PROVIDER_EMPTY" },
-        { status: 502 }
-      );
+
+      if (plan.type === "mp3") {
+        // A vendor answered but the bytes were not audio — a failed run.
+        return NextResponse.json(
+          {
+            error: "The voice provider didn’t return usable audio — your credit was given back.",
+            code: "PROVIDER_EMPTY",
+            hint: "Voice models abhi busy hain — thodi der baad dobara try karo.",
+          },
+          { status: 502 }
+        );
+      }
+
+      // No vendor was reachable. The browser's own speech engine can still read
+      // the script, which is genuinely useful, so this is a 200 — but it is the
+      // user's device talking, not a BUILDWE generation. It is therefore not
+      // billed (`charged: 0`), not counted as usage, and not written to history
+      // as a creation, because there is no artifact to replay later.
+      const res = NextResponse.json({
+        ...plan,
+        provider: "buildwe",
+        verified: false,
+        credits: { charged: 0, balance: getBalance(session.userId) },
+      });
+      attachGuestCookie(res, session.userId);
+      return res;
     }
 
     try {
@@ -93,9 +123,15 @@ export async function POST(req: NextRequest) {
       "audioUrl" in plan && typeof plan.audioUrl === "string" ? plan.audioUrl : undefined;
     if (rawAudio?.startsWith("data:") && mediaStorageEnabled()) {
       try {
+        // Extension follows the container the vendor actually returned —
+        // storing an Ogg clip as ".mp3" makes a file that some players refuse.
+        // `persistDataUrl` already sets Content-Type from the data URL itself.
+        const mime = "mime" in plan && typeof plan.mime === "string" ? plan.mime : "audio/mpeg";
+        const ext =
+          mime === "audio/wav" ? "wav" : mime === "audio/ogg" ? "ogg" : mime === "audio/mp4" ? "m4a" : "mp3";
         const hosted = await persistDataUrl(
           rawAudio,
-          `audio/${session.userId}/${id}.mp3`
+          `audio/${session.userId}/${id}.${ext}`
         );
         if (hosted !== rawAudio) storedUrl = hosted;
       } catch (e) {
@@ -123,6 +159,7 @@ export async function POST(req: NextRequest) {
       ...plan,
       // Prefer the hosted URL so the client caches a real file, not base64.
       ...(storedUrl ? { audioUrl: storedUrl, stored: true } : {}),
+      provider: "buildwe",
       credits: creditReceipt(session.userId, gate.hold),
     });
     attachGuestCookie(res, session.userId);

@@ -489,7 +489,8 @@ await run("a model's label comes from its catalog row, never from its id's subst
   assert.ok(CAT && typeof CAT.publicModelLabel === "function", "the compiled module exports the lookup");
   // The bug (audit A9): a *chat* model configured as an id containing "vision" announced itself as
   // the image product. Capability decides now, and an unknown id says only what is true.
-  assert.equal(CAT.publicModelLabel("llama-3.3-70b-versatile", "chat"), "BUILDWE AI", "a chat row is the chat brand");
+  const anyChatId = CAT.MODEL_CATALOG.find((m) => m.capability === "chat").id;
+  assert.equal(CAT.publicModelLabel(anyChatId, "chat"), "BUILDWE AI", "a chat row is the chat brand");
   assert.equal(CAT.publicModelLabel("gpt-4o-vision-preview", "chat"), "BUILDWE AI", "a substring in an unknown id is not a capability");
   assert.equal(CAT.publicModelLabel("anything-with-code-in-it", "chat"), "BUILDWE AI", "and neither is 'code'");
   assert.equal(CAT.publicModelLabel(undefined, "code"), "BUILDWE Code", "no id at all still means the mode that ran");
@@ -499,13 +500,21 @@ await run("a model's label comes from its catalog row, never from its id's subst
 
   // The same id registered under two capabilities must answer with the row for *this* run, or a
   // code run is branded as chat by whichever match comes first.
-  const both = CAT.MODEL_CATALOG.filter((m) => m.id === "llama-3.3-70b-versatile").map((m) => m.capability);
-  assert.ok(both.includes("chat") && both.includes("code"), `the fixture id should span two capabilities (saw ${both.join(",")})`);
-  assert.equal(CAT.publicModelLabel("llama-3.3-70b-versatile", "code"), "BUILDWE Code", "the hint picks the right row");
+  // Discover a dual-capability id rather than pinning one: a retired model used
+  // to break this check even though the behaviour it tests was still correct.
+  const chatIds = new Set(
+    CAT.MODEL_CATALOG.filter((m) => m.capability === "chat").map((m) => m.id)
+  );
+  const dualId = CAT.MODEL_CATALOG.find(
+    (m) => m.capability === "code" && chatIds.has(m.id)
+  )?.id;
+  assert.ok(dualId, "the catalog should have at least one id serving chat and code");
+  assert.equal(CAT.publicModelLabel(dualId, "code"), "BUILDWE Code", "the hint picks the right row");
 
   // The lanes and the developer API get the real name; an unknown id degrades to the brand instead
   // of inventing a vendor.
-  assert.equal(CAT.modelDetailLabel("llama-3.1-8b-instant", "chat"), "Llama 3.1 8B Instant", "a known id names itself");
+  const namedRow = CAT.MODEL_CATALOG.find((m) => m.capability === "chat");
+  assert.equal(CAT.modelDetailLabel(namedRow.id, "chat"), namedRow.label, "a known id names itself");
   assert.equal(CAT.modelDetailLabel("gpt-4o-vision-preview", "chat"), "BUILDWE AI", "an unknown one says who answered, not what it might be");
 });
 
@@ -573,6 +582,19 @@ await run("GET /api/ai/models reports what THIS deployment can call", async () =
   assert.equal(j.catalogSize, CAT.MODEL_CATALOG.length, "the size the route quotes is the catalog the gateway routes from");
   assert.ok(j.all.some((m) => m.status === "coming_soon"), "the marketing ladder still carries its reserved seats");
   assert.equal(JSON.stringify(j.selectable).includes("coming_soon"), false, "and none of them leaked into the callable list");
+  const blob = JSON.stringify(j);
+  for (const leak of ["GROQ_API_KEY", "OPENAI_API_KEY", "envKey", "api.openai.com", "api.groq.com", "AI_KEYS", "sk-", "gsk_"]) {
+    assert.equal(blob.includes(leak), false, `/api/ai/models leaked ${leak}`);
+  }
+  assert.ok(Array.isArray(j.internal) && j.internal.includes("agent"), "agent is an alias, not a picker section");
+  assert.ok(
+    j.selectable.audio.some((m) => m.provider === "pollinations" && m.available && m.keyless),
+    "keyless voice is callable without a key"
+  );
+  assert.ok(
+    j.selectable.audio.some((m) => m.provider === "cartesia" && !m.available),
+    "an unimplemented vendor stays unavailable even as a catalog row"
+  );
 
   const dry = await req(OFF, "/api/ai/models");
   assert.equal(dry.json.llmLive, false, "a keyless deployment admits it");
@@ -607,6 +629,16 @@ await run("the Models sheet reads that route and never invents a row", () => {
 /* ── W3.1: the caller picks the lanes, and sees the price first ─────── */
 
 const CHAT_IDS = CAT.MODEL_CATALOG.filter((m) => m.capability === "chat").map((m) => m.id);
+/**
+ * Lane fixtures below used to hardcode vendor ids. When Groq retired
+ * llama-3.1-8b-instant and llama-3.3-70b-versatile these checks failed on a
+ * 400 LANE_NOT_IN_CATALOG — the app was right and the fixture was stale. Pull
+ * real ids from the catalog instead.
+ */
+const FREE_CHAT_IDS = CAT.MODEL_CATALOG.filter(
+  (m) => m.capability === "chat" && m.tiers.includes("free")
+).map((m) => m.id);
+const [LANE_A, LANE_B, LANE_C] = FREE_CHAT_IDS;
 
 await run("GET /api/ai/compare states the range, the price and the defaults before anything runs", async () => {
   const res = await fetch(`${BASE}/api/ai/compare`);
@@ -641,10 +673,10 @@ await run("a bad lane list is refused with what to send instead", async () => {
   // checks live on the keyless server, where a refusal costs nothing anyway.
   const cases = [
     [["definitely-not-a-model"], "LANE_NOT_IN_CATALOG"],
-    [["llama-3.1-8b-instant", "fal-ai/flux/schnell"], "LANE_NOT_A_CHAT_MODEL"],
-    [["llama-3.1-8b-instant"], "TOO_FEW_LANES"],
+    [[LANE_A, "fal-ai/flux/schnell"], "LANE_NOT_A_CHAT_MODEL"],
+    [[LANE_A], "TOO_FEW_LANES"],
     // Two identical ids are one lane, and a comparison of one has to say so rather than run.
-    [["llama-3.1-8b-instant", "llama-3.1-8b-instant"], "TOO_FEW_LANES"],
+    [[LANE_A, LANE_A], "TOO_FEW_LANES"],
     [CHAT_IDS.slice(0, 7), "TOO_MANY_LANES"],
   ];
   for (const [models, code] of cases) {
@@ -661,7 +693,7 @@ await run("a bad lane list is refused with what to send instead", async () => {
   // …and the comma form a curl user reaches for is accepted, not rejected as a type error.
   const csv = await req(OFF, "/api/ai/compare", {
     method: "POST",
-    body: { prompt: "Ship the billing page in place or rebuild it?", models: "llama-3.1-8b-instant,llama-3.2-3b-instruct" },
+    body: { prompt: "Ship the billing page in place or rebuild it?", models: `${LANE_A},${LANE_B}` },
   });
   assert.equal(csv.status, 200, `comma list: ${csv.status} ${csv.text.slice(0, 160)}`);
   assert.equal(csv.json.lanes.length, 2, "both lanes were asked");
@@ -674,7 +706,7 @@ await run("a bad lane list is refused with what to send instead", async () => {
 await run("the picked lanes are what the vendor is actually asked for, per lane and to the credit", async () => {
   const before = await req(BASE, "/api/credits", { jar });
   const asked0 = calls.length;
-  const models = ["llama-3.1-8b-instant", "llama-3.2-3b-instruct"];
+  const models = [LANE_A, LANE_B];
   const r = await req(BASE, "/api/ai/compare", {
     method: "POST",
     jar,
@@ -708,7 +740,7 @@ await run("a lane whose vendor has no key is refused by the picker, refunded by 
   const r = await req(BASE, "/api/ai/compare", {
     method: "POST",
     jar,
-    body: { prompt: "Which caching layer should we pick for a small Postgres app?", models: ["llama-3.1-8b-instant", "gpt-4o-mini"] },
+    body: { prompt: "Which caching layer should we pick for a small Postgres app?", models: [LANE_A, "gpt-4o-mini"] },
   });
   assert.equal(r.status, 200, r.text.slice(0, 200));
   assert.equal(r.json.lanes.length, 2);
@@ -793,9 +825,9 @@ await run("the sheet picks from those lists and prices the run from the server's
 /* ── W3.2: fold the answers you liked into a new combined one ─────── */
 
 await run("POST action:mix folds exactly what you send, asks no model again, and costs one lane", async () => {
-  const A = "llama-3.1-8b-instant";
-  const B = "llama-3.2-3b-instruct";
-  const C = "llama-3.3-70b-versatile";
+  const A = LANE_A;
+  const B = LANE_B;
+  const C = LANE_C;
   const long = "Z".repeat(5000);
   const before = calls.length;
   const r = await req(BASE, "/api/ai/compare", {
@@ -837,8 +869,8 @@ await run("POST action:mix folds exactly what you send, asks no model again, and
 });
 
 await run("a mix is refused, with a reason, when it is not a mix", async () => {
-  const A = "llama-3.1-8b-instant";
-  const B = "llama-3.2-3b-instruct";
+  const A = LANE_A;
+  const B = LANE_B;
   const cases = [
     [{ lanes: { id: A, reply: "x" } }, "BAD_MIX_LIST"],
     [{ lanes: [{ id: "mistral", reply: "x" }, { id: A, reply: "y" }] }, "LANE_NOT_IN_CATALOG"],
@@ -865,8 +897,8 @@ await run("a mix whose judge cannot answer costs nothing and says which lanes it
       action: "mix",
       prompt: "Two sources disagree about the same quarter — which do I trust?",
       lanes: [
-        { id: "llama-3.1-8b-instant", reply: "The filing says revenue rose." },
-        { id: "llama-3.2-3b-instruct", reply: "The interview says orders rose." },
+        { id: LANE_A, reply: "The filing says revenue rose." },
+        { id: LANE_B, reply: "The interview says orders rose." },
       ],
     },
   });
@@ -876,7 +908,7 @@ await run("a mix whose judge cannot answer costs nothing and says which lanes it
   assert.match(r.json.message, /nothing was charged/i, "the copy says so in the same breath");
   assert.equal(r.json.credits.charged, 0, "the held credit came back");
   assert.equal(r.json.credits.refunded, r.json.credits.held);
-  assert.deepEqual(r.json.used.map((u) => u.id), ["llama-3.1-8b-instant", "llama-3.2-3b-instruct"], "the lanes it did have are still named");
+  assert.deepEqual(r.json.used.map((u) => u.id), [LANE_A, LANE_B], "the lanes it did have are still named");
   assert.equal("live" in r.json.used[0], false, "a folded answer must not claim a provider answered");
 });
 

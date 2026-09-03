@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { attachGuestCookie, getSessionFromRequest } from "@/lib/auth/session";
 import { limitAi } from "@/lib/rate-limit/guard";
 
-import { transcribeAudio } from "@/lib/ai/stt";
+import { runStt as transcribeAudio } from "@/lib/ai/adapter";
+import { userProviderKeys } from "@/lib/ai/byok";
 import { checkLimit, recordUsage } from "@/lib/ai/limits";
 import { uid } from "@/lib/db/store";
 import { creditGate, creditReceipt, refundArtifact } from "@/lib/credits";
@@ -70,7 +71,14 @@ export async function POST(req: NextRequest) {
     if (!gate.ok) return gate.res;
     let result: Awaited<ReturnType<typeof transcribeAudio>>;
     try {
-      result = await transcribeAudio({ audio: file, filename });
+      // BYOK + plan reach STT the same way they reach chat/code/image/TTS, so a
+      // pro-tier or user-keyed STT row is actually selectable.
+      result = await transcribeAudio({
+        audio: file,
+        filename,
+        userKeys: userProviderKeys(session.userId),
+        plan: session.plan === "pro" ? "pro" : "free",
+      });
     } catch (e) {
       refundArtifact(session.userId, "transcribe", gate.hold.cost, sttId);
       throw e;

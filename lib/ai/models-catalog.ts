@@ -57,6 +57,188 @@ export type CatalogModel = {
   notes?: string;
 };
 
+/** Wire adapter a vendor uses for a capability. Not an HTTP URL — those stay in the registry. */
+export type AdapterName = "llm" | "image" | "audio" | "stt" | "vision";
+
+/** A capability a user can actually ask for. `router` is internal; `agent` aliases `code`. */
+export type WorkCapability = Exclude<Capability, "router">;
+
+/**
+ * One entry per vendor — not per model. The same Groq row powers chat, code, STT and
+ * vision without copying key/adapter config onto every catalog model.
+ *
+ * `adapters` is what we actually have code for. A catalog model whose provider+capability
+ * is missing here is never marked available, even if a key exists (Cartesia / PlayHT TTS).
+ * `keyEnv` is the platform env var name (null = keyless). It is never sent to the browser.
+ */
+export type ProviderConfig = {
+  id: ProviderId;
+  adapters: Partial<Record<WorkCapability, AdapterName>>;
+  keyEnv: string | null;
+  byokField?: string;
+  /** Lower is preferred as a fallback after the scored pick. */
+  priority: number;
+};
+
+export const PROVIDER_CONFIG: Record<ProviderId, ProviderConfig> = {
+  groq: {
+    id: "groq",
+    adapters: { chat: "llm", code: "llm", stt: "stt", vision: "vision" },
+    keyEnv: "GROQ_API_KEY",
+    byokField: "groq",
+    priority: 2,
+  },
+  pollinations: {
+    id: "pollinations",
+    adapters: { image: "image", audio: "audio" },
+    keyEnv: null,
+    priority: 4,
+  },
+  openrouter: {
+    id: "openrouter",
+    adapters: { chat: "llm", code: "llm" },
+    keyEnv: "OPENROUTER_API_KEY",
+    byokField: "openrouter",
+    priority: 3,
+  },
+  google: {
+    id: "google",
+    adapters: { chat: "llm", code: "llm", image: "image" },
+    keyEnv: "GOOGLE_API_KEY",
+    byokField: "google",
+    priority: 1,
+  },
+  openai: {
+    id: "openai",
+    adapters: { chat: "llm", code: "llm", image: "image", audio: "audio", vision: "vision" },
+    keyEnv: "OPENAI_API_KEY",
+    byokField: "openai",
+    priority: 5,
+  },
+  anthropic: {
+    id: "anthropic",
+    adapters: { chat: "llm", code: "llm", vision: "vision" },
+    keyEnv: "ANTHROPIC_API_KEY",
+    byokField: "anthropic",
+    priority: 6,
+  },
+  mistral: {
+    id: "mistral",
+    adapters: { chat: "llm", code: "llm" },
+    keyEnv: "MISTRAL_API_KEY",
+    byokField: "mistral",
+    priority: 7,
+  },
+  deepseek: {
+    id: "deepseek",
+    adapters: { chat: "llm", code: "llm" },
+    keyEnv: "DEEPSEEK_API_KEY",
+    byokField: "deepseek",
+    priority: 8,
+  },
+  together: {
+    id: "together",
+    adapters: { chat: "llm", code: "llm" },
+    keyEnv: "TOGETHER_API_KEY",
+    byokField: "together",
+    priority: 9,
+  },
+  huggingface: {
+    id: "huggingface",
+    adapters: { image: "image" },
+    keyEnv: "HF_TOKEN",
+    priority: 10,
+  },
+  fal: {
+    id: "fal",
+    adapters: { image: "image" },
+    keyEnv: "FAL_KEY",
+    priority: 11,
+  },
+  elevenlabs: {
+    id: "elevenlabs",
+    adapters: { audio: "audio" },
+    keyEnv: "ELEVENLABS_API_KEY",
+    byokField: "elevenlabs",
+    priority: 12,
+  },
+  stability: {
+    id: "stability",
+    adapters: { image: "image" },
+    keyEnv: "STABILITY_API_KEY",
+    byokField: "stability",
+    priority: 13,
+  },
+  goapi: {
+    id: "goapi",
+    adapters: { image: "image" },
+    keyEnv: "GOAPI_API_KEY",
+    byokField: "goapi",
+    priority: 14,
+  },
+  deepgram: {
+    id: "deepgram",
+    adapters: { stt: "stt" },
+    keyEnv: "DEEPGRAM_API_KEY",
+    byokField: "deepgram",
+    priority: 5,
+  },
+  playht: {
+    id: "playht",
+    adapters: {},
+    keyEnv: "PLAYHT_API_KEY",
+    byokField: "playht",
+    priority: 90,
+  },
+  cartesia: {
+    id: "cartesia",
+    adapters: {},
+    keyEnv: "CARTESIA_API_KEY",
+    priority: 91,
+  },
+  replicate: {
+    id: "replicate",
+    adapters: {},
+    keyEnv: "REPLICATE_API_TOKEN",
+    byokField: "replicate",
+    priority: 92,
+  },
+};
+
+export const KEYLESS_PROVIDERS: readonly ProviderId[] = (
+  Object.values(PROVIDER_CONFIG) as ProviderConfig[]
+)
+  .filter((p) => p.keyEnv === null)
+  .map((p) => p.id);
+
+/** Agent runs on the code catalog — one set of models, not a second copy. */
+export function resolveCapability(cap: string): WorkCapability {
+  if (cap === "agent") return "code";
+  if (cap === "router") return "chat";
+  return cap as WorkCapability;
+}
+
+export function providerConfig(id: string): ProviderConfig | undefined {
+  return PROVIDER_CONFIG[id as ProviderId];
+}
+
+export function adapterFor(provider: string, capability: string): AdapterName | null {
+  const cap = resolveCapability(capability);
+  return PROVIDER_CONFIG[provider as ProviderId]?.adapters[cap] ?? null;
+}
+
+export function isKeylessProvider(provider: string): boolean {
+  return (KEYLESS_PROVIDERS as readonly string[]).includes(provider);
+}
+
+export function isProviderImplemented(provider: string, capability: string): boolean {
+  return adapterFor(provider, capability) !== null;
+}
+
+export function requiredKeyEnv(provider: string): string | null {
+  return PROVIDER_CONFIG[provider as ProviderId]?.keyEnv ?? null;
+}
+
 /**
  * Recommended stack (you can keep ALL of these registered).
  * Auto-router ranks by: capability match → tier allowed → quality/cost blend → health.
@@ -64,7 +246,7 @@ export type CatalogModel = {
 export const MODEL_CATALOG: CatalogModel[] = [
   // ── Router (internal) ───────────────────────────────────
   {
-    id: "llama-3.1-8b-instant",
+    id: "openai/gpt-oss-20b",
     label: "BUILDWE Router",
     provider: "groq",
     capability: "router",
@@ -82,8 +264,8 @@ export const MODEL_CATALOG: CatalogModel[] = [
    * id is a 400 from the real provider, not a silent fallback.
    */
   {
-    id: "llama-3.3-70b-versatile",
-    label: "Llama 3.3 70B",
+    id: "openai/gpt-oss-120b",
+    label: "GPT-OSS 120B",
     provider: "groq",
     capability: "chat",
     tiers: ["free", "pro"],
@@ -95,8 +277,8 @@ export const MODEL_CATALOG: CatalogModel[] = [
     notes: "Free default — strong all-rounder on the fastest inference we have",
   },
   {
-    id: "llama-3.2-3b-instruct",
-    label: "Llama 3.2 3B",
+    id: "qwen/qwen3.6-27b",
+    label: "Qwen 3.6 27B",
     provider: "groq",
     capability: "chat",
     tiers: ["free"],
@@ -107,8 +289,8 @@ export const MODEL_CATALOG: CatalogModel[] = [
     notes: "Third compare seat: fast and cheap, so the lane is not a third copy of the 70B answer",
   },
   {
-    id: "llama-3.1-8b-instant",
-    label: "Llama 3.1 8B Instant",
+    id: "openai/gpt-oss-20b",
+    label: "GPT-OSS 20B",
     provider: "groq",
     capability: "chat",
     tiers: ["free"],
@@ -117,18 +299,6 @@ export const MODEL_CATALOG: CatalogModel[] = [
     latency: "fast",
     strengths: ["simple-qa", "low-latency"],
     notes: "Auto-picked for short/simple questions to keep cost near zero",
-  },
-  {
-    id: "openai/gpt-oss-120b",
-    label: "GPT-OSS 120B",
-    provider: "groq",
-    capability: "chat",
-    tiers: ["free", "pro"],
-    quality: 5,
-    cost: 2,
-    latency: "fast",
-    strengths: ["reasoning", "instruction-following", "open-weight"],
-    notes: "Open-weight flagship served on fast inference",
   },
   {
     id: "moonshotai/kimi-k2-instruct",
@@ -152,6 +322,54 @@ export const MODEL_CATALOG: CatalogModel[] = [
     latency: "medium",
     strengths: ["step-by-step", "maths", "logic"],
     notes: "Reasoning-tuned — auto-picked for complex analytical prompts",
+  },
+  {
+    id: "gemini-3.7-flash",
+    label: "Gemini 3.7 Flash",
+    provider: "google",
+    capability: "chat",
+    tiers: ["free", "pro", "byok"],
+    quality: 5,
+    cost: 2,
+    latency: "fast",
+    strengths: ["general", "reasoning", "long-context", "multimodal"],
+    notes: "Primary chat route when a Google key is configured",
+  },
+  {
+    id: "gemini-3.6-flash",
+    label: "Gemini 3.6 Flash",
+    provider: "google",
+    capability: "chat",
+    tiers: ["free", "pro", "byok"],
+    quality: 4,
+    cost: 2,
+    latency: "fast",
+    strengths: ["general", "long-context", "summarisation"],
+    notes: "First Gemini fallback when 3.7 is unavailable",
+  },
+  {
+    id: "groq/compound",
+    label: "Groq Compound",
+    provider: "groq",
+    capability: "chat",
+    tiers: ["free", "pro"],
+    quality: 4,
+    cost: 2,
+    latency: "fast",
+    strengths: ["tool-use", "web-reasoning", "synthesis"],
+    notes: "Agentic/tool-capable Groq route used for web-search synthesis",
+  },
+  {
+    id: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    label: "Nemotron 3 Ultra",
+    provider: "openrouter",
+    capability: "chat",
+    tiers: ["free", "pro", "byok"],
+    quality: 5,
+    cost: 1,
+    latency: "slow",
+    strengths: ["long-context", "deep-reasoning", "orchestration"],
+    notes: "OpenRouter free tier — last chat fallback before offline",
   },
   {
     id: "gemini-2.0-flash",
@@ -225,20 +443,8 @@ export const MODEL_CATALOG: CatalogModel[] = [
     notes: "2M-token context — routed for very large documents/PDFs",
   },
   {
-    id: "llama-3.1-70b-versatile",
-    label: "Llama 3.1 70B",
-    provider: "groq",
-    capability: "chat",
-    tiers: ["free", "pro"],
-    quality: 4,
-    cost: 2,
-    latency: "fast",
-    strengths: ["general", "reasoning", "hindi-english"],
-    notes: "Fast open-weight reasoning on Groq LPU",
-  },
-  {
-    id: "llama-3.1-405b-reasoning",
-    label: "Llama 3.1 405B",
+    id: "minimaxai/minimax-m2.7",
+    label: "MiniMax M2.7",
     provider: "groq",
     capability: "chat",
     tiers: ["pro"],
@@ -263,8 +469,8 @@ export const MODEL_CATALOG: CatalogModel[] = [
 
   /* ── Code ─────────────────────────────────────────────── */
   {
-    id: "qwen-2.5-coder-32b",
-    label: "Qwen2.5 Coder 32B",
+    id: "qwen/qwen3.6-27b",
+    label: "Qwen 3.6 27B (Code)",
     provider: "groq",
     capability: "code",
     tiers: ["free", "pro"],
@@ -288,8 +494,44 @@ export const MODEL_CATALOG: CatalogModel[] = [
     notes: "Preferred for agent runs — follows multi-step tool plans well",
   },
   {
-    id: "llama-3.3-70b-versatile",
-    label: "Llama 3.3 70B (Code)",
+    id: "gemini-3.7-flash",
+    label: "Gemini 3.7 Flash (Code)",
+    provider: "google",
+    capability: "code",
+    tiers: ["free", "pro", "byok"],
+    quality: 5,
+    cost: 2,
+    latency: "fast",
+    strengths: ["codegen", "refactor", "tool-use", "long-context"],
+    notes: "Primary code/agent route when a Google key is configured",
+  },
+  {
+    id: "gemini-3.6-flash",
+    label: "Gemini 3.6 Flash (Code)",
+    provider: "google",
+    capability: "code",
+    tiers: ["free", "pro", "byok"],
+    quality: 4,
+    cost: 2,
+    latency: "fast",
+    strengths: ["codegen", "explain-code", "long-context"],
+    notes: "Gemini code fallback",
+  },
+  {
+    id: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    label: "Nemotron 3 Ultra (Code)",
+    provider: "openrouter",
+    capability: "code",
+    tiers: ["free", "pro", "byok"],
+    quality: 5,
+    cost: 1,
+    latency: "slow",
+    strengths: ["long-context", "agent", "orchestration"],
+    notes: "OpenRouter free tier — code/agent fallback",
+  },
+  {
+    id: "openai/gpt-oss-20b",
+    label: "GPT-OSS 20B (Code)",
     provider: "groq",
     capability: "code",
     tiers: ["free", "pro"],
@@ -384,6 +626,48 @@ export const MODEL_CATALOG: CatalogModel[] = [
   },
 
   /* ── Image ────────────────────────────────────────────── */
+  /*
+   * Gemini image models. "Nano Banana" is Google's consumer nickname; the API
+   * ids below are what the endpoint actually accepts. Paid rows are pro/byok —
+   * a provider offering a free consumer tier is not the same as free API
+   * inference, so they are not marked free.
+   */
+  {
+    id: "gemini-3-pro-image",
+    label: "Nano Banana Pro",
+    provider: "google",
+    capability: "image",
+    tiers: ["pro", "byok"],
+    quality: 5,
+    cost: 4,
+    latency: "medium",
+    strengths: ["photoreal", "text-in-image", "layout", "4k"],
+    notes: "Gemini 3 Pro Image — professional assets and complex layouts",
+  },
+  {
+    id: "gemini-3.1-flash-image",
+    label: "Nano Banana 2",
+    provider: "google",
+    capability: "image",
+    tiers: ["pro", "byok"],
+    quality: 5,
+    cost: 3,
+    latency: "fast",
+    strengths: ["general", "editing", "text-in-image", "4k"],
+    notes: "Gemini 3.1 Flash Image — default generalist image route",
+  },
+  {
+    id: "gemini-3.1-flash-lite-image",
+    label: "Nano Banana 2 Lite",
+    provider: "google",
+    capability: "image",
+    tiers: ["pro", "byok"],
+    quality: 4,
+    cost: 2,
+    latency: "fast",
+    strengths: ["low-latency", "high-volume", "drafts"],
+    notes: "Gemini 3.1 Flash Lite Image — cheapest/fastest Gemini image lane",
+  },
   {
     id: "flux",
     label: "FLUX",
@@ -639,6 +923,11 @@ export const MODEL_CATALOG: CatalogModel[] = [
   },
 ];
 
+export function modelsForCapability(cap: string): CatalogModel[] {
+  const resolved = resolveCapability(cap);
+  return MODEL_CATALOG.filter((m) => m.capability === resolved);
+}
+
 export type TaskComplexity = "simple" | "normal" | "complex";
 
 export function estimateComplexity(prompt: string): TaskComplexity {
@@ -718,7 +1007,8 @@ export function pickModel(opts: {
    */
   availableProviders?: readonly string[];
 }): CatalogModel {
-  const { capability, plan, prompt, preferModelId, availableProviders } = opts;
+  const capability = resolveCapability(opts.capability);
+  const { plan, prompt, preferModelId, availableProviders } = opts;
   const complexity = estimateComplexity(prompt);
   const allowed: ModelTier[] = plan === "pro" ? ["pro", "free"] : ["free"];
 
@@ -726,12 +1016,10 @@ export function pickModel(opts: {
     (m) => m.capability === capability && m.tiers.some((t) => allowed.includes(t))
   );
 
-  // Providers that need no key at all are always callable.
-  const KEYLESS: readonly string[] = ["pollinations"];
   const pool = availableProviders
     ? tierPool.filter(
         (m) =>
-          KEYLESS.includes(m.provider) || availableProviders.includes(m.provider)
+          isKeylessProvider(m.provider) || availableProviders.includes(m.provider)
       )
     : tierPool;
 
@@ -743,7 +1031,7 @@ export function pickModel(opts: {
 
   const usable = pool.length ? pool : tierPool;
   if (!usable.length) {
-    return MODEL_CATALOG.find((m) => m.id === "llama-3.1-8b-instant")!;
+    return MODEL_CATALOG.find((m) => m.id === "openai/gpt-oss-20b")!;
   }
 
   const kind = detectTaskKind(prompt);
@@ -796,26 +1084,28 @@ export function modelChain(opts: {
   availableProviders?: readonly string[];
   max?: number;
 }): CatalogModel[] {
-  const first = pickModel(opts);
+  const capability = resolveCapability(opts.capability);
+  const first = pickModel({ ...opts, capability });
   const allowed: ModelTier[] = opts.plan === "pro" ? ["pro", "free"] : ["free"];
-  const KEYLESS: readonly string[] = ["pollinations"];
 
   const rest = MODEL_CATALOG.filter(
     (m) =>
-      m.capability === opts.capability &&
+      m.capability === capability &&
       m.id !== first.id &&
       m.tiers.some((t) => allowed.includes(t)) &&
       (!opts.availableProviders ||
-        KEYLESS.includes(m.provider) ||
+        isKeylessProvider(m.provider) ||
         opts.availableProviders.includes(m.provider))
   );
 
-  // Cross-vendor first, then same-vendor alternates.
+  // Cross-vendor first (catalog priority, then quality), then same-vendor alternates.
   const otherVendor = rest.filter((m) => m.provider !== first.provider);
   const sameVendor = rest.filter((m) => m.provider === first.provider);
-  const byQuality = (a: CatalogModel, b: CatalogModel) => b.quality - a.quality;
-  otherVendor.sort(byQuality);
-  sameVendor.sort(byQuality);
+  const pri = (m: CatalogModel) => PROVIDER_CONFIG[m.provider]?.priority ?? 50;
+  const byFallback = (a: CatalogModel, b: CatalogModel) =>
+    pri(a) - pri(b) || b.quality - a.quality;
+  otherVendor.sort(byFallback);
+  sameVendor.sort(byFallback);
 
   const chain = [first, ...otherVendor, ...sameVendor];
   // de-duplicate by id (the same id can appear under two capabilities)
@@ -932,6 +1222,7 @@ export function catalogRow(id?: string | null, capability?: Capability): Catalog
 const MODE_CAPABILITY: Record<string, Capability> = {
   chat: "chat",
   code: "code",
+  agent: "code",
   image: "image",
   audio: "audio",
   vision: "vision",

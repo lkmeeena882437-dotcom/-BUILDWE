@@ -106,6 +106,28 @@ await run("a valid seat count reaches the honest refusal, and no fake order", as
   assert.equal(asText.json.code, "CHECKOUT_UNAVAILABLE", '"2" is two seats, not a bad request');
 });
 
+await run("PRO checkout is order → Razorpay → verify, and the secret never leaves the server", () => {
+  const btn = codeOnly(src("components/billing/UpgradeButton.tsx"));
+  const sheet = codeOnly(src("components/billing/CreditsUI.tsx"));
+  const money = codeOnly(src("lib/payments/razorpay.ts"));
+  const verify = codeOnly(src("app/api/checkout/verify/route.ts"));
+  const hook = codeOnly(src("app/api/checkout/webhook/route.ts"));
+  const page = codeOnly(src("app/page.tsx"));
+
+  assert.ok(btn.includes('fetch("/api/checkout/order"'), "Upgrade posts an order first");
+  assert.ok(btn.includes("checkout.razorpay.com"), "then opens Razorpay Checkout");
+  assert.ok(btn.includes('fetch("/api/checkout/verify"'), "then verifies the signature server-side");
+  assert.ok(btn.includes("ondismiss"), "cancel does not activate PRO");
+  assert.ok(!/RAZORPAY_KEY_SECRET|keySecret/.test(btn), "the button never mentions the secret");
+  assert.ok(!/RAZORPAY_KEY_SECRET|keySecret/.test(sheet), "nor the credits sheet");
+  assert.ok(!/RAZORPAY_KEY_SECRET|keySecret/.test(page), "nor the workspace");
+  assert.ok(money.includes("createHmac"), "HMAC lives in the server money module");
+  assert.ok(money.includes("extraNotes") && money.includes('seats: String(n)'), "seat count rides in the order notes");
+  assert.ok(verify.includes("markPaymentPaidIfPending"), "verify is compare-and-swap, so a replay cannot double-activate");
+  assert.ok(hook.includes("x-razorpay-signature"), "the webhook checks the HMAC before it touches the DB");
+  assert.ok(hook.includes("already") || hook.includes("status !== \"paid\"") || hook.includes("updateUser"), "a second delivery is a no-op");
+});
+
 await run("the ledger decides what was owed; the gateway decides what was granted", () => {
   const order = codeOnly(src("app/api/checkout/order/route.ts"));
   const verify = codeOnly(src("app/api/checkout/verify/route.ts"));
