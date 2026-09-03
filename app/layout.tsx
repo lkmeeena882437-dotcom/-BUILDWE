@@ -61,6 +61,11 @@ const jsonLd = {
 };
 
 export const metadata: Metadata = {
+  // Without this, Next resolves every relative `alternates.canonical` (and any
+  // relative OG image) against localhost:3000 — /tools was literally emitting
+  // <link rel="canonical" href="/tools">, which is not a valid canonical and
+  // tells crawlers nothing. SITE already reads NEXT_PUBLIC_APP_URL.
+  metadataBase: new URL(SITE),
   title: {
     default: "BUILDWE.ONLINE — Build anything. Create everything.",
     template: "%s · BUILDWE",
@@ -83,7 +88,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "BUILDWE.ONLINE",
     description: "Build anything. Create everything.",
-    url: "https://buildwe.online",
+    url: SITE,
     siteName: "BUILDWE.ONLINE",
     type: "website",
   },

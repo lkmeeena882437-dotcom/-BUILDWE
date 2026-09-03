@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { SitePage, Section } from "@/components/SitePage";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/acceptable-use" },
   title: "Acceptable Use",
   description: "The short, clear rules for using BUILDWE.",
 };

@@ -143,4 +143,40 @@ await run("no suite is orphaned between npm test and CI", async () => {
   assert.ok(ci.includes("actions/checkout@v4"), "the workflow file is still a real workflow draft");
 });
 
+await run("metadata resolves absolute URLs and pages self-reference", () => {
+  const layout = readFileSync(path.join(ROOT, "app/layout.tsx"), "utf8");
+  // Without metadataBase, Next resolves every relative `alternates.canonical`
+  // against localhost:3000 — /tools shipped <link rel="canonical" href="/tools">.
+  assert.match(layout, /metadataBase: new URL\(SITE\)/, "metadataBase must be set from SITE");
+  // A canonical in the ROOT layout is inherited by every page that lacks one,
+  // so each would claim to be "/" and ask crawlers to drop it.
+  const meta = layout.slice(layout.indexOf("export const metadata"));
+  assert.equal(
+    /alternates:\s*\{\s*canonical/.test(meta.slice(0, meta.indexOf("openGraph"))),
+    false,
+    "the root layout must not declare a canonical"
+  );
+  assert.equal(/url: "https:\/\//.test(meta), false, "og:url must come from SITE, not a literal");
+  for (const page of ["about", "help", "terms", "privacy", "security"]) {
+    const f = path.join(ROOT, `app/${page}/page.tsx`);
+    if (!existsSync(f)) continue;
+    assert.match(
+      readFileSync(f, "utf8"),
+      new RegExp(`canonical: "/${page}"`),
+      `${page} must self-reference`
+    );
+  }
+});
+
+await run("a render crash and a bad URL both stay inside the product", () => {
+  const err = readFileSync(path.join(ROOT, "app/error.tsx"), "utf8");
+  assert.match(err, /^"use client"/, "an error boundary must be a client component");
+  assert.match(err, /reset/, "the user needs a way to retry");
+  // React redacts the message in production; showing it would leak internals.
+  assert.equal(/\{error\.message\}/.test(err), false, "never render the raw error message");
+  const nf = readFileSync(path.join(ROOT, "app/not-found.tsx"), "utf8");
+  assert.match(nf, /robots:\s*\{\s*index: false/, "a 404 must not be indexed");
+  assert.match(nf, /href="\/"/, "a 404 needs a route back");
+});
+
 process.exit(report("README · tracked docs · suites") ? 1 : 0);

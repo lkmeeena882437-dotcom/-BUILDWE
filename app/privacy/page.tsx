@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/privacy" },
   title: "Privacy Policy — BUILDWE.ONLINE",
   description: "How BUILDWE.ONLINE collects, uses, and protects your data.",
 };

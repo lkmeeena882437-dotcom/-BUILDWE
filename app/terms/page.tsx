@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/terms" },
   title: "Terms of Use — BUILDWE.ONLINE",
   description: "Terms governing use of BUILDWE.ONLINE AI services.",
 };
