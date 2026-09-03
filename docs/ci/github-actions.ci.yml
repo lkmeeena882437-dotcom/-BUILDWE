@@ -104,6 +104,9 @@ jobs:
       - name: core provider activation (live model ids, availability, fallback)
         run: npm run test:providers
 
+      - name: database and Supabase hardening (RLS, isolation, injection)
+        run: npm run test:db-security
+
       - name: chat model chain — reachability, routing, fallback cooldown
         run: npm run test:chat-model
       - name: the README's API map against the routes that exist

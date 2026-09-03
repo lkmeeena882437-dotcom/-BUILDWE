@@ -375,9 +375,16 @@ export async function reassignRemoteConversations(
 
 /* ── Owner-scoped accounts / projects / billing ──────────── */
 
-export type OwnedKind = "user" | "project" | "payment" | "wallet";
+export type OwnedKind = "user" | "project" | "payment" | "wallet" | "credit";
 
-const OWNED_KINDS: readonly OwnedKind[] = ["user", "project", "payment", "wallet"];
+/**
+ * `credit` was added in the DB hardening pass. The credit ledger is the
+ * authoritative record of every balance movement — getWallet reconciles the
+ * wallet from it — yet it lived only in the last-write-wins kv blob while the
+ * wallet it derives from was already per-row. The authoritative record must not
+ * be less durable than its own cache.
+ */
+const OWNED_KINDS: readonly OwnedKind[] = ["user", "project", "payment", "wallet", "credit"];
 
 export function asOwnedKind(v: unknown): OwnedKind | null {
   return OWNED_KINDS.includes(v as OwnedKind) ? (v as OwnedKind) : null;

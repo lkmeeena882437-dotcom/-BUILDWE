@@ -690,6 +690,14 @@ function ownedDiff(prev: DB, next: DB): OwnedPending[] {
       push("wallet", w.userId, w.userId, w as unknown as Record<string, unknown>);
     }
   }
+  // Ledger rows are append-only and immutable once written, so only genuinely
+  // new ids need pushing — no re-diffing of history on every write.
+  const prevCredit = new Set(prev.creditLedger.map((c) => c.id));
+  for (const c of next.creditLedger) {
+    if (!prevCredit.has(c.id)) {
+      push("credit", c.id, c.userId, c as unknown as Record<string, unknown>);
+    }
+  }
   return out;
 }
 
@@ -852,6 +860,16 @@ function applyOwnedPayload(db: DB, kind: string, payload: unknown): boolean {
       return true;
     }
     return false;
+  }
+  if (kind === "credit") {
+    // Ledger rows are append-only and immutable: an existing id is never
+    // rewritten, so a replayed hydrate cannot double-count a movement.
+    const id = typeof rec.id === "string" ? rec.id : "";
+    const userId = typeof rec.userId === "string" ? rec.userId : "";
+    if (!id || !userId) return false;
+    if (db.creditLedger.some((c) => c.id === id)) return false;
+    db.creditLedger.push(rec as unknown as CreditRow);
+    return true;
   }
   return false;
 }

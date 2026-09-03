@@ -63,6 +63,17 @@ create index if not exists buildwe_conversations_team_idx
   on buildwe_conversations (team_id)
   where team_id is not null;
 
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'buildwe_conversations_id_len_ck'
+  ) then
+    alter table buildwe_conversations
+      add constraint buildwe_conversations_id_len_ck
+      check (length(id) between 1 and 80 and length(user_id) between 1 and 80);
+  end if;
+end $$;
+
 alter table buildwe_conversations enable row level security;
 
 drop policy if exists "deny all to anon" on buildwe_conversations;
@@ -92,6 +103,41 @@ create table if not exists buildwe_owned (
 
 create index if not exists buildwe_owned_user_idx
   on buildwe_owned (kind, user_id, updated_at desc);
+
+-- Email login on a cold instance filters on payload->>'email', which no index
+-- covered: every login attempt sequentially scanned all of buildwe_owned
+-- (users + projects + payments + wallets). That path is reachable before
+-- authentication, so it was also a cheap way to load the database. Partial,
+-- because only account rows carry an email.
+create index if not exists buildwe_owned_email_idx
+  on buildwe_owned ((payload->>'email'))
+  where kind = 'user';
+
+-- Only the four kinds the application knows about. A typo in a future writer
+-- would otherwise create a silently unreadable partition of rows.
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'buildwe_owned_kind_ck'
+  ) then
+    alter table buildwe_owned
+      add constraint buildwe_owned_kind_ck
+      check (kind in ('user', 'project', 'payment', 'wallet', 'credit'));
+  end if;
+end $$;
+
+-- Ids are generated server-side and already length-checked in the app; this is
+-- the same rule expressed where it cannot be bypassed.
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'buildwe_owned_id_len_ck'
+  ) then
+    alter table buildwe_owned
+      add constraint buildwe_owned_id_len_ck
+      check (length(id) between 1 and 80 and length(user_id) between 1 and 80);
+  end if;
+end $$;
 
 alter table buildwe_owned enable row level security;
 
@@ -123,6 +169,18 @@ create table if not exists buildwe_rate_limits (
 create index if not exists buildwe_rate_limits_reset_idx
   on buildwe_rate_limits (reset_at);
 
+-- A negative counter would mean unlimited quota. The function never writes one;
+-- this makes that impossible rather than merely unlikely.
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'buildwe_rate_limits_count_ck'
+  ) then
+    alter table buildwe_rate_limits
+      add constraint buildwe_rate_limits_count_ck check (count >= 0);
+  end if;
+end $$;
+
 alter table buildwe_rate_limits enable row level security;
 
 drop policy if exists "deny all to anon" on buildwe_rate_limits;
@@ -142,6 +200,11 @@ create or replace function buildwe_rate_hit(
 )
 returns table (allowed boolean, remaining integer, reset_at timestamptz)
 language plpgsql
+-- Pin the resolution path. Without this the function resolves
+-- buildwe_rate_limits and make_interval against the CALLER's search_path, so
+-- anyone who can create objects in an earlier schema could shadow them. Cheap,
+-- standard hardening for every Postgres function.
+set search_path = public, pg_temp
 as $$
 declare
   v_now      timestamptz := now();
@@ -176,6 +239,7 @@ $$;
 create or replace function buildwe_rate_cleanup()
 returns void
 language sql
+set search_path = public, pg_temp
 as $$
   delete from buildwe_rate_limits where reset_at < now() - interval '1 day';
 $$;
