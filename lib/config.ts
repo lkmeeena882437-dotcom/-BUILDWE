@@ -80,10 +80,19 @@ export const AI_KEYS = {
   byokSecret: env("BYOK_ENCRYPTION_SECRET"),
 } as const;
 
+/**
+ * Optional per-deployment model overrides.
+ *
+ * These are matched against MODEL_CATALOG by `buildChatChain`, so a value that
+ * is not a live catalog row is silently ignored rather than sent upstream. The
+ * defaults below were llama-3.3-70b-versatile / qwen-2.5-coder-32b, both of
+ * which Groq shut down on 2026-08-16 — meaning the documented default was a
+ * dead id that quietly did nothing. Kept in step with the catalog.
+ */
 export const AI_MODELS = {
   free: {
-    chat: env("AI_CHAT_MODEL", "llama-3.3-70b-versatile"),
-    code: env("AI_CODE_MODEL", "qwen-2.5-coder-32b"),
+    chat: env("AI_CHAT_MODEL", "openai/gpt-oss-120b"),
+    code: env("AI_CODE_MODEL", "openai/gpt-oss-120b"),
     image: env("AI_IMAGE_MODEL", "fal-ai/flux/schnell"),
     audio: env("AI_AUDIO_MODEL", "openai-audio"),
   },

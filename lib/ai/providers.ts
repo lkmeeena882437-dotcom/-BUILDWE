@@ -387,8 +387,9 @@ export async function streamChatOrCode(opts: {
 const VISION_MODELS: { id: string; provider: "openai" | "anthropic" | "groq" }[] = [
   { id: "gpt-4o", provider: "openai" },
   { id: "claude-3-5-sonnet-20241022", provider: "anthropic" },
-  { id: "meta-llama/llama-4-scout-17b-16e-instruct", provider: "groq" },
-  { id: "llama-3.2-11b-vision-preview", provider: "groq" },
+  // Groq retired llama-4-scout (2026-07-17) and the 3.2 vision preview before
+  // it; qwen3.6-27b is the current Groq row that accepts image input.
+  { id: "qwen/qwen3.6-27b", provider: "groq" },
 ];
 
 /** Convert a data URL + text question into the right vendor's body shape. */
