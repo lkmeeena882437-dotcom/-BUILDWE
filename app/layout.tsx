@@ -66,6 +66,10 @@ export const metadata: Metadata = {
   // <link rel="canonical" href="/tools">, which is not a valid canonical and
   // tells crawlers nothing. SITE already reads NEXT_PUBLIC_APP_URL.
   metadataBase: new URL(SITE),
+  // Safe to declare here now, and only now: every other public route sets its
+  // own canonical (verified in tests/docs.mjs), so nothing silently inherits
+  // "/" the way it did in #20 when this was added before the pages had theirs.
+  alternates: { canonical: "/" },
   title: {
     default: "BUILDWE.ONLINE — Build anything. Create everything.",
     template: "%s · BUILDWE",

@@ -148,14 +148,36 @@ await run("metadata resolves absolute URLs and pages self-reference", () => {
   // Without metadataBase, Next resolves every relative `alternates.canonical`
   // against localhost:3000 — /tools shipped <link rel="canonical" href="/tools">.
   assert.match(layout, /metadataBase: new URL\(SITE\)/, "metadataBase must be set from SITE");
-  // A canonical in the ROOT layout is inherited by every page that lacks one,
-  // so each would claim to be "/" and ask crawlers to drop it.
+  // A canonical in the ROOT layout is inherited by every page that lacks one.
+  // In #20 that made /pricing, /about and 13 others each claim to be "/" and
+  // ask crawlers to drop them. The root may only declare "/" while EVERY other
+  // public route declares its own — so the guard is on that invariant, not on
+  // the root key's absence.
   const meta = layout.slice(layout.indexOf("export const metadata"));
-  assert.equal(
-    /alternates:\s*\{\s*canonical/.test(meta.slice(0, meta.indexOf("openGraph"))),
-    false,
-    "the root layout must not declare a canonical"
-  );
+  const rootCanonical = meta
+    .slice(0, meta.indexOf("openGraph"))
+    .match(/alternates:\s*\{\s*canonical:\s*"([^"]*)"/);
+  if (rootCanonical) {
+    assert.equal(rootCanonical[1], "/", "the root canonical may only ever be \"/\"");
+    const pages = readdirSync(path.join(ROOT, "app"), { withFileTypes: true })
+      .filter((d) => d.isDirectory() && !d.name.startsWith("[") && !d.name.startsWith("_"))
+      .map((d) => d.name)
+      // Route groups that are not public marketing pages set their own rules.
+      .filter((n) => !["api", "dev", "s", "print", "reset", "verify", "studios", "tools"].includes(n))
+      .filter((n) => existsSync(path.join(ROOT, "app", n, "page.tsx")));
+    for (const name of pages) {
+      const own =
+        readFileSync(path.join(ROOT, "app", name, "page.tsx"), "utf8") +
+        (existsSync(path.join(ROOT, "app", name, "layout.tsx"))
+          ? readFileSync(path.join(ROOT, "app", name, "layout.tsx"), "utf8")
+          : "");
+      assert.match(
+        own,
+        new RegExp(`canonical: "/${name}"`),
+        `/${name} must set its own canonical or it silently inherits "/"`
+      );
+    }
+  }
   assert.equal(/url: "https:\/\//.test(meta), false, "og:url must come from SITE, not a literal");
   for (const page of ["about", "help", "terms", "privacy", "security"]) {
     const f = path.join(ROOT, `app/${page}/page.tsx`);
@@ -177,6 +199,44 @@ await run("a render crash and a bad URL both stay inside the product", () => {
   const nf = readFileSync(path.join(ROOT, "app/not-found.tsx"), "utf8");
   assert.match(nf, /robots:\s*\{\s*index: false/, "a 404 must not be indexed");
   assert.match(nf, /href="\/"/, "a 404 needs a route back");
+});
+
+await run("the Open Graph card has no runtime dependency", () => {
+  const og = readFileSync(path.join(ROOT, "app/opengraph-image.tsx"), "utf8");
+  assert.match(og, /export const size = \{ width: 1200, height: 630 \}/, "OG cards are 1200x630");
+  assert.match(og, /contentType = "image\/png"/, "must declare the type");
+  // A webfont here would make every social share depend on fonts.googleapis.com
+  // at render time, so a font outage turns unfurls into 500s.
+  // Strip comments first — the file explains this rule in prose, and matching
+  // its own documentation would be a test that passes for the wrong reason.
+  const code = og.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  assert.equal(/fetch\(/.test(code), false, "the OG image must not fetch anything at render");
+  assert.equal(/googleapis|\.woff|\.ttf/.test(code), false, "no external font may be loaded");
+});
+
+await run("the rate-limit cleanup is actually scheduled", () => {
+  const schema = readFileSync(path.join(ROOT, "supabase/schema.sql"), "utf8");
+  // The function existed since the hardening pass but nothing ran it, so
+  // buildwe_rate_limits grew forever.
+  assert.match(schema, /create or replace function buildwe_rate_cleanup/, "the function must exist");
+  // Strip SQL comments: the job name is documented in prose above the call, so
+  // matching the raw file would pass even if the schedule itself were deleted.
+  const sql = schema.replace(/^\s*--.*$/gm, "");
+  assert.match(sql, /cron\.schedule\(/, "…and something must schedule it");
+  // A NAMED job is what makes re-running this file update rather than stack
+  // duplicate schedules.
+  assert.match(
+    sql,
+    /cron\.schedule\(\s*'buildwe-rate-cleanup'/,
+    "the schedule must pass a job name as its first argument"
+  );
+  // Must not hard-fail a project without pg_cron installed.
+  assert.match(
+    schema,
+    /pg_extension where extname = 'pg_cron'/,
+    "the schedule must be guarded so the file still runs without pg_cron"
+  );
+  assert.match(schema, /buildwe_rate_cleanup\(\);/, "the job must call the cleanup function");
 });
 
 process.exit(report("README · tracked docs · suites") ? 1 : 0);

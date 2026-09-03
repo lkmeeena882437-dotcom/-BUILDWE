@@ -244,6 +244,44 @@ as $$
   delete from buildwe_rate_limits where reset_at < now() - interval '1 day';
 $$;
 
+-- ------------------------------------------------------------
+-- 2b. Schedule the cleanup (pg_cron)
+-- ------------------------------------------------------------
+-- Without a schedule the function above is dead code and buildwe_rate_limits
+-- grows forever: one row per identity per bucket, never reclaimed. pg_cron is
+-- the in-database scheduler and ships enabled on every Supabase plan, so this
+-- adds no external service and no second bill.
+--
+-- SCHEDULE: 'buildwe-rate-cleanup' runs daily at 03:17 UTC.
+--   Off-peak, and deliberately not on the hour — every other system in the
+--   world schedules at :00, and this is a lock-taking DELETE.
+--
+-- Idempotent twice over: the whole block is skipped when pg_cron is not
+-- installed, and cron.schedule() with a job NAME updates the existing job
+-- rather than creating a duplicate, so re-running this file cannot stack jobs.
+--
+-- Inspect:   select jobname, schedule, active from cron.job;
+-- History:   select jobname, status, start_time from cron.job_run_details
+--              where jobname = 'buildwe-rate-cleanup' order by start_time desc;
+-- Remove:    select cron.unschedule('buildwe-rate-cleanup');
+--
+-- If pg_cron is unavailable, nothing here fails — but the table will not be
+-- pruned, so enable it (Dashboard → Database → Extensions → pg_cron) and
+-- re-run this file.
+do $$
+begin
+  if exists (select 1 from pg_extension where extname = 'pg_cron') then
+    perform cron.schedule(
+      'buildwe-rate-cleanup',
+      '17 3 * * *',
+      $job$select public.buildwe_rate_cleanup();$job$
+    );
+  else
+    raise notice
+      'pg_cron is not installed - buildwe_rate_cleanup() is NOT scheduled. Enable pg_cron and re-run this file.';
+  end if;
+end $$;
+
 
 -- ------------------------------------------------------------
 -- 3. Storage bucket for generated media
